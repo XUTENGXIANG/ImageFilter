@@ -1,4 +1,5 @@
 mod db;
+mod importer;
 mod scanner;
 mod win_thumb;
 
@@ -45,12 +46,14 @@ pub fn run() {
             db::save_folder_count,
             db::load_folder_counts,
             scanner::detect_drives,
+            scanner::open_folder,
             scanner::browse_directory,
             scanner::count_folders,
             scanner::scan_directory,
             scanner::get_exif,
             scanner::get_thumbnail_path,
             scanner::batch_thumbnails,
+            importer::import_photos,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

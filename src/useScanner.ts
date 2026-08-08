@@ -1,6 +1,14 @@
 import { useState, useCallback } from "react";
 import { invoke, convertFileSrc, Channel } from "@tauri-apps/api/core";
+import { open } from "@tauri-apps/plugin-dialog";
 import type { DriveInfo, ScannedPhoto, FolderEntry } from "./types";
+
+export interface ImportProgress {
+  fileName: string;
+  status: string;
+  message: string;
+  percent: number;
+}
 
 export interface FolderNode {
   name: string;
@@ -58,6 +66,36 @@ export function useScanner() {
   const [loadingFolder, setLoadingFolder] = useState(false);
   const [counting, setCounting] = useState(false);
 
+  // Multi-select state
+  const [selectedPaths, setSelectedPaths] = useState<Set<string>>(new Set());
+
+  const toggleSelect = useCallback((path: string) => {
+    setSelectedPaths((prev) => {
+      const next = new Set(prev);
+      if (next.has(path)) next.delete(path); else next.add(path);
+      return next;
+    });
+  }, []);
+
+  const selectAll = useCallback(() => {
+    setSelectedPaths(new Set(photos.map((p) => p.path)));
+  }, [photos]);
+
+  const clearSelection = useCallback(() => {
+    setSelectedPaths(new Set());
+  }, []);
+
+  // Import state
+  const [importing, setImporting] = useState(false);
+  const [importProgress, setImportProgress] = useState<{ fileName: string; status: string; message: string }[]>([]);
+  const [importError, setImportError] = useState<string | null>(null);
+  const [destDir, setDestDir] = useState<string | null>(null);
+  const [folderRule, setFolderRule] = useState("");
+  const [fileRule, setFileRule] = useState("");
+  const [customFolder, setCustomFolder] = useState("");
+  const [useCustomFolder, setUseCustomFolder] = useState(false);
+  const [importResult, setImportResult] = useState<{ok: number; fail: number} | null>(null);
+
   const detectDrives = useCallback(async () => {
     try {
       const list = await invoke<DriveInfo[]>("detect_drives");
@@ -111,6 +149,7 @@ export function useScanner() {
     setPhotos([]);
     setThumbnails({});
     setSelectedPhoto(null);
+    setSelectedPaths(new Set());
 
     try {
       const [photosList, subEntry] = await Promise.all([
@@ -143,6 +182,45 @@ export function useScanner() {
   }, []);
 
   /** Load EXIF on demand when user selects a photo */
+  /** Pick destination folder */
+  const pickDestDir = useCallback(async () => {
+    const dir = await open({ directory: true, title: "选择导入目标文件夹" });
+    if (dir) setDestDir(dir as string);
+    return dir;
+  }, []);
+
+  /** Start importing selected or all photos */
+  const startImport = useCallback(async (paths: string[]) => {
+    if (!destDir || paths.length === 0) return;
+    setImporting(true);
+    setImportProgress([]);
+
+    const onProgress = new Channel<ImportProgress>();
+    onProgress.onmessage = (p: ImportProgress) => {
+      setImportProgress((prev) => [...prev, p]);
+    };
+
+    try {
+      const count = await invoke<number>("import_photos", {
+        filePaths: paths,
+        destDir,
+        folderTemplate: folderRule,
+        fileTemplate: fileRule,
+        customFolder: useCustomFolder ? customFolder : "",
+        onProgress,
+      });
+      setImportError(null);
+      const failed = paths.length - count;
+      setImportResult({ ok: count, fail: failed });
+      setTimeout(() => setImportResult(null), 5000);
+    } catch (err: any) {
+      console.error("import failed:", err);
+      setImportError(String(err));
+    } finally {
+      setImporting(false);
+    }
+  }, [destDir, folderRule, fileRule]);
+
   const loadExif = useCallback(async (photo: ScannedPhoto) => {
     if (photo.exif.cameraMake || photo.exif.dateTaken) return photo;
     try {
@@ -176,5 +254,10 @@ export function useScanner() {
     drives, selectedDrive, folderTree, activeFolder, photos,
     selectedPhoto, thumbnails, browsing, loadingFolder, counting,
     detectDrives, browseDrive, loadFolder, loadThumbnail, loadExif, setSelectedPhoto,
+    importing, importProgress, importError, importResult, destDir,
+    selectedPaths, toggleSelect, selectAll, clearSelection,
+    folderRule, fileRule, setFolderRule, setFileRule,
+    customFolder, setCustomFolder, useCustomFolder, setUseCustomFolder,
+    pickDestDir, startImport,
   };
 }

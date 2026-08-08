@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { convertFileSrc } from "@tauri-apps/api/core";
+import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { useScanner, type FolderNode } from "./useScanner";
 import type { ScannedPhoto } from "./types";
 
@@ -28,6 +28,25 @@ function App() {
     loadThumbnail,
     loadExif,
     setSelectedPhoto,
+    importing,
+    importProgress,
+    importError,
+    importResult,
+    customFolder,
+    setCustomFolder,
+    useCustomFolder,
+    setUseCustomFolder,
+    destDir,
+    selectedPaths,
+    toggleSelect,
+    selectAll,
+    clearSelection,
+    folderRule,
+    fileRule,
+    setFolderRule,
+    setFileRule,
+    pickDestDir,
+    startImport,
   } = useScanner();
 
   useEffect(() => {
@@ -131,10 +150,18 @@ function App() {
       {/* === Center === */}
       <main className="flex-1 flex flex-col min-w-0">
         <div className="h-9 border-b border-zinc-800 flex items-center px-4 gap-2 flex-shrink-0 bg-zinc-950">
-          {selectedDrive && (
-            <span className="text-[11px] text-zinc-500 truncate">
-              {activeFolder || selectedDrive}
-            </span>
+          {selectedDrive && photos.length > 0 && (
+            <>
+              <button onClick={selectAll} className="text-[10px] text-zinc-500 hover:text-zinc-300">
+                全选
+              </button>
+              <button onClick={clearSelection} className="text-[10px] text-zinc-500 hover:text-zinc-300">
+                取消
+              </button>
+              <span className="text-[10px] text-zinc-600">
+                已选 {selectedPaths.size}/{photos.length}
+              </span>
+            </>
           )}
         </div>
 
@@ -170,6 +197,8 @@ function App() {
                       : thumbnails[photo.path]
                   }
                   isSelected={selectedPhoto?.path === photo.path}
+                  isChecked={selectedPaths.has(photo.path)}
+                  onToggle={() => toggleSelect(photo.path)}
                   onClick={() => {
                     setSelectedPhoto(photo);
                     if (!thumbnails[photo.path]) loadThumbnail(photo.path, 300);
@@ -181,13 +210,78 @@ function App() {
           )}
         </div>
 
-        <div className="h-11 border-t border-zinc-800 flex items-center justify-between px-4 flex-shrink-0 bg-zinc-900">
-          <span className="text-[11px] text-zinc-500 truncate max-w-[60%]">
-            {selectedPhoto?.fileName ?? "未选择"}
-          </span>
-          <span className="text-[11px] text-zinc-600">
-            {selectedPhoto?.exif.dateTaken?.slice(0, 10)}
-          </span>
+        {/* Import bar */}
+        <div className="border-t border-zinc-800 flex-shrink-0 bg-zinc-900">
+          <div className="flex items-center gap-2 px-3 py-1.5">
+            <button
+              onClick={pickDestDir}
+              className="text-[10px] px-2 py-1 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-400 truncate max-w-[180px]"
+            >
+              {destDir ? `...${destDir.slice(-25)}` : "选择目标文件夹"}
+            </button>
+            {destDir && (
+              <button
+                onClick={() => invoke("open_folder", { path: destDir })}
+                className="text-[10px] px-1.5 py-1 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-500"
+                title="打开文件夹"
+              >
+                📂
+              </button>
+            )}
+            <div className="flex-1" />
+            <span className="text-[10px] text-zinc-600">
+              {!destDir ? "请先选目标文件夹" :
+               selectedPaths.size === 0 ? "请勾选要导入的照片" :
+               importing ? "导入中..." : ""}
+            </span>
+            <button
+              disabled={!destDir || selectedPaths.size === 0 || importing}
+              onClick={() => startImport([...selectedPaths])}
+              className="text-[10px] px-3 py-1 rounded bg-emerald-600 hover:bg-emerald-500 disabled:bg-zinc-700 disabled:text-zinc-500 text-white font-medium"
+            >
+              {importing
+                ? `导入中 ${importProgress.filter((p: {status: string}) => p.status === "done").length}/${selectedPaths.size}`
+                : `导入 ${selectedPaths.size} 张`}
+            </button>
+          </div>
+          {/* Advanced: naming rules */}
+          {importError && (
+            <div className="px-3 pb-1 text-[10px] text-red-400">错误: {importError}</div>
+          )}
+          {importResult && (
+            <div className="px-3 pb-1 text-[10px] text-emerald-400">
+              导入完成 ✓ {importResult.ok} 张成功{importResult.fail > 0 ? `，${importResult.fail} 张失败` : ""}
+            </div>
+          )}
+          <AdvancedOptions
+            folderRule={folderRule}
+            fileRule={fileRule}
+            setFolderRule={setFolderRule}
+            setFileRule={setFileRule}
+            customFolder={customFolder}
+            setCustomFolder={setCustomFolder}
+            useCustomFolder={useCustomFolder}
+            setUseCustomFolder={setUseCustomFolder}
+          />
+          {importing && importProgress.length > 0 && (
+            <div className="px-3 pb-1.5 max-h-16 overflow-auto">
+              {importProgress.slice(-4).map((p, i) => (
+                <div key={i} className="text-[9px] text-zinc-500 flex gap-1.5">
+                  <span className={
+                    p.status === "error" ? "text-red-400" :
+                    p.status === "done" ? "text-emerald-400" :
+                    p.status === "skipped" ? "text-zinc-600" : "text-zinc-500"
+                  }>
+                    {p.status === "done" ? "✓" :
+                     p.status === "error" ? "✗" :
+                     p.status === "skipped" ? "→" : "·"}
+                  </span>
+                  <span className="truncate flex-1">{p.fileName}</span>
+                  <span className="flex-shrink-0">{p.message}</span>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       </main>
 
@@ -273,12 +367,16 @@ function PhotoCard({
   photo,
   thumbnail,
   isSelected,
+  isChecked,
   onClick,
+  onToggle,
 }: {
   photo: ScannedPhoto;
   thumbnail?: string;
   isSelected: boolean;
+  isChecked: boolean;
   onClick: () => void;
+  onToggle: () => void;
 }) {
   return (
     <div
@@ -296,6 +394,17 @@ function PhotoCard({
           <span className="text-2xl opacity-40">{photo.isVideo ? "🎬" : "📷"}</span>
         </div>
       )}
+      {/* Select checkbox — always visible when checked, hover for unchecked */}
+      <button
+        onClick={(e) => { e.stopPropagation(); onToggle(); }}
+        className={`absolute top-1.5 right-1.5 w-5 h-5 rounded border-2 flex items-center justify-center transition-opacity z-10 ${
+          isChecked
+            ? "bg-emerald-500 border-emerald-500 opacity-100"
+            : "border-zinc-400 bg-black/40 opacity-0 group-hover:opacity-100"
+        }`}
+      >
+        {isChecked && <span className="text-white text-[10px] font-bold">✓</span>}
+      </button>
       <div className="absolute top-1.5 left-1.5 flex gap-1">
         {photo.isRaw && (
           <span className="text-[9px] px-1.5 py-0.5 rounded bg-amber-600/80 text-white font-medium">RAW</span>
@@ -370,6 +479,69 @@ function Row({ label, value }: { label: string; value?: string }) {
     <div className="flex justify-between gap-2">
       <span className="text-zinc-500 flex-shrink-0">{label}</span>
       <span className="text-zinc-300 text-right truncate">{value}</span>
+    </div>
+  );
+}
+
+function AdvancedOptions({
+  folderRule, fileRule, setFolderRule, setFileRule,
+  customFolder, setCustomFolder, useCustomFolder, setUseCustomFolder,
+}: {
+  folderRule: string; fileRule: string;
+  setFolderRule: (v: string) => void; setFileRule: (v: string) => void;
+  customFolder: string; setCustomFolder: (v: string) => void;
+  useCustomFolder: boolean; setUseCustomFolder: (v: boolean) => void;
+}) {
+  const [open, setOpen] = useState(false);
+
+  const toggleDate = () => setFolderRule(folderRule.includes("{date}") ? "" : "{date}");
+  const toggleCamera = () => setFolderRule(folderRule.includes("{camera}") ? folderRule.replace("/{camera}","").replace("{camera}/","").replace("{camera}","") : (folderRule ? folderRule + "/{camera}" : "{camera}"));
+  const toggleSeq = () => setFileRule(fileRule === "{seq}.{ext}" ? "" : "{seq}.{ext}");
+
+  return (
+    <div className="px-3">
+      <button
+        onClick={() => setOpen(!open)}
+        className="text-[10px] text-zinc-600 hover:text-zinc-400"
+      >
+        {open ? "▾ 高级选项" : "▸ 高级选项"}
+      </button>
+      {open && (
+        <div className="mt-1 pb-1.5 space-y-1">
+          <label className="flex items-center gap-1.5 cursor-pointer">
+            <input type="checkbox" checked={folderRule.includes("{date}")} onChange={toggleDate}
+              className="w-3 h-3 accent-emerald-500" />
+            <span className="text-[10px] text-zinc-400">按拍摄日期分文件夹</span>
+            <span className="text-[9px] text-zinc-600">如 2024-08-08/照片.jpg</span>
+          </label>
+          <label className="flex items-center gap-1.5 cursor-pointer">
+            <input type="checkbox" checked={folderRule.includes("{camera}")} onChange={toggleCamera}
+              className="w-3 h-3 accent-emerald-500" />
+            <span className="text-[10px] text-zinc-400">按相机型号分文件夹</span>
+            <span className="text-[9px] text-zinc-600">如 Sony-A7M4/照片.jpg</span>
+          </label>
+          <label className="flex items-center gap-1.5 cursor-pointer">
+            <input type="checkbox" checked={fileRule === "{seq}.{ext}"} onChange={toggleSeq}
+              className="w-3 h-3 accent-emerald-500" />
+            <span className="text-[10px] text-zinc-400">按序号重命名</span>
+            <span className="text-[9px] text-zinc-600">如 0001.ARW</span>
+          </label>
+          <label className="flex items-center gap-1.5 cursor-pointer">
+            <input type="checkbox" checked={useCustomFolder}
+              onChange={() => setUseCustomFolder(!useCustomFolder)}
+              className="w-3 h-3 accent-emerald-500" />
+            <span className="text-[10px] text-zinc-400">导入到子文件夹</span>
+            {useCustomFolder && (
+              <input
+                value={customFolder}
+                onChange={(e) => setCustomFolder(e.target.value)}
+                placeholder="输入文件夹名"
+                className="w-28 bg-zinc-800 text-[10px] text-zinc-300 px-2 py-0.5 rounded border border-zinc-700"
+              />
+            )}
+          </label>
+        </div>
+      )}
     </div>
   );
 }
