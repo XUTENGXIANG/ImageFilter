@@ -10,6 +10,16 @@ export interface ImportProgress {
   percent: number;
 }
 
+export interface AnalysisResult {
+  path: string;
+  blurScore: number;
+  isBlurry: boolean;
+  isOverexposed: boolean;
+  isUnderexposed: boolean;
+  duplicateGroup?: number;
+  isBestInGroup: boolean;
+}
+
 export interface FolderNode {
   name: string;
   path: string;
@@ -26,6 +36,12 @@ function entryToNode(entry: FolderEntry): FolderNode {
     hasSubdirs: entry.hasSubdirs,
     children: entry.subfolders.map(entryToNode),
   };
+}
+
+function updateHasSubdirs(root: FolderNode | null, path: string, val: boolean): FolderNode | null {
+  if (!root) return null;
+  if (root.path === path) return { ...root, hasSubdirs: val };
+  return { ...root, children: root.children.map((c) => updateHasSubdirs(c, path, val)!).filter(Boolean) };
 }
 
 function applyCounts(root: FolderNode | null, counts: Record<string, number>): FolderNode | null {
@@ -66,16 +82,35 @@ export function useScanner() {
   const [loadingFolder, setLoadingFolder] = useState(false);
   const [counting, setCounting] = useState(false);
 
-  // Multi-select state
+  // Multi-select state (Windows Explorer style)
   const [selectedPaths, setSelectedPaths] = useState<Set<string>>(new Set());
+  const [lastClicked, setLastClicked] = useState<string | null>(null);
 
-  const toggleSelect = useCallback((path: string) => {
-    setSelectedPaths((prev) => {
-      const next = new Set(prev);
-      if (next.has(path)) next.delete(path); else next.add(path);
-      return next;
-    });
-  }, []);
+  const handlePhotoClick = useCallback((path: string, event: { ctrlKey: boolean; shiftKey: boolean }) => {
+    const photoPaths = photos.map((p) => p.path);
+    if (event.ctrlKey) {
+      // Ctrl+click: toggle single
+      setSelectedPaths((prev) => {
+        const next = new Set(prev);
+        if (next.has(path)) next.delete(path); else next.add(path);
+        return next;
+      });
+      setLastClicked(path);
+    } else if (event.shiftKey && lastClicked) {
+      // Shift+click: select range
+      const start = photoPaths.indexOf(lastClicked);
+      const end = photoPaths.indexOf(path);
+      if (start >= 0 && end >= 0) {
+        const [from, to] = start < end ? [start, end] : [end, start];
+        const range = new Set(photoPaths.slice(from, to + 1));
+        setSelectedPaths(range);
+      }
+    } else {
+      // Regular click: select single, clear others
+      setSelectedPaths(new Set([path]));
+      setLastClicked(path);
+    }
+  }, [photos, lastClicked]);
 
   const selectAll = useCallback(() => {
     setSelectedPaths(new Set(photos.map((p) => p.path)));
@@ -89,6 +124,24 @@ export function useScanner() {
   const [importing, setImporting] = useState(false);
   const [importProgress, setImportProgress] = useState<{ fileName: string; status: string; message: string }[]>([]);
   const [importError, setImportError] = useState<string | null>(null);
+  // AI analysis
+  const [analyzing, setAnalyzing] = useState(false);
+  const [analysis, setAnalysis] = useState<Record<string, AnalysisResult>>({});
+  // Ratings & sort
+  const [ratings, setRatings] = useState<Record<string, number>>(() => {
+    try { return JSON.parse(localStorage.getItem("pixelflow-ratings") || "{}"); }
+    catch { return {}; }
+  });
+  const [sortBy, setSortBy] = useState<"name" | "type" | "date">("name");
+  const [starFilter, setStarFilter] = useState(0); // 0=all, 1-5=filter
+
+  const setRating = useCallback((path: string, stars: number) => {
+    setRatings((prev) => {
+      const next = { ...prev, [path]: stars };
+      try { localStorage.setItem("pixelflow-ratings", JSON.stringify(next)); } catch {}
+      return next;
+    });
+  }, []);
   const [destDir, setDestDir] = useState<string | null>(null);
   const [folderRule, setFolderRule] = useState("");
   const [fileRule, setFileRule] = useState("");
@@ -170,9 +223,12 @@ export function useScanner() {
       }
 
       if (subEntry) {
-        setFolderTree((prev) =>
-          mergeChildren(prev, folderPath, subEntry.subfolders.map(entryToNode))
-        );
+        const hasKids = subEntry.subfolders.length > 0;
+        setFolderTree((prev) => {
+          let tree = mergeChildren(prev, folderPath, subEntry.subfolders.map(entryToNode));
+          tree = updateHasSubdirs(tree, folderPath, hasKids);
+          return tree;
+        });
       }
     } catch (err) {
       console.error("loadFolder failed:", err);
@@ -221,6 +277,42 @@ export function useScanner() {
     }
   }, [destDir, folderRule, fileRule]);
 
+  /** Stop ongoing analysis */
+  const stopAnalysis = useCallback(() => {
+    setAnalyzing(false);
+    invoke("stop_analysis"); // fire-and-forget
+  }, []);
+
+  /** AI analysis: blur + exposure + duplicates */
+  const runAnalysis = useCallback(async (paths: string[]) => {
+    if (paths.length === 0) return;
+    setAnalyzing(true);
+    setAnalysis({});
+
+    const results: Record<string, AnalysisResult> = {};
+
+    // Step 1: blur + exposure (streaming)
+    const onProgress = new Channel<AnalysisResult>();
+    onProgress.onmessage = (r: AnalysisResult) => {
+      results[r.path] = r;
+      setAnalysis({ ...results });
+    };
+    await invoke("analyze_photos", { filePaths: paths, onProgress }).catch(console.error);
+
+    // Step 2: duplicate detection
+    try {
+      const dups = await invoke<AnalysisResult[]>("find_duplicates", { filePaths: paths });
+      for (const d of dups) {
+        if (d.duplicateGroup !== undefined) {
+          results[d.path] = { ...(results[d.path] || {} as AnalysisResult), ...d };
+        }
+      }
+      setAnalysis({ ...results });
+    } catch (err) { console.error("find_duplicates:", err); }
+
+    setAnalyzing(false);
+  }, []);
+
   const loadExif = useCallback(async (photo: ScannedPhoto) => {
     if (photo.exif.cameraMake || photo.exif.dateTaken) return photo;
     try {
@@ -255,9 +347,11 @@ export function useScanner() {
     selectedPhoto, thumbnails, browsing, loadingFolder, counting,
     detectDrives, browseDrive, loadFolder, loadThumbnail, loadExif, setSelectedPhoto,
     importing, importProgress, importError, importResult, destDir,
-    selectedPaths, toggleSelect, selectAll, clearSelection,
+    selectedPaths, handlePhotoClick, selectAll, clearSelection,
     folderRule, fileRule, setFolderRule, setFileRule,
     customFolder, setCustomFolder, useCustomFolder, setUseCustomFolder,
+    analyzing, analysis, runAnalysis, stopAnalysis,
+    ratings, setRating, sortBy, setSortBy, starFilter, setStarFilter,
     pickDestDir, startImport,
   };
 }

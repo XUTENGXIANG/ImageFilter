@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useMemo } from "react";
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { useScanner, type FolderNode } from "./useScanner";
 import type { ScannedPhoto } from "./types";
@@ -28,6 +28,16 @@ function App() {
     loadThumbnail,
     loadExif,
     setSelectedPhoto,
+    analyzing,
+    analysis,
+    runAnalysis,
+    stopAnalysis,
+    ratings,
+    setRating,
+    sortBy,
+    setSortBy,
+    starFilter,
+    setStarFilter,
     importing,
     importProgress,
     importError,
@@ -38,7 +48,7 @@ function App() {
     setUseCustomFolder,
     destDir,
     selectedPaths,
-    toggleSelect,
+    handlePhotoClick,
     selectAll,
     clearSelection,
     folderRule,
@@ -54,6 +64,41 @@ function App() {
     const timer = setInterval(detectDrives, 5000);
     return () => clearInterval(timer);
   }, [detectDrives]);
+
+  // Keyboard shortcuts: J=rate3, X=rate0, 1-5=star
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (!selectedPhoto || e.target instanceof HTMLInputElement) return;
+      const key = e.key.toLowerCase();
+      if (key === "j") setRating(selectedPhoto.path, 3);
+      else if (key === "x") setRating(selectedPhoto.path, 0);
+      else if (key >= "1" && key <= "5") setRating(selectedPhoto.path, Number(key));
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [selectedPhoto, setRating]);
+
+  // Sort + filter photos
+  const sortedPhotos = useMemo(() => {
+    let list = [...photos];
+    // Star filter
+    if (starFilter > 0) {
+      list = list.filter((p) => (ratings[p.path] || 0) >= starFilter);
+    }
+    // Sort
+    if (sortBy === "name") {
+      list.sort((a, b) => a.fileName.toLowerCase().localeCompare(b.fileName.toLowerCase()));
+    } else if (sortBy === "type") {
+      list.sort((a, b) => {
+        const ea = a.fileName.split(".").pop()?.toLowerCase() || "";
+        const eb = b.fileName.split(".").pop()?.toLowerCase() || "";
+        return ea.localeCompare(eb) || a.fileName.toLowerCase().localeCompare(b.fileName.toLowerCase());
+      });
+    } else if (sortBy === "date") {
+      list.sort((a, b) => b.modifiedAt - a.modifiedAt);
+    }
+    return list;
+  }, [photos, sortBy, starFilter, ratings]);
 
   const previewSrc = selectedPhoto
     ? (thumbnails[selectedPhoto.path] && thumbnails[selectedPhoto.path] !== "__err__"
@@ -152,15 +197,34 @@ function App() {
         <div className="h-9 border-b border-zinc-800 flex items-center px-4 gap-2 flex-shrink-0 bg-zinc-950">
           {selectedDrive && photos.length > 0 && (
             <>
-              <button onClick={selectAll} className="text-[10px] text-zinc-500 hover:text-zinc-300">
-                全选
+              <button onClick={selectAll} className="text-[10px] text-zinc-500 hover:text-zinc-300">全选</button>
+              <button onClick={clearSelection} className="text-[10px] text-zinc-500 hover:text-zinc-300">取消</button>
+              <span className="text-[10px] text-zinc-600">已选 {selectedPaths.size}/{photos.length}</span>
+              {/* Sort */}
+              <select value={sortBy} onChange={(e) => setSortBy(e.target.value as any)}
+                className="bg-zinc-800 text-[10px] text-zinc-400 px-1 py-0.5 rounded border border-zinc-700">
+                <option value="name">文件名</option>
+                <option value="type">类型</option>
+                <option value="date">日期</option>
+              </select>
+              {/* Star filter */}
+              {[0,1,2,3,4,5].map((s) => (
+                <button key={s} onClick={() => setStarFilter(starFilter === s ? 0 : s)}
+                  className={`text-[10px] px-1 rounded ${starFilter === s ? "text-amber-400 bg-amber-400/10" : "text-zinc-600 hover:text-zinc-400"}`}
+                >{s === 0 ? "全部" : "★".repeat(s)}</button>
+              ))}
+              <ThumbSizeSlider />
+              <div className="flex-1" />
+              <button
+                onClick={() => analyzing ? stopAnalysis() : runAnalysis(photos.map((p) => p.path))}
+                className={`text-[10px] px-2 py-0.5 rounded text-zinc-400 ${
+                  analyzing
+                    ? "bg-red-900/50 hover:bg-red-800/50 text-red-400"
+                    : "bg-zinc-800 hover:bg-zinc-700"
+                }`}
+              >
+                {analyzing ? "停止" : "AI 分析"}
               </button>
-              <button onClick={clearSelection} className="text-[10px] text-zinc-500 hover:text-zinc-300">
-                取消
-              </button>
-              <span className="text-[10px] text-zinc-600">
-                已选 {selectedPaths.size}/{photos.length}
-              </span>
             </>
           )}
         </div>
@@ -177,17 +241,17 @@ function App() {
             </div>
           ) : photos.length === 0 ? (
             <div className="flex items-center justify-center h-full">
-              <p className="text-zinc-600 text-sm">
-                {selectedDrive
-                  ? activeFolder
-                    ? "此文件夹无照片"
-                    : "点击左侧文件夹查看照片"
-                  : "选择设备后点击文件夹"}
-              </p>
+              {selectedDrive ? (
+                <p className="text-zinc-600 text-sm">
+                  {activeFolder ? "此文件夹无照片" : "点击左侧文件夹查看照片"}
+                </p>
+              ) : (
+                <WelcomeGuide />
+              )}
             </div>
           ) : (
-            <div className="grid grid-cols-4 gap-2 content-start">
-              {photos.map((photo) => (
+            <div className="grid photo-grid gap-2 content-start">
+              {sortedPhotos.map((photo) => (
                 <PhotoCard
                   key={photo.path}
                   photo={photo}
@@ -198,8 +262,12 @@ function App() {
                   }
                   isSelected={selectedPhoto?.path === photo.path}
                   isChecked={selectedPaths.has(photo.path)}
-                  onToggle={() => toggleSelect(photo.path)}
-                  onClick={() => {
+                  onToggle={(e: React.MouseEvent) => handlePhotoClick(photo.path, { ctrlKey: e.ctrlKey, shiftKey: e.shiftKey })}
+                  analysis={analysis[photo.path]}
+                  rating={ratings[photo.path]}
+                  onRate={(s: number) => setRating(photo.path, s)}
+                  onClick={(e: React.MouseEvent) => {
+                    handlePhotoClick(photo.path, { ctrlKey: e.ctrlKey, shiftKey: e.shiftKey });
                     setSelectedPhoto(photo);
                     if (!thumbnails[photo.path]) loadThumbnail(photo.path, 300);
                     loadExif(photo);
@@ -339,7 +407,7 @@ function FolderTreeItem({
         style={{ paddingLeft: `${depth * 12 + 8}px`, paddingRight: "4px", paddingTop: "2px", paddingBottom: "2px" }}
       >
         <span className="text-[10px] w-3 flex-shrink-0">
-          {canExpand ? (open ? "▼" : "▶") : "📁"}
+          {canExpand ? (open ? "▼" : "▶") : "📂"}
         </span>
         <span className="truncate">{node.name}</span>
         {!(counting && node.photoCount === 0) && (
@@ -364,19 +432,12 @@ function FolderTreeItem({
 }
 
 function PhotoCard({
-  photo,
-  thumbnail,
-  isSelected,
-  isChecked,
-  onClick,
-  onToggle,
+  photo, thumbnail, isSelected, isChecked, onClick, onToggle, analysis, rating, onRate,
 }: {
-  photo: ScannedPhoto;
-  thumbnail?: string;
-  isSelected: boolean;
-  isChecked: boolean;
-  onClick: () => void;
-  onToggle: () => void;
+  photo: ScannedPhoto; thumbnail?: string; isSelected: boolean; isChecked: boolean;
+  onClick: (e: React.MouseEvent) => void; onToggle: (e: React.MouseEvent) => void;
+  analysis?: { isBlurry?: boolean; isOverexposed?: boolean; isUnderexposed?: boolean; isBestInGroup?: boolean; duplicateGroup?: number };
+  rating?: number; onRate?: (stars: number) => void;
 }) {
   return (
     <div
@@ -396,7 +457,7 @@ function PhotoCard({
       )}
       {/* Select checkbox — always visible when checked, hover for unchecked */}
       <button
-        onClick={(e) => { e.stopPropagation(); onToggle(); }}
+        onClick={(e) => { e.stopPropagation(); onToggle(e); }}
         className={`absolute top-1.5 right-1.5 w-5 h-5 rounded border-2 flex items-center justify-center transition-opacity z-10 ${
           isChecked
             ? "bg-emerald-500 border-emerald-500 opacity-100"
@@ -412,10 +473,39 @@ function PhotoCard({
         {photo.isVideo && (
           <span className="text-[9px] px-1.5 py-0.5 rounded bg-blue-600/80 text-white font-medium">视频</span>
         )}
+        {analysis?.isBlurry && (
+          <span className="text-[9px] px-1.5 py-0.5 rounded bg-red-600/80 text-white font-medium">模糊</span>
+        )}
+        {analysis?.isOverexposed && (
+          <span className="text-[9px] px-1.5 py-0.5 rounded bg-yellow-600/80 text-white font-medium">过曝</span>
+        )}
+        {analysis?.isUnderexposed && (
+          <span className="text-[9px] px-1.5 py-0.5 rounded bg-indigo-600/80 text-white font-medium">欠曝</span>
+        )}
+        {analysis?.duplicateGroup !== undefined && !analysis?.isBestInGroup && (
+          <span className="text-[9px] px-1.5 py-0.5 rounded bg-gray-600/80 text-white font-medium">重复</span>
+        )}
+        {analysis?.isBestInGroup && (
+          <span className="text-[9px] px-1.5 py-0.5 rounded bg-emerald-600/80 text-white font-medium">最佳</span>
+        )}
       </div>
+      {(rating ?? 0) > 0 && (
+        <div className="absolute bottom-1.5 right-1.5 text-[10px] text-amber-400">
+          {"★".repeat(rating ?? 0)}
+        </div>
+      )}
       <div className="absolute bottom-0 inset-x-0 bg-gradient-to-t from-black/80 to-transparent p-2 pt-6 opacity-0 group-hover:opacity-100 transition-opacity">
         <p className="text-[10px] text-zinc-200 truncate leading-tight">{photo.fileName}</p>
         <p className="text-[9px] text-zinc-400">{formatBytes(photo.fileSize)}</p>
+        {onRate && (
+          <div className="flex gap-0.5 mt-0.5">
+            {[1,2,3,4,5].map((s) => (
+              <button key={s} onClick={(e) => { e.stopPropagation(); onRate(s); }}
+                className={`text-[10px] ${(rating ?? 0) >= s ? "text-amber-400" : "text-zinc-600 hover:text-amber-500"}`}
+              >★</button>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );
@@ -479,6 +569,60 @@ function Row({ label, value }: { label: string; value?: string }) {
     <div className="flex justify-between gap-2">
       <span className="text-zinc-500 flex-shrink-0">{label}</span>
       <span className="text-zinc-300 text-right truncate">{value}</span>
+    </div>
+  );
+}
+
+function ThumbSizeSlider() {
+  const [cols, setCols] = useState(() => {
+    try { return parseInt(localStorage.getItem("pixelflow-cols") || "4"); }
+    catch { return 4; }
+  });
+  // Apply grid-cols via CSS variable approach — inject <style>
+  useEffect(() => {
+    const id = "pixelflow-grid-cols";
+    let el = document.getElementById(id) as HTMLStyleElement | null;
+    if (!el) { el = document.createElement("style"); el.id = id; document.head.appendChild(el); }
+    el.textContent = `.photo-grid { grid-template-columns: repeat(${cols}, minmax(0, 1fr)); }`;
+    localStorage.setItem("pixelflow-cols", String(cols));
+  }, [cols]);
+  return (
+    <input
+      type="range" min={2} max={8} value={cols}
+      onChange={(e) => setCols(Number(e.target.value))}
+      className="w-16 h-4 accent-emerald-500 cursor-pointer"
+      title={`${cols} 列`}
+    />
+  );
+}
+
+function WelcomeGuide() {
+  return (
+    <div className="max-w-md text-center space-y-6 p-8">
+      <h1 className="text-2xl font-light text-zinc-300 tracking-wide">PixelFlow</h1>
+      <p className="text-xs text-zinc-500">SD 卡照片智能导入工具</p>
+      <div className="space-y-3 text-left">
+        <Step num="1" title="插入 SD 卡" desc="插入相机存储卡，左栏自动检测设备" />
+        <Step num="2" title="浏览照片" desc="点设备 → 文件夹树秒出 → 点文件夹查看照片" />
+        <Step num="3" title="筛选/评分" desc="点 AI 分析检查废片，鼠标 hover 缩略图打星评分" />
+        <Step num="4" title="导入电脑" desc="勾选照片 → 选目标文件夹 → 点导入" />
+      </div>
+      <div className="pt-4 border-t border-zinc-800 text-left text-[10px] text-zinc-600 space-y-1">
+        <p><kbd className="px-1 bg-zinc-800 rounded text-zinc-400">J</kbd> 保留 <kbd className="px-1 bg-zinc-800 rounded text-zinc-400">X</kbd> 废弃 <kbd className="px-1 bg-zinc-800 rounded text-zinc-400">1-5</kbd> 星级</p>
+        <p><kbd className="px-1 bg-zinc-800 rounded text-zinc-400">Ctrl+点击</kbd> 多选 <kbd className="px-1 bg-zinc-800 rounded text-zinc-400">Shift+点击</kbd> 范围选择</p>
+      </div>
+    </div>
+  );
+}
+
+function Step({ num, title, desc }: { num: string; title: string; desc: string }) {
+  return (
+    <div className="flex gap-3">
+      <span className="w-5 h-5 rounded-full bg-zinc-800 text-zinc-400 text-[10px] flex items-center justify-center flex-shrink-0 mt-0.5">{num}</span>
+      <div>
+        <p className="text-xs text-zinc-300">{title}</p>
+        <p className="text-[10px] text-zinc-600">{desc}</p>
+      </div>
     </div>
   );
 }

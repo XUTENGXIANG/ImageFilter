@@ -3632,6 +3632,7 @@ dependencies = [
  "kamadak-exif",
  "md-5",
  "rawler",
+ "rayon",
  "serde",
  "serde_json",
  "sha2",

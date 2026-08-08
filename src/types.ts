@@ -25,6 +25,7 @@ export interface ScannedPhoto {
   fileSize: number;
   isRaw: boolean;
   isVideo: boolean;
+  modifiedAt: number; // unix timestamp ms
   exif: PhotoExif;
 }
 

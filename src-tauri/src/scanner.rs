@@ -45,6 +45,7 @@ pub struct ScannedPhoto {
     pub file_size: u64,
     pub is_raw: bool,
     pub is_video: bool,
+    pub modified_at: i64,
     pub exif: PhotoExif,
 }
 
@@ -57,6 +58,39 @@ pub struct FolderEntry {
     pub photo_count: u32,
     pub has_subdirs: bool,
     pub subfolders: Vec<FolderEntry>,
+}
+
+/// Get Windows volume label for a drive (e.g., "CANON_DC" for D:\)
+fn volume_label(mount: &str) -> String {
+    #[cfg(target_os = "windows")]
+    {
+        use std::ffi::OsString;
+        use std::os::windows::ffi::OsStringExt;
+        let path_str = format!("{}\\\\", mount);
+        let path: Vec<u16> = path_str.encode_utf16().chain(std::iter::once(0)).collect();
+        let mut buf = vec![0u16; 128];
+        #[link(name = "kernel32")]
+        extern "system" {
+            fn GetVolumeInformationW(
+                root: *const u16,
+                name: *mut u16, name_len: u32,
+                serial: *mut u32, max_len: *mut u32, flags: *mut u32,
+                fs_name: *mut u16, fs_len: u32,
+            ) -> i32;
+        }
+        unsafe {
+            if GetVolumeInformationW(path.as_ptr(), buf.as_mut_ptr(), buf.len() as u32,
+                std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut(),
+                std::ptr::null_mut(), 0) != 0
+            {
+                let len = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+                return OsString::from_wide(&buf[..len]).to_string_lossy().to_string();
+            }
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    { String::new() }
+    String::new()
 }
 
 /// Open folder in OS file manager
@@ -98,11 +132,12 @@ pub fn detect_drives() -> Vec<DriveInfo> {
             };
 
             let is_removable = info.is_removable();
-            let label = format!(
-                "{}{}",
-                mount,
-                if is_removable { " (可移动)" } else { "" }
-            );
+            let vol_name = volume_label(&mount);
+            let label = if vol_name.is_empty() {
+                format!("{}{}", mount, if is_removable { " (可移动)" } else { "" })
+            } else {
+                format!("{} ({}){}", vol_name, &mount[..1], if is_removable { " 可移动" } else { "" })
+            };
 
             drives.push(DriveInfo {
                 mount_point: mount,
@@ -183,14 +218,12 @@ pub async fn count_folders(
     Ok(map)
 }
 
-/// Check if directory contains any subdirectory
+/// Check if directory contains any subdirectory (1 level only, fast)
 fn has_subdirectories(path: &std::path::Path) -> bool {
     if let Ok(entries) = std::fs::read_dir(path) {
         for entry in entries.flatten() {
             if let Ok(ft) = entry.file_type() {
-                if ft.is_dir() {
-                    return true;
-                }
+                if ft.is_dir() { return true; }
             }
         }
     }
@@ -261,6 +294,10 @@ pub async fn scan_directory(dir_path: String) -> Vec<ScannedPhoto> {
         let file_size = metadata.len();
         let is_raw = RAW_EXTENSIONS.contains(&ext.as_str());
         let is_video = matches!(ext.as_str(), "mp4" | "mov" | "avi" | "mkv");
+        let modified_at = metadata
+            .modified()
+            .map(|t| t.duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis() as i64)
+            .unwrap_or(0);
 
         photos.push(ScannedPhoto {
             path: file_path.to_string_lossy().to_string(),
@@ -272,6 +309,7 @@ pub async fn scan_directory(dir_path: String) -> Vec<ScannedPhoto> {
             file_size,
             is_raw,
             is_video,
+            modified_at,
             exif: PhotoExif::default(),
         });
     }
@@ -410,20 +448,7 @@ fn thumb_single(file_path: &str, max_size: u32) -> Result<String, String> {
         return Ok(cache_path.to_string_lossy().to_string());
     }
 
-    // Tier 1: Windows Shell (cached — 1ms; rate-limited to avoid Explorer load)
-    #[cfg(target_os = "windows")]
-    {
-        if let Some((w, h, rgba)) = crate::win_thumb::get_shell_thumbnail(file_path, max_size) {
-            if let Some(img) = image::RgbaImage::from_raw(w, h, rgba) {
-                let dyn_img = image::DynamicImage::ImageRgba8(img);
-                if dyn_img.save(&cache_path).is_ok() {
-                    return Ok(cache_path.to_string_lossy().to_string());
-                }
-            }
-        }
-    }
-
-    // Tier 2: Our optimized path
+    // Optimized thumbnail path:
     let ext = src.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
 
     // Video: try ffmpeg frame extraction (IShellItemImageFactory handles cached ones above)

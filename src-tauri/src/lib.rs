@@ -1,7 +1,7 @@
+mod analyzer;
 mod db;
 mod importer;
 mod scanner;
-mod win_thumb;
 
 use tauri::Manager;
 
@@ -54,6 +54,9 @@ pub fn run() {
             scanner::get_thumbnail_path,
             scanner::batch_thumbnails,
             importer::import_photos,
+            analyzer::analyze_photos,
+            analyzer::find_duplicates,
+            analyzer::stop_analysis,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
