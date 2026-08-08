@@ -50,18 +50,6 @@ pub async fn init_db(db_path: &Path) -> Result<SqlitePool, sqlx::Error> {
     .execute(&pool)
     .await?;
 
-    // Migration: folder count cache
-    sqlx::query(
-        "CREATE TABLE IF NOT EXISTS folder_cache (
-            path TEXT PRIMARY KEY,
-            photo_count INTEGER NOT NULL,
-            dir_mtime INTEGER NOT NULL,
-            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-        )",
-    )
-    .execute(&pool)
-    .await?;
-
     Ok(pool)
 }
 
@@ -88,8 +76,6 @@ pub struct ImportRule {
 pub enum Error {
     #[error(transparent)]
     Sqlx(#[from] sqlx::Error),
-    #[error("rule not found: {0}")]
-    NotFound(String),
 }
 
 impl serde::Serialize for Error {
@@ -146,60 +132,4 @@ pub async fn save_rule(
     Ok(result.last_insert_rowid())
 }
 
-// ── Folder count cache ──
-
-#[derive(Debug, Serialize, Deserialize, sqlx::FromRow)]
-pub struct FolderCache {
-    pub path: String,
-    pub photo_count: i64,
-    pub dir_mtime: i64,
-}
-
-/// Save folder count to cache (upsert)
-#[tauri::command]
-pub async fn save_folder_count(
-    state: tauri::State<'_, DbState>,
-    path: String,
-    photo_count: i64,
-    dir_mtime: i64,
-) -> Result<(), Error> {
-    sqlx::query(
-        "INSERT OR REPLACE INTO folder_cache (path, photo_count, dir_mtime)
-         VALUES (?, ?, ?)",
-    )
-    .bind(&path)
-    .bind(photo_count)
-    .bind(dir_mtime)
-    .execute(&state.pool)
-    .await?;
-    Ok(())
-}
-
-/// Load cached counts — returns map of path → count for paths with matching mtime
-#[tauri::command]
-pub async fn load_folder_counts(
-    state: tauri::State<'_, DbState>,
-    paths: Vec<String>,
-) -> Result<std::collections::HashMap<String, i64>, Error> {
-    if paths.is_empty() {
-        return Ok(std::collections::HashMap::new());
-    }
-    // Build IN clause placeholders
-    let placeholders: Vec<String> = paths.iter().enumerate().map(|(i, _)| format!("?{}", i + 1)).collect();
-    let sql = format!(
-        "SELECT path, photo_count, dir_mtime FROM folder_cache WHERE path IN ({})",
-        placeholders.join(",")
-    );
-    let mut query = sqlx::query_as::<_, FolderCache>(&sql);
-    for path in &paths {
-        query = query.bind(path);
-    }
-    let rows = query.fetch_all(&state.pool).await?;
-    let mut map = std::collections::HashMap::new();
-    for row in rows {
-        map.insert(row.path, row.photo_count);
-        // mtime check done in scanner
-    }
-    Ok(map)
-}
 

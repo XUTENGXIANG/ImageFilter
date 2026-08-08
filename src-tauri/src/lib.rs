@@ -43,8 +43,6 @@ pub fn run() {
             db::get_import_history,
             db::get_rules,
             db::save_rule,
-            db::save_folder_count,
-            db::load_folder_counts,
             scanner::detect_drives,
             scanner::open_folder,
             scanner::browse_directory,
