@@ -1,0 +1,57 @@
+mod db;
+mod scanner;
+mod win_thumb;
+
+use tauri::Manager;
+
+#[tauri::command]
+fn greet(name: String) -> String {
+    format!("Hello, {}! PixelFlow is running.", name)
+}
+
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
+pub fn run() {
+    tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_fs::init())
+        .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_opener::init())
+        .setup(|app| {
+            let app_handle = app.handle().clone();
+            let db_path = app
+                .path()
+                .app_data_dir()
+                .expect("failed to resolve app data dir")
+                .join("pixel-flow.db");
+
+            // Ensure parent directory exists
+            if let Some(parent) = db_path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+
+            let pool = tauri::async_runtime::block_on(async {
+                db::init_db(&db_path).await
+            })?;
+
+            app_handle.manage(db::DbState { pool });
+
+            Ok(())
+        })
+        .invoke_handler(tauri::generate_handler![
+            greet,
+            db::get_import_history,
+            db::get_rules,
+            db::save_rule,
+            db::save_folder_count,
+            db::load_folder_counts,
+            scanner::detect_drives,
+            scanner::browse_directory,
+            scanner::count_folders,
+            scanner::scan_directory,
+            scanner::get_exif,
+            scanner::get_thumbnail_path,
+            scanner::batch_thumbnails,
+        ])
+        .run(tauri::generate_context!())
+        .expect("error while running tauri application");
+}
