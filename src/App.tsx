@@ -2,6 +2,7 @@ import { useEffect, useState, useMemo } from "react";
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { PixelMenu, SEPARATOR, type MenuItem } from "./contextmenu";
+import { FloatingPanel } from "./panel";
 import { useScanner, type FolderNode } from "./useScanner";
 import type { ScannedPhoto } from "./types";
 
@@ -185,41 +186,33 @@ function App() {
       <div className="flex flex-1 min-h-0">
       {/* === Left Sidebar === */}
       <PixelMenu items={[{ label: "刷新设备列表", action: detectDrives }]}>
-      <aside className="w-60 min-w-[15rem] border-r border-zinc-800 flex flex-col bg-zinc-950">
-        {/* Drive list */}
-        <div className="p-3 border-b border-zinc-800">
-          <button
-            onClick={detectDrives}
-            className="w-full text-left text-xs font-semibold text-zinc-400 uppercase tracking-wider hover:text-zinc-300"
-          >
+      <FloatingPanel side="left" title="设备">
+        <div className="p-2 border-b border-zinc-800/50">
+          <button onClick={detectDrives} className="w-full text-left text-xs font-semibold text-zinc-400 uppercase tracking-wider hover:text-zinc-300">
             设备 ↻
           </button>
           <div className="mt-2 space-y-0.5 max-h-36 overflow-auto">
             {drives.map((d) => (
-              <button
-                key={d.mountPoint}
-                onClick={() => browseDrive(d.mountPoint)}
-                className={`w-full text-left px-2 py-1.5 rounded text-xs flex items-center gap-1.5 ${
-                  selectedDrive === d.mountPoint
-                    ? "bg-emerald-900/30 text-emerald-300"
-                    : "hover:bg-zinc-800/50 text-zinc-400"
-                }`}
-              >
-                <span>{d.driveType === "removable" ? "💾" : "💿"}</span>
-                <span className="truncate">{d.label}</span>
-              </button>
-            ))}
-            {drives.length === 0 && (
-              <p className="text-zinc-600 text-[11px] px-2">未检测到设备</p>
-            )}
-          </div>
+            <button
+              key={d.mountPoint}
+              onClick={() => browseDrive(d.mountPoint)}
+              className={`w-full text-left px-2 py-1.5 rounded text-xs flex items-center gap-1.5 ${
+                selectedDrive === d.mountPoint
+                  ? "bg-emerald-900/30 text-emerald-300"
+                  : "hover:bg-zinc-800/50 text-zinc-400"
+              }`}
+            >
+              <span>{d.driveType === "removable" ? "💾" : "💿"}</span>
+              <span className="truncate">{d.label}</span>
+            </button>
+          ))}
+          {drives.length === 0 && (
+            <p className="text-zinc-600 text-[11px] px-2">未检测到设备</p>
+          )}
+        </div>
         </div>
 
-        {/* Folder tree */}
         <div className="flex-1 overflow-auto p-2">
-          <h3 className="text-[10px] font-semibold text-zinc-500 uppercase px-1 mb-1">
-            文件夹
-          </h3>
           {browsing ? (
             <p className="text-[11px] text-emerald-500 px-1 animate-pulse">
               扫描目录结构...
@@ -256,17 +249,9 @@ function App() {
         </div>
 
         <div className="p-2 border-t border-zinc-800 text-[10px] text-zinc-600">
-          {browsing
-            ? "浏览中..."
-            : loadingFolder
-            ? "加载中..."
-            : counting
-            ? "正在读取照片数..."
-            : selectedDrive
-            ? `${photos.length} 张`
-            : "就绪"}
+          {browsing ? "浏览中..." : loadingFolder ? "加载中..." : counting ? "正在读取照片数..." : selectedDrive ? `${photos.length} 张` : "就绪"}
         </div>
-      </aside>
+      </FloatingPanel>
       </PixelMenu>
 
       {/* === Center === */}
@@ -438,22 +423,15 @@ function App() {
       </main>
 
       {/* === Right Panel === */}
-      <aside className="w-72 min-w-[18rem] border-l border-white/5 flex flex-col bg-zinc-950">
-        <div className="p-3 border-b border-zinc-800">
-          <h2 className="text-xs font-semibold text-zinc-400 uppercase tracking-wider">
-            详细信息
-          </h2>
-        </div>
+      <FloatingPanel side="right" title="详细信息">
         <div className="flex-1 overflow-auto p-3">
           {selectedPhoto ? (
             <ExifPanel photo={selectedPhoto} previewSrc={previewSrc} />
           ) : (
-            <p className="text-zinc-600 text-xs text-center mt-8">
-              选中照片查看 EXIF
-            </p>
+            <p className="text-zinc-600 text-xs text-center mt-8">选中照片查看 EXIF</p>
           )}
         </div>
-      </aside>
+      </FloatingPanel>
       </div>{/* close inner flex row */}
     </div>
   );
