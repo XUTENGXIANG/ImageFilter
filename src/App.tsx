@@ -3,7 +3,11 @@ import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { PixelMenu, SEPARATOR, type MenuItem } from "./contextmenu";
 import { FloatingPanel } from "./panel";
+import { PhotoViewer } from "./viewer";
 import { useScanner, type FolderNode } from "./useScanner";
+import {
+  Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription,
+} from "@/components/ui/dialog";
 import type { ScannedPhoto } from "./types";
 
 function formatBytes(bytes: number): string {
@@ -18,6 +22,8 @@ function formatBytes(bytes: number): string {
 // 拖拽: data-tauri-drag-region  禁止选中: select-none
 function TitleBar() {
   const win = getCurrentWindow();
+  // 设置面板开关
+  const [showSettings, setShowSettings] = useState(false);
   // 主题状态: dark=深色(默认) light=浅色
   const [theme, setTheme] = useState<"dark" | "light">(() =>
     (localStorage.getItem("pixelflow-theme") as "dark" | "light") || "dark"
@@ -41,6 +47,13 @@ function TitleBar() {
     >
       <span className="text-[11px] text-zinc-500 ml-3">PixelFlow</span>
       <div className="flex items-center h-full">
+        {/* 设置按钮 */}
+        <button onClick={() => setShowSettings(true)}
+          className="w-8 h-full flex items-center justify-center text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800"
+          title="设置"
+        >
+          <span className="text-[12px]">⚙</span>
+        </button>
         {/* 主题切换按钮 — ☀️浅色 / 🌙深色 */}
         <button onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
           className="w-8 h-full flex items-center justify-center text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800"
@@ -69,6 +82,37 @@ function TitleBar() {
           </svg>
         </button>
       </div>
+
+      {/* ═══ 设置浮窗（白板占位, 后续填充设置项） ═══ */}
+      <Dialog open={showSettings} onOpenChange={setShowSettings}>
+        <DialogContent className="w-[420px] max-h-[80vh] overflow-auto">
+          <DialogHeader>
+            <DialogTitle>设置</DialogTitle>
+            <DialogDescription>PixelFlow 应用设置</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-2">
+            {/* 主题设置 */}
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm text-foreground">主题</p>
+                <p className="text-xs text-muted-foreground">深色 / 浅色</p>
+              </div>
+              <button
+                onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
+                className="px-3 py-1.5 rounded-md border border-border text-sm hover:bg-muted"
+              >
+                {theme === "dark" ? "🌙 深色" : "☀️ 浅色"}
+              </button>
+            </div>
+            {/* 更多设置占位 */}
+            <div className="border-t border-border pt-3">
+              <p className="text-xs text-muted-foreground text-center py-6">
+                更多设置项即将上线...
+              </p>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
@@ -129,15 +173,30 @@ function App() {
     return () => window.removeEventListener("contextmenu", handler);
   }, []);
 
+  // 屏蔽 Ctrl+A 全选文本（输入框内除外）
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.ctrlKey && e.key.toLowerCase() === "a") {
+        const tag = (e.target as HTMLElement)?.tagName;
+        if (tag !== "INPUT" && tag !== "TEXTAREA") {
+          e.preventDefault();
+        }
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, []);
+
   useEffect(() => {
     detectDrives();
     const timer = setInterval(detectDrives, 5000);
     return () => clearInterval(timer);
   }, [detectDrives]);
 
-  // Keyboard shortcuts: J=rate3, X=rate0, 1-5=star
+  // Keyboard shortcuts: J=rate3, X=rate0, 1-5=star (查看器打开时不处理, 交给viewer)
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
+      if (viewerIndex !== null) return;
       if (!selectedPhoto || e.target instanceof HTMLInputElement) return;
       const key = e.key.toLowerCase();
       if (key === "j") setRating(selectedPhoto.path, 3);
@@ -201,6 +260,9 @@ function App() {
     { label: "全选", action: selectAll },
     { label: "AI 分析", action: () => runAnalysis(photos.map((p) => p.path)) },
   ], [photos, selectedDrive, startImport, selectAll, browseDrive, runAnalysis]);
+
+  // 图片查看器: viewerIndex=null 关闭, 数字=打开第N张
+  const [viewerIndex, setViewerIndex] = useState<number | null>(null);
 
   const previewSrc = selectedPhoto
     ? (thumbnails[selectedPhoto.path] && thumbnails[selectedPhoto.path] !== "__err__"
@@ -361,6 +423,7 @@ function App() {
                   analysis={analysis[photo.path]}
                   rating={ratings[photo.path]}
                   onRate={(s: number) => setRating(photo.path, s)}
+                  onDoubleClick={() => setViewerIndex(sortedPhotos.indexOf(photo))}
                   onContextMenu={() => setCtxTarget(photo)}
                   onClick={(e: React.MouseEvent) => {
                     handlePhotoClick(photo.path, { ctrlKey: e.ctrlKey, shiftKey: e.shiftKey });
@@ -464,6 +527,16 @@ function App() {
         </div>
       </FloatingPanel>
       </div>{/* close inner flex row */}
+      {/* 图片查看器 — 双击打开 */}
+      {viewerIndex !== null && sortedPhotos.length > 0 && (
+        <PhotoViewer
+          photos={sortedPhotos}
+          index={viewerIndex}
+          ratings={ratings}
+          onRate={setRating}
+          onClose={() => setViewerIndex(null)}
+        />
+      )}
     </div>
   );
 }
@@ -522,16 +595,17 @@ function FolderTreeItem({
 {/* 尺寸: aspect-square  圆角: rounded-lg  边框: border-2  选中: border-emerald-400 */}
 {/* 角标: RAW(amber) 视频(blue) 模糊(red) 过曝(yellow) 欠曝(indigo) 重复(gray) 最佳(emerald) */}
 function PhotoCard({
-  photo, thumbnail, isSelected, isChecked, onClick, onToggle, analysis, rating, onRate, onContextMenu,
+  photo, thumbnail, isSelected, isChecked, onClick, onToggle, analysis, rating, onRate, onContextMenu, onDoubleClick,
 }: {
   photo: ScannedPhoto; thumbnail?: string; isSelected: boolean; isChecked: boolean;
   onClick: (e: React.MouseEvent) => void; onToggle: (e: React.MouseEvent) => void;
   analysis?: { isBlurry?: boolean; isOverexposed?: boolean; isUnderexposed?: boolean; isBestInGroup?: boolean; duplicateGroup?: number };
-  rating?: number; onRate?: (stars: number) => void; onContextMenu?: () => void;
+  rating?: number; onRate?: (stars: number) => void; onContextMenu?: () => void; onDoubleClick?: () => void;
 }) {
   return (
     <div
       onClick={onClick}
+      onDoubleClick={onDoubleClick}
       onContextMenu={onContextMenu}
       className={`relative aspect-square rounded-lg overflow-hidden cursor-pointer border-2 border-zinc-800 transition-all group ${
         isSelected
@@ -558,7 +632,8 @@ function PhotoCard({
         {isChecked && <span className="text-white text-[10px] font-bold">✓</span>}
       </button>
       <div className="absolute top-1.5 left-1.5 flex gap-1">
-        {photo.isRaw && <Badge color="bg-amber-600/80" label="RAW" />}
+        {photo.isRaw && <Badge color="bg-amber-600/80" label={formatBadge(photo.fileName)} />}
+        {!photo.isRaw && !photo.isVideo && <Badge color="bg-zinc-600/80" label={formatBadge(photo.fileName)} />}
         {photo.isVideo && <Badge color="bg-blue-600/80" label="视频" />}
         {analysis?.isBlurry && <Badge color="bg-red-600/80" label="模糊" />}
         {analysis?.isOverexposed && <Badge color="bg-yellow-600/80" label="过曝" />}
@@ -639,6 +714,12 @@ function Section({ title, children }: { title: string; children: React.ReactNode
       <div className="text-[11px] space-y-1">{children}</div>
     </section>
   );
+}
+
+/** 从文件名取扩展名标签 (dng→DNG, jpg→JPG, png→PNG...) */
+function formatBadge(fileName: string): string {
+  const ext = fileName.split(".").pop()?.toUpperCase() || "";
+  return ext || "?";
 }
 
 function Badge({ color, label }: { color: string; label: string }) {

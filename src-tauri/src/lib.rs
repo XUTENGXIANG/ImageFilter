@@ -2,6 +2,7 @@ mod analyzer;
 mod db;
 mod importer;
 mod scanner;
+mod win_wic;
 
 use tauri::Manager;
 
@@ -50,6 +51,8 @@ pub fn run() {
             scanner::scan_directory,
             scanner::get_exif,
             scanner::get_thumbnail_path,
+            scanner::get_full_image,
+            scanner::get_preview_image,
             scanner::batch_thumbnails,
             importer::import_photos,
             analyzer::analyze_photos,

@@ -1,5 +1,17 @@
 use inspect_path::inspect_path;
 use serde::Serialize;
+use tokio::sync::Semaphore;
+use std::sync::OnceLock;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+/// rawler 全解码信号量 — 同时只允许1个, 防止切换照片时堆积卡死
+static RAW_DECODE_SEM: OnceLock<Semaphore> = OnceLock::new();
+fn raw_decode_sem() -> &'static Semaphore {
+    RAW_DECODE_SEM.get_or_init(|| Semaphore::new(1))
+}
+
+/// 全图解码任务号 — 新请求递增; 旧请求检测到被取代即放弃
+static FULL_TASK_ID: AtomicU64 = AtomicU64::new(0);
 
 const SUPPORTED_EXTENSIONS: &[&str] = &[
     "jpg", "jpeg", "png", "gif", "bmp", "tiff", "tif", "webp",
@@ -401,6 +413,211 @@ pub async fn get_thumbnail_path(
     thumb_single(&file_path, max_size)
 }
 
+/// 快速预览: RAW 提取内嵌最大 JPEG（秒开）; 非RAW 直接原路径
+#[tauri::command]
+pub async fn get_preview_image(file_path: String) -> Result<String, String> {
+    let src = std::path::Path::new(&file_path);
+    if !src.exists() {
+        return Err(format!("File not found: {}", file_path));
+    }
+
+    let ext = src.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+    if !RAW_EXTENSIONS.contains(&ext.as_str()) {
+        return Ok(file_path);
+    }
+
+    let cache_dir = cache_dir().ok_or("No cache dir")?.join("pixel-flow").join("preview");
+    std::fs::create_dir_all(&cache_dir).map_err(|e| format!("Mkdir: {}", e))?;
+
+    use std::hash::{Hash, Hasher};
+    let mtime = std::fs::metadata(src)
+        .and_then(|m| m.modified())
+        .map(|t| t.duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs())
+        .unwrap_or(0);
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    file_path.hash(&mut h);
+    mtime.hash(&mut h);
+    let cache_path = cache_dir.join(format!("{:016x}_prev.jpg", h.finish()));
+
+    if cache_path.exists() {
+        return Ok(cache_path.to_string_lossy().to_string());
+    }
+
+    // 提取内嵌最大 JPEG 字节（mmap扫描+直接写盘, 零解码零编码, 毫秒级）
+    if let Some(bytes) = extract_largest_preview_bytes(src) {
+        if std::fs::write(&cache_path, &bytes).is_ok() {
+            return Ok(cache_path.to_string_lossy().to_string());
+        }
+    }
+
+    // 无内嵌 → 返回空, 前端走 full（full 有 WIC/rawler 完整链路）
+    Err("No preview available".into())
+}
+
+/// Get full-resolution image for viewer.
+/// JPEG/PNG → returns original path (zero decode, instant).
+/// RAW → WIC 系统codec → rawler 全解码, cached to disk as JPEG.
+#[tauri::command]
+pub async fn get_full_image(file_path: String) -> Result<String, String> {
+    // 领取任务号 — 切换照片后旧任务检测到被取代即退出
+    let my_id = FULL_TASK_ID.fetch_add(1, Ordering::SeqCst) + 1;
+
+    let src = std::path::Path::new(&file_path);
+    if !src.exists() {
+        return Err(format!("File not found: {}", file_path));
+    }
+
+    let ext = src.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+
+    // Standard formats: direct path, zero decode
+    if !RAW_EXTENSIONS.contains(&ext.as_str()) {
+        return Ok(file_path);
+    }
+
+    // RAW: 优先提取最大内嵌JPEG（多数相机=全分辨率,秒开）
+    // 无内嵌或太小才全解码
+    let cache_dir = cache_dir().ok_or("No cache dir")?.join("pixel-flow").join("full");
+    std::fs::create_dir_all(&cache_dir).map_err(|e| format!("Mkdir: {}", e))?;
+
+    use std::hash::{Hash, Hasher};
+    let mtime = std::fs::metadata(src)
+        .and_then(|m| m.modified())
+        .map(|t| t.duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs())
+        .unwrap_or(0);
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    file_path.hash(&mut h);
+    mtime.hash(&mut h);
+    let cache_name = format!("{:016x}_full.jpg", h.finish());
+    let cache_path = cache_dir.join(&cache_name);
+
+    if cache_path.exists() {
+        return Ok(cache_path.to_string_lossy().to_string());
+    }
+
+    let src_path = std::path::PathBuf::from(&file_path);
+    let cache_path_clone = cache_path.clone();
+
+    // 路径1: 内嵌最大 JPEG（快, 零IO竞争）— 先显示
+    if let Some(bytes) = extract_largest_preview_bytes(&src_path) {
+        if std::fs::write(&cache_path_clone, &bytes).is_ok() {
+            return Ok(cache_path_clone.to_string_lossy().to_string());
+        }
+    }
+
+    // 路径2/3: 全图解码统一信号量(并发1, WIC+rawler共用) — 防磁盘IO竞争
+    if my_id != FULL_TASK_ID.load(Ordering::SeqCst) {
+        return Err("superseded".into());
+    }
+    let _permit = raw_decode_sem().acquire().await.map_err(|e| e.to_string())?;
+    if my_id != FULL_TASK_ID.load(Ordering::SeqCst) {
+        return Err("superseded".into());
+    }
+
+    // 路径2: WIC 系统 codec（300ms级）
+    #[cfg(target_os = "windows")]
+    {
+        let fp = file_path.clone();
+        let cc = cache_path_clone.clone();
+        if tokio::task::spawn_blocking(move || {
+            if let Some(img) = crate::win_wic::decode_raw_wic(&fp) {
+                let max_edge = 5000u32;
+                let img = if img.width().max(img.height()) > max_edge {
+                    img.resize(max_edge, max_edge, image::imageops::FilterType::Lanczos3)
+                } else {
+                    img
+                };
+                if img.save(&cc).is_ok() {
+                    return Some(cc.to_string_lossy().to_string());
+                }
+            }
+            None
+        })
+        .await
+        .unwrap_or(None)
+        .is_some()
+        {
+            return Ok(cache_path_clone.to_string_lossy().to_string());
+        }
+    }
+
+    // 路径3: rawler 全分辨率解码 (极慢兜底)
+    tokio::task::spawn_blocking(move || {
+        let img = decode_raw_slow(&src_path)?;
+        let max_edge = 5000u32;
+        let img = if img.width().max(img.height()) > max_edge {
+            img.resize(max_edge, max_edge, image::imageops::FilterType::Lanczos3)
+        } else {
+            img
+        };
+        img.save(&cache_path_clone).map_err(|e| format!("Save: {}", e))?;
+        Ok::<(), String>(())
+    })
+    .await
+    .map_err(|e| format!("Join: {}", e))??;
+
+    Ok(cache_path.to_string_lossy().to_string())
+}
+
+/// 提取RAW中分辨率最大的内嵌JPEG原始字节（mmap映射, 零解码零编码）
+fn extract_largest_preview_bytes(path: &std::path::Path) -> Option<Vec<u8>> {
+    let file = std::fs::File::open(path).ok()?;
+    let map = unsafe { memmap2::Mmap::map(&file).ok()? };
+    let data = &map[..];
+
+    let mut best: Option<(u32, u32, usize, usize)> = None;
+
+    let mut i = 0;
+    while i + 3 < data.len() {
+        if data[i] == 0xFF && data[i + 1] == 0xD8 && data[i + 2] == 0xFF {
+            // 找 JPEG 结束标记 EOI (FF D9)
+            let mut j = i + 2;
+            let mut eoi = None;
+            while j + 1 < data.len() {
+                if data[j] == 0xFF && data[j + 1] == 0xD9 { eoi = Some(j + 2); break; }
+                j += 1;
+            }
+            if let Some(end) = eoi {
+                // 解析 SOF 段拿宽高
+                if let Some((w, h)) = jpeg_dimensions(&data[i..end]) {
+                    if best.as_ref().map(|(bw, bh, _, _)| w * h > bw * bh).unwrap_or(true) {
+                        best = Some((w, h, i, end));
+                    }
+                }
+                i = end;
+                continue;
+            }
+        }
+        i += 1;
+    }
+
+    let (w, h, start, end) = best?;
+    // 任意内嵌JPEG都返回（>=600px即可预览，宁可小图不空白）
+    if w.max(h) < 600 { return None; }
+    Some(data[start..end].to_vec())
+}
+
+/// 从 JPEG 字节解析宽高（找 SOF0/SOF2 段）
+fn jpeg_dimensions(data: &[u8]) -> Option<(u32, u32)> {
+    let mut i = 2; // 跳过 SOI
+    while i + 4 < data.len() {
+        if data[i] != 0xFF { i += 1; continue; }
+        let marker = data[i + 1];
+        // SOF0=0xC0, SOF2=0xC2 (部分相机用渐进)
+        if marker == 0xC0 || marker == 0xC2 {
+            if i + 9 < data.len() {
+                let h = u16::from_be_bytes([data[i + 5], data[i + 6]]) as u32;
+                let w = u16::from_be_bytes([data[i + 7], data[i + 8]]) as u32;
+                return Some((w, h));
+            }
+        }
+        // 跳过段（段长在 marker 后两个字节）
+        let len = u16::from_be_bytes([data[i + 2], data[i + 3]]) as usize;
+        if len < 2 { return None; }
+        i += 2 + len;
+    }
+    None
+}
+
 /// Batch + stream thumbnails: sends each result via Channel as it completes.
 /// Frontend renders thumbnails one-by-one for progressive loading UX.
 #[tauri::command]
@@ -462,13 +679,8 @@ fn thumb_single(file_path: &str, max_size: u32) -> Result<String, String> {
     }
 
     let img = if RAW_EXTENSIONS.contains(&ext.as_str()) {
-        // DNG: lossless JPEG in container → rawler handles it natively
-        if ext == "dng" {
-            decode_raw_slow(src)?
-        } else {
-            // Sony/Canon/Nikon/etc: standard JPEG previews in TIFF container
-            extract_raw_preview(src)?
-        }
+        // 所有RAW先提取内嵌JPEG预览（含DNG）
+        extract_raw_preview(src)?
     } else if ext == "jpg" || ext == "jpeg" {
         decode_jpeg_fast(src)?
     } else {
@@ -528,8 +740,11 @@ fn decode_raw_slow(path: &std::path::Path) -> Result<image::DynamicImage, String
     let (w, h) = (raw.width as u32, raw.height as u32);
     if let rawler::RawImageData::Integer(data) = raw.data {
         let max = 65535u16;
-        let mut rgb = vec![0u8; (w * h * 3) as usize];
-        for (i, &pix) in data.iter().enumerate() {
+        // 安全处理: 数据长度可能与 w*h 不完全匹配(带padding), 取最小
+        let expected = (w as usize) * (h as usize);
+        let n = expected.min(data.len());
+        let mut rgb = vec![0u8; n * 3];
+        for (i, &pix) in data[..n].iter().enumerate() {
             let v = ((pix as f32 / max as f32) * 255.0).clamp(0.0, 255.0) as u8;
             rgb[i * 3] = v;
             rgb[i * 3 + 1] = v;

@@ -3631,6 +3631,7 @@ dependencies = [
  "inspect_path",
  "kamadak-exif",
  "md-5",
+ "memmap2",
  "rawler",
  "rayon",
  "serde",
