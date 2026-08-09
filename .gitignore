@@ -5,3 +5,4 @@ dist/
 Thumbs.db
 *.log
 .claude/
+.agents/

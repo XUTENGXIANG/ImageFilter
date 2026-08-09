@@ -1,5 +1,7 @@
 import { useEffect, useState, useMemo } from "react";
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
+import { getCurrentWindow } from "@tauri-apps/api/window";
+import { PixelMenu, SEPARATOR, type MenuItem } from "./contextmenu";
 import { useScanner, type FolderNode } from "./useScanner";
 import type { ScannedPhoto } from "./types";
 
@@ -8,6 +10,37 @@ function formatBytes(bytes: number): string {
   if (bytes < 1048576) return `${(bytes / 1024).toFixed(1)} KB`;
   if (bytes < 1073741824) return `${(bytes / 1048576).toFixed(1)} MB`;
   return `${(bytes / 1073741824).toFixed(2)} GB`;
+}
+
+function TitleBar() {
+  const win = getCurrentWindow();
+  return (
+    <div
+      data-tauri-drag-region
+      className="h-9 flex items-center justify-between px-1 bg-zinc-900 border-b border-zinc-800 select-none flex-shrink-0"
+    >
+      <span className="text-[11px] text-zinc-500 ml-3">PixelFlow</span>
+      <div className="flex items-center h-full">
+        <button onClick={() => win.minimize()}
+          className="w-10 h-full flex items-center justify-center text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800">
+          <svg width="10" height="1"><rect width="10" height="1" fill="currentColor"/></svg>
+        </button>
+        <button onClick={() => win.toggleMaximize()}
+          className="w-10 h-full flex items-center justify-center text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800">
+          <svg width="10" height="10" viewBox="0 0 10 10">
+            <rect x="0.5" y="0.5" width="9" height="9" fill="none" stroke="currentColor" strokeWidth="1"/>
+          </svg>
+        </button>
+        <button onClick={() => win.close()}
+          className="w-10 h-full flex items-center justify-center text-zinc-500 hover:text-red-400 hover:bg-red-400/10">
+          <svg width="10" height="10" viewBox="0 0 10 10">
+            <line x1="0" y1="0" x2="10" y2="10" stroke="currentColor" strokeWidth="1"/>
+            <line x1="10" y1="0" x2="0" y2="10" stroke="currentColor" strokeWidth="1"/>
+          </svg>
+        </button>
+      </div>
+    </div>
+  );
 }
 
 function App() {
@@ -59,6 +92,13 @@ function App() {
     startImport,
   } = useScanner();
 
+  // Disable browser default context menu
+  useEffect(() => {
+    const handler = (e: MouseEvent) => e.preventDefault();
+    window.addEventListener("contextmenu", handler);
+    return () => window.removeEventListener("contextmenu", handler);
+  }, []);
+
   useEffect(() => {
     detectDrives();
     const timer = setInterval(detectDrives, 5000);
@@ -100,6 +140,38 @@ function App() {
     return list;
   }, [photos, sortBy, starFilter, ratings]);
 
+  // Context menu — tracks which photo was right-clicked for menu items
+  const [ctxTarget, setCtxTarget] = useState<ScannedPhoto | null>(null);
+
+  const photoMenuItems = useMemo((): MenuItem[] => {
+    if (!ctxTarget) return [];
+    const sp = ctxTarget;
+    const isSel = selectedPaths.has(sp.path);
+    return [
+      { label: isSel && selectedPaths.size > 1 ? `导入 ${selectedPaths.size} 张` : "导入选中", action: () => startImport(isSel ? [...selectedPaths] : [sp.path]) },
+      { label: "评分", children: [
+        { label: "★★★★★", action: () => setRating(sp.path, 5) },
+        { label: "★★★★", action: () => setRating(sp.path, 4) },
+        { label: "★★★", action: () => setRating(sp.path, 3) },
+        { label: "★★", action: () => setRating(sp.path, 2) },
+        { label: "★", action: () => setRating(sp.path, 1) },
+        { label: "清除评分", action: () => setRating(sp.path, 0) },
+      ]},
+      { label: "查看 EXIF", action: () => { setSelectedPhoto(sp); loadExif(sp); } },
+      { label: "打开位置", action: () => { const dir = sp.path.replace(/\\[^\\]+$/, ""); invoke("open_folder", { path: dir }); } },
+      SEPARATOR,
+      { label: "全选", action: selectAll },
+      { label: "取消选择", action: clearSelection },
+    ];
+  }, [ctxTarget, selectedPaths, startImport, setRating, loadExif, selectAll, clearSelection]);
+
+  const emptyMenuItems = useMemo((): MenuItem[] => [
+    { label: "刷新", action: () => selectedDrive && browseDrive(selectedDrive!) },
+    { label: "导入全部", action: () => startImport(photos.map((p) => p.path)) },
+    { label: "全选", action: selectAll },
+    { label: "AI 分析", action: () => runAnalysis(photos.map((p) => p.path)) },
+  ], [photos, selectedDrive, startImport, selectAll, browseDrive, runAnalysis]);
+
   const previewSrc = selectedPhoto
     ? (thumbnails[selectedPhoto.path] && thumbnails[selectedPhoto.path] !== "__err__"
         ? thumbnails[selectedPhoto.path]
@@ -107,9 +179,13 @@ function App() {
     : null;
 
   return (
-    <div className="flex h-screen w-screen bg-zinc-950 text-zinc-100">
+    <div className="flex flex-col h-screen w-screen bg-zinc-950 text-zinc-100">
+      {/* Custom title bar */}
+      <TitleBar />
+      <div className="flex flex-1 min-h-0">
       {/* === Left Sidebar === */}
-      <aside className="w-60 min-w-[15rem] border-r border-zinc-800 flex flex-col">
+      <PixelMenu items={[{ label: "刷新设备列表", action: detectDrives }]}>
+      <aside className="w-60 min-w-[15rem] border-r border-zinc-800 flex flex-col bg-zinc-950">
         {/* Drive list */}
         <div className="p-3 border-b border-zinc-800">
           <button
@@ -191,10 +267,11 @@ function App() {
             : "就绪"}
         </div>
       </aside>
+      </PixelMenu>
 
       {/* === Center === */}
-      <main className="flex-1 flex flex-col min-w-0">
-        <div className="h-9 border-b border-zinc-800 flex items-center px-4 gap-2 flex-shrink-0 bg-zinc-950">
+      <main className="flex-1 flex flex-col min-w-0 bg-grid">
+        <div className="h-9 border-b border-white/5 flex items-center px-4 gap-2 flex-shrink-0 bg-zinc-950">
           {selectedDrive && photos.length > 0 && (
             <>
               <button onClick={selectAll} className="text-[10px] text-zinc-500 hover:text-zinc-300">全选</button>
@@ -229,6 +306,7 @@ function App() {
           )}
         </div>
 
+        <PixelMenu items={emptyMenuItems}>
         <div className="flex-1 overflow-auto p-3">
           {browsing || loadingFolder ? (
             <div className="flex items-center justify-center h-full">
@@ -250,8 +328,10 @@ function App() {
               )}
             </div>
           ) : (
+            <PixelMenu items={emptyMenuItems}>
             <div className="grid photo-grid gap-2 content-start">
               {sortedPhotos.map((photo) => (
+                <PixelMenu key={photo.path} items={photoMenuItems} onOpenChange={(open) => { if (open) setCtxTarget(photo); }}>
                 <PhotoCard
                   key={photo.path}
                   photo={photo}
@@ -266,6 +346,7 @@ function App() {
                   analysis={analysis[photo.path]}
                   rating={ratings[photo.path]}
                   onRate={(s: number) => setRating(photo.path, s)}
+                  onContextMenu={() => setCtxTarget(photo)}
                   onClick={(e: React.MouseEvent) => {
                     handlePhotoClick(photo.path, { ctrlKey: e.ctrlKey, shiftKey: e.shiftKey });
                     setSelectedPhoto(photo);
@@ -273,13 +354,16 @@ function App() {
                     loadExif(photo);
                   }}
                 />
+                </PixelMenu>
               ))}
             </div>
+            </PixelMenu>
           )}
         </div>
+        </PixelMenu>
 
         {/* Import bar */}
-        <div className="border-t border-zinc-800 flex-shrink-0 bg-zinc-900">
+        <div className="border-t border-white/5 flex-shrink-0 bg-zinc-950">
           <div className="flex items-center gap-2 px-3 py-1.5">
             <button
               onClick={pickDestDir}
@@ -354,7 +438,7 @@ function App() {
       </main>
 
       {/* === Right Panel === */}
-      <aside className="w-72 min-w-[18rem] border-l border-zinc-800 flex flex-col">
+      <aside className="w-72 min-w-[18rem] border-l border-white/5 flex flex-col bg-zinc-950">
         <div className="p-3 border-b border-zinc-800">
           <h2 className="text-xs font-semibold text-zinc-400 uppercase tracking-wider">
             详细信息
@@ -370,23 +454,17 @@ function App() {
           )}
         </div>
       </aside>
+      </div>{/* close inner flex row */}
     </div>
   );
 }
 
 /** Recursive folder tree item */
 function FolderTreeItem({
-  node,
-  activeFolder,
-  onSelect,
-  depth,
-  counting,
+  node, activeFolder, onSelect, depth, counting,
 }: {
-  node: FolderNode;
-  activeFolder: string;
-  onSelect: (path: string) => void;
-  depth: number;
-  counting: boolean;
+  node: FolderNode; activeFolder: string; onSelect: (path: string) => void;
+  depth: number; counting: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const canExpand = node.hasSubdirs || node.children.length > 0;
@@ -432,20 +510,21 @@ function FolderTreeItem({
 }
 
 function PhotoCard({
-  photo, thumbnail, isSelected, isChecked, onClick, onToggle, analysis, rating, onRate,
+  photo, thumbnail, isSelected, isChecked, onClick, onToggle, analysis, rating, onRate, onContextMenu,
 }: {
   photo: ScannedPhoto; thumbnail?: string; isSelected: boolean; isChecked: boolean;
   onClick: (e: React.MouseEvent) => void; onToggle: (e: React.MouseEvent) => void;
   analysis?: { isBlurry?: boolean; isOverexposed?: boolean; isUnderexposed?: boolean; isBestInGroup?: boolean; duplicateGroup?: number };
-  rating?: number; onRate?: (stars: number) => void;
+  rating?: number; onRate?: (stars: number) => void; onContextMenu?: () => void;
 }) {
   return (
     <div
       onClick={onClick}
-      className={`relative aspect-square rounded-lg overflow-hidden cursor-pointer border-2 transition-all group ${
+      onContextMenu={onContextMenu}
+      className={`relative aspect-square rounded-lg overflow-hidden cursor-pointer border-2 border-zinc-800 transition-all group ${
         isSelected
-          ? "border-emerald-400 shadow-lg shadow-emerald-500/20"
-          : "border-zinc-800 hover:border-zinc-600"
+          ? "!border-emerald-400 shadow-lg shadow-emerald-500/20"
+          : ""
       }`}
     >
       {thumbnail ? (
@@ -467,27 +546,13 @@ function PhotoCard({
         {isChecked && <span className="text-white text-[10px] font-bold">✓</span>}
       </button>
       <div className="absolute top-1.5 left-1.5 flex gap-1">
-        {photo.isRaw && (
-          <span className="text-[9px] px-1.5 py-0.5 rounded bg-amber-600/80 text-white font-medium">RAW</span>
-        )}
-        {photo.isVideo && (
-          <span className="text-[9px] px-1.5 py-0.5 rounded bg-blue-600/80 text-white font-medium">视频</span>
-        )}
-        {analysis?.isBlurry && (
-          <span className="text-[9px] px-1.5 py-0.5 rounded bg-red-600/80 text-white font-medium">模糊</span>
-        )}
-        {analysis?.isOverexposed && (
-          <span className="text-[9px] px-1.5 py-0.5 rounded bg-yellow-600/80 text-white font-medium">过曝</span>
-        )}
-        {analysis?.isUnderexposed && (
-          <span className="text-[9px] px-1.5 py-0.5 rounded bg-indigo-600/80 text-white font-medium">欠曝</span>
-        )}
-        {analysis?.duplicateGroup !== undefined && !analysis?.isBestInGroup && (
-          <span className="text-[9px] px-1.5 py-0.5 rounded bg-gray-600/80 text-white font-medium">重复</span>
-        )}
-        {analysis?.isBestInGroup && (
-          <span className="text-[9px] px-1.5 py-0.5 rounded bg-emerald-600/80 text-white font-medium">最佳</span>
-        )}
+        {photo.isRaw && <Badge color="bg-amber-600/80" label="RAW" />}
+        {photo.isVideo && <Badge color="bg-blue-600/80" label="视频" />}
+        {analysis?.isBlurry && <Badge color="bg-red-600/80" label="模糊" />}
+        {analysis?.isOverexposed && <Badge color="bg-yellow-600/80" label="过曝" />}
+        {analysis?.isUnderexposed && <Badge color="bg-indigo-600/80" label="欠曝" />}
+        {analysis?.duplicateGroup !== undefined && !analysis?.isBestInGroup && <Badge color="bg-gray-600/80" label="重复" />}
+        {analysis?.isBestInGroup && <Badge color="bg-emerald-600/80" label="最佳" />}
       </div>
       {(rating ?? 0) > 0 && (
         <div className="absolute bottom-1.5 right-1.5 text-[10px] text-amber-400">
@@ -561,6 +626,10 @@ function Section({ title, children }: { title: string; children: React.ReactNode
       <div className="text-[11px] space-y-1">{children}</div>
     </section>
   );
+}
+
+function Badge({ color, label }: { color: string; label: string }) {
+  return <span className={`text-[9px] px-1.5 py-0.5 rounded ${color} text-white font-medium`}>{label}</span>;
 }
 
 function Row({ label, value }: { label: string; value?: string }) {
