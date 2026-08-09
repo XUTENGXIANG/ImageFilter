@@ -170,7 +170,7 @@ export function useScanner() {
     try {
       const entry = await invoke<FolderEntry>("browse_directory", { dirPath: mountPoint });
       const root: FolderNode = {
-        name: "全部", path: mountPoint, photoCount: entry.photoCount,
+        name: "根目录", path: mountPoint, photoCount: entry.photoCount,
         hasSubdirs: entry.hasSubdirs, children: entry.subfolders.map(entryToNode),
       };
       setFolderTree(root);

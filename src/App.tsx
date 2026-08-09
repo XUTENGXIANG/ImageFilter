@@ -13,6 +13,9 @@ function formatBytes(bytes: number): string {
   return `${(bytes / 1073741824).toFixed(2)} GB`;
 }
 
+// ── 标题栏 ──────────────────────────────────
+// 高度: h-9 (36px)  背景: bg-zinc-900  底部边框: border-zinc-800
+// 拖拽: data-tauri-drag-region  禁止选中: select-none
 function TitleBar() {
   const win = getCurrentWindow();
   return (
@@ -22,16 +25,19 @@ function TitleBar() {
     >
       <span className="text-[11px] text-zinc-500 ml-3">PixelFlow</span>
       <div className="flex items-center h-full">
+        {/* 最小化按钮 — w-10(40px) 文字色 zinc-500 hover变亮 hover背景 zinc-800 */}
         <button onClick={() => win.minimize()}
           className="w-10 h-full flex items-center justify-center text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800">
           <svg width="10" height="1"><rect width="10" height="1" fill="currentColor"/></svg>
         </button>
+        {/* 最大化按钮 */}
         <button onClick={() => win.toggleMaximize()}
           className="w-10 h-full flex items-center justify-center text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800">
           <svg width="10" height="10" viewBox="0 0 10 10">
             <rect x="0.5" y="0.5" width="9" height="9" fill="none" stroke="currentColor" strokeWidth="1"/>
           </svg>
         </button>
+        {/* 关闭按钮 — hover变红 */}
         <button onClick={() => win.close()}
           className="w-10 h-full flex items-center justify-center text-zinc-500 hover:text-red-400 hover:bg-red-400/10">
           <svg width="10" height="10" viewBox="0 0 10 10">
@@ -187,16 +193,15 @@ function App() {
       {/* === Left Sidebar === */}
       <PixelMenu items={[{ label: "刷新设备列表", action: detectDrives }]}>
       <FloatingPanel side="left" title="设备">
-        <div className="p-2 border-b border-zinc-800/50">
-          <button onClick={detectDrives} className="w-full text-left text-xs font-semibold text-zinc-400 uppercase tracking-wider hover:text-zinc-300">
-            设备 ↻
-          </button>
-          <div className="mt-2 space-y-0.5 max-h-36 overflow-auto">
+        <div className="px-3 pt-2 pb-1 flex items-center"> 
+          <button onClick={detectDrives} className="text-[10px] px-3 py-0.5 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-400 transition-colors">刷新</button>
+        </div>
+        <div className="px-2.5 pb-1 space-y-0.5 max-h-36 overflow-auto">
             {drives.map((d) => (
             <button
               key={d.mountPoint}
               onClick={() => browseDrive(d.mountPoint)}
-              className={`w-full text-left px-2 py-1.5 rounded text-xs flex items-center gap-1.5 ${
+              className={`w-full text-left px-1.5 py-1.5 rounded text-xs flex items-center gap-1.5 ${
                 selectedDrive === d.mountPoint
                   ? "bg-emerald-900/30 text-emerald-300"
                   : "hover:bg-zinc-800/50 text-zinc-400"
@@ -210,25 +215,24 @@ function App() {
             <p className="text-zinc-600 text-[11px] px-2">未检测到设备</p>
           )}
         </div>
-        </div>
 
-        <div className="flex-1 overflow-auto p-2">
+        <div className="flex-1 overflow-auto px-1.5 py-1.5">
           {browsing ? (
             <p className="text-[11px] text-emerald-500 px-1 animate-pulse">
               扫描目录结构...
             </p>
           ) : folderTree ? (
             <div>
-              {/* Root "全部" */}
+              <div className="border-t border-zinc-800/50 mb-1.5" />
               <button
                 onClick={() => loadFolder(folderTree.path)}
-                className={`w-full text-left px-2 py-1 rounded text-[11px] mb-0.5 ${
+                className={`w-full text-left px-2 py-1 rounded border text-[11px] mb-1 ${
                   activeFolder === folderTree.path
-                    ? "bg-emerald-900/30 text-emerald-300"
-                    : "text-zinc-400 hover:bg-zinc-800/50"
+                    ? "bg-emerald-900/30 border-emerald-800/50 text-emerald-300"
+                    : "bg-zinc-800/20 border-zinc-800/30 text-zinc-400 hover:bg-zinc-800/40"
                 }`}
               >
-                全部{!counting || folderTree.photoCount > 0 ? ` (${folderTree.photoCount})` : ""}
+                根目录
               </button>
               {folderTree.children.map((child) => (
                 <FolderTreeItem
@@ -256,7 +260,8 @@ function App() {
 
       {/* === Center === */}
       <main className="flex-1 flex flex-col min-w-0 bg-grid">
-        <div className="h-9 border-b border-white/5 flex items-center px-4 gap-2 flex-shrink-0 bg-zinc-950">
+        {/* 工具栏 — 全选/取消/排序/星级筛选/缩略图滑块/AI分析 */}
+<div className="h-9 border-b border-white/5 flex items-center px-4 gap-2 flex-shrink-0 bg-zinc-950">
           {selectedDrive && photos.length > 0 && (
             <>
               <button onClick={selectAll} className="text-[10px] text-zinc-500 hover:text-zinc-300">全选</button>
@@ -292,7 +297,8 @@ function App() {
         </div>
 
         <PixelMenu items={emptyMenuItems}>
-        <div className="flex-1 overflow-auto p-3">
+        {/* 中心主区域 — 照片网格/空状态/加载中 */}
+<div className="flex-1 overflow-auto p-3">
           {browsing || loadingFolder ? (
             <div className="flex items-center justify-center h-full">
               <div className="flex flex-col items-center gap-3">
@@ -347,7 +353,7 @@ function App() {
         </div>
         </PixelMenu>
 
-        {/* Import bar */}
+{/* ═══ 底部导入栏 — 目标文件夹 + 导入按钮 + 进度 ═══ */}
         <div className="border-t border-white/5 flex-shrink-0 bg-zinc-950">
           <div className="flex items-center gap-2 px-3 py-1.5">
             <button
@@ -422,7 +428,7 @@ function App() {
         </div>
       </main>
 
-      {/* === Right Panel === */}
+      {/* ═══ 右侧面板 — EXIF详细信息浮窗 ═══ */}
       <FloatingPanel side="right" title="详细信息">
         <div className="flex-1 overflow-auto p-3">
           {selectedPhoto ? (
@@ -487,6 +493,9 @@ function FolderTreeItem({
   );
 }
 
+{/* ═══ 照片缩略图卡片 ═══ */}
+{/* 尺寸: aspect-square  圆角: rounded-lg  边框: border-2  选中: border-emerald-400 */}
+{/* 角标: RAW(amber) 视频(blue) 模糊(red) 过曝(yellow) 欠曝(indigo) 重复(gray) 最佳(emerald) */}
 function PhotoCard({
   photo, thumbnail, isSelected, isChecked, onClick, onToggle, analysis, rating, onRate, onContextMenu,
 }: {
@@ -554,6 +563,7 @@ function PhotoCard({
   );
 }
 
+{/* ═══ 右侧 EXIF 信息面板 ═══ */}
 function ExifPanel({ photo, previewSrc }: { photo: ScannedPhoto; previewSrc: string | null }) {
   const { exif } = photo;
   return (
