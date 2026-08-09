@@ -15,7 +15,7 @@ import {
 //    支持 theme="outline|filled|two-tone|multi-color" size fill 等
 //    请不要混用 emoji/文字符号 等其他图标方案
 // ═══════════════════════════════════════════════════════════════════
-import { Setting, Sun, Moon, Close } from "@icon-park/react";
+import { Setting, Sun, Moon, Close, Disk, DiskOne, Help } from "@icon-park/react";
 import type { ScannedPhoto } from "./types";
 
 function formatBytes(bytes: number): string {
@@ -32,6 +32,8 @@ function TitleBar({ preloadFull, onTogglePreloadFull }: { preloadFull: boolean; 
   const win = getCurrentWindow();
   // 设置面板开关
   const [showSettings, setShowSettings] = useState(false);
+  // 使用说明开关
+  const [showHelp, setShowHelp] = useState(false);
   // 主题状态: dark=深色(默认) light=浅色
   const [theme, setTheme] = useState<"dark" | "light">(() =>
     (localStorage.getItem("pixelflow-theme") as "dark" | "light") || "dark"
@@ -55,6 +57,13 @@ function TitleBar({ preloadFull, onTogglePreloadFull }: { preloadFull: boolean; 
     >
       <span className="text-[11px] text-zinc-500 ml-3">PixelFlow</span>
       <div className="flex items-center h-full">
+        {/* 使用说明按钮 — IconPark Help */}
+        <button onClick={() => setShowHelp(true)}
+          className="w-8 h-full flex items-center justify-center text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800"
+          title="使用说明"
+        >
+          <Help theme="filled" size="15" strokeWidth={3} />
+        </button>
         {/* 设置按钮 — IconPark Setting */}
         <button onClick={() => setShowSettings(true)}
           className="w-8 h-full flex items-center justify-center text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800"
@@ -127,6 +136,46 @@ function TitleBar({ preloadFull, onTogglePreloadFull }: { preloadFull: boolean; 
               <p className="text-xs text-muted-foreground text-center py-4">
                 更多设置项即将上线...
               </p>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* ═══ 使用说明浮窗 ═══ */}
+      <Dialog open={showHelp} onOpenChange={setShowHelp}>
+        <DialogContent className="w-[480px] max-h-[80vh] overflow-auto">
+          <DialogHeader>
+            <DialogTitle>使用说明</DialogTitle>
+            <DialogDescription>PixelFlow — SD 卡照片智能导入工具</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-2 text-sm">
+            <div className="space-y-2">
+              <Step num="1" title="插入 SD 卡" desc="插入相机存储卡，左栏自动检测设备（U盘图标=可移动设备）" />
+              <Step num="2" title="浏览照片" desc="点设备 → 文件夹树秒出 → 点文件夹查看照片" />
+              <Step num="3" title="筛选/评分" desc="点 AI 分析检查废片，hover 缩略图打星评分" />
+              <Step num="4" title="导入电脑" desc="勾选照片 → 选目标文件夹 → 点导入（支持命名规则）" />
+            </div>
+            <div className="border-t border-border pt-3">
+              <p className="text-xs font-medium text-foreground mb-2">键盘快捷键</p>
+              <div className="grid grid-cols-2 gap-x-4 gap-y-1.5 text-xs text-muted-foreground">
+                <span><kbd className="px-1 bg-muted rounded">J</kbd> 保留(3星)</span>
+                <span><kbd className="px-1 bg-muted rounded">X</kbd> 废弃(0星)</span>
+                <span><kbd className="px-1 bg-muted rounded">1-5</kbd> 星级评分</span>
+                <span><kbd className="px-1 bg-muted rounded">R</kbd> 旋转(查看器)</span>
+                <span><kbd className="px-1 bg-muted rounded">←→</kbd> 切换(查看器)</span>
+                <span><kbd className="px-1 bg-muted rounded">0</kbd> 重置(查看器)</span>
+                <span><kbd className="px-1 bg-muted rounded">Ctrl+点击</kbd> 多选</span>
+                <span><kbd className="px-1 bg-muted rounded">Shift+点击</kbd> 范围选择</span>
+              </div>
+            </div>
+            <div className="border-t border-border pt-3">
+              <p className="text-xs font-medium text-foreground mb-2">右键菜单</p>
+              <div className="grid grid-cols-2 gap-x-4 gap-y-1.5 text-xs text-muted-foreground">
+                <span>照片: 导入/评分/EXIF/打开位置</span>
+                <span>空白: 刷新/导入全部/AI分析</span>
+                <span>设备: 打开/弹出设备(可移动)</span>
+                <span>文件夹: 打开/导入全部</span>
+              </div>
             </div>
           </div>
         </DialogContent>
@@ -281,6 +330,15 @@ function App() {
     { label: "AI 分析", action: () => runAnalysis(photos.map((p) => p.path)) },
   ], [photos, selectedDrive, startImport, selectAll, browseDrive, runAnalysis]);
 
+  // 弹出提示浮窗
+  const [toast, setToast] = useState<string | null>(null);
+  const toastTimer = useRef<number | undefined>(undefined);
+  const showToast = (msg: string) => {
+    setToast(msg);
+    window.clearTimeout(toastTimer.current);
+    toastTimer.current = window.setTimeout(() => setToast(null), 1200);
+  };
+
   // 图片查看器: viewerIndex=null 关闭, 数字=打开第N张
   const [viewerIndex, setViewerIndex] = useState<number | null>(null);
   const [viewerOrigin, setViewerOrigin] = useState<{ x: number; y: number; w: number; h: number } | undefined>(undefined);
@@ -297,15 +355,31 @@ function App() {
       <TitleBar preloadFull={preloadFull} onTogglePreloadFull={togglePreloadFull} />
       <div className="flex flex-1 min-h-0">
       {/* === Left Sidebar === */}
-      <PixelMenu items={[{ label: "刷新设备列表", action: detectDrives }]}>
       <FloatingPanel side="left" title="设备">
-        <div className="px-3 pt-2 pb-1 flex items-center"> 
-          <button onClick={detectDrives} className="text-[10px] px-3 py-0.5 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-400 transition-colors">刷新</button>
+        {/* 面板级右键菜单 (空白区域/刷新按钮区域) */}
+        <PixelMenu items={[
+          { label: "刷新", action: () => selectedDrive && browseDrive(selectedDrive!) },
+          //{ label: "刷新设备列表", action: detectDrives },
+        ]}>
+        <div className="px-3 pt-2 pb-1 flex items-center">
+          <button onClick={() => selectedDrive && browseDrive(selectedDrive!)} className="text-[10px] px-3 py-0.5 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-400 transition-colors">刷新</button>
         </div>
+        {/* 设备列表 — 每个设备独立右键菜单, 可移动设备含"弹出设备" */}
         <div className="px-2.5 pb-1 space-y-0.5 max-h-36 overflow-auto no-scrollbar">
             {drives.map((d) => (
+            <PixelMenu key={d.mountPoint} items={[
+              { label: "打开", action: () => browseDrive(d.mountPoint) },
+              d.driveType === "removable" ? { label: "弹出设备", action: () => {
+                invoke("eject_drive", { mountPoint: d.mountPoint })
+                  .then(() => {
+                    showToast(`已弹出 ${d.mountPoint}`);
+                    setTimeout(detectDrives, 800); // 弹出后刷新设备列表
+                  })
+                  .catch((e) => { console.error("弹出失败:", e); showToast("弹出失败"); });
+              } } : { label: "固定磁盘不可弹出", action: () => {} },
+              { label: "刷新设备列表", action: () => selectedDrive && browseDrive(selectedDrive!)  },
+            ].filter(Boolean) as MenuItem[]}>
             <button
-              key={d.mountPoint}
               onClick={() => browseDrive(d.mountPoint)}
               className={`w-full text-left px-1.5 py-1.5 rounded text-xs flex items-center gap-1.5 ${
                 selectedDrive === d.mountPoint
@@ -313,9 +387,13 @@ function App() {
                   : "hover:bg-zinc-800/50 text-zinc-400"
               }`}
             >
-              <span>{d.driveType === "removable" ? "💾" : "💿"}</span>
+              {/* 可移动设备=U盘图标, 固定磁盘=磁盘图标 (IconPark) */}
+              {d.driveType === "removable"
+                ? <DiskOne theme="filled" size="15" strokeWidth={3} className="text-emerald-500 flex-shrink-0" />
+                : <Disk theme="filled" size="15" strokeWidth={3} className="text-zinc-500 flex-shrink-0" />}
               <span className="truncate">{d.label}</span>
             </button>
+            </PixelMenu>
           ))}
           {drives.length === 0 && (
             <p className="text-zinc-600 text-[11px] px-2">未检测到设备</p>
@@ -361,8 +439,8 @@ function App() {
         <div className="p-2 border-t border-zinc-800 text-[10px] text-zinc-600">
           {browsing ? "浏览中..." : loadingFolder ? "加载中..." : counting ? "正在读取照片数..." : selectedDrive ? `${photos.length} 张` : "就绪"}
         </div>
+        </PixelMenu>
       </FloatingPanel>
-      </PixelMenu>
 
       {/* === Center === */}
       <main className="flex-1 flex flex-col min-w-0 bg-grid">
@@ -565,6 +643,14 @@ function App() {
           thumbnails={thumbnails}
         />
       )}
+      {/* 弹出提示浮窗 — 渐变出现停留1秒后消失 */}
+      <div
+        className={`fixed top-16 left-1/2 -translate-x-1/2 px-4 py-2 rounded-lg bg-emerald-600/90 text-white text-sm shadow-2xl z-[200] transition-all duration-300 ${
+          toast ? "opacity-100 scale-100" : "opacity-0 scale-95 pointer-events-none"
+        }`}
+      >
+        {toast}
+      </div>
     </div>
   );
 }

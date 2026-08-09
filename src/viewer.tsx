@@ -4,7 +4,7 @@ import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 // 🎨 图标约定: 本项目所有图标一律使用 bytedance/IconPark (@icon-park/react)
 //    参考: https://github.com/bytedance/IconPark
 // ═══════════════════════════════════════════════════════
-import { Close, Left, Right } from "@icon-park/react";
+import { Close, Left, Right, RotateOne, Rotate } from "@icon-park/react";
 import type { ScannedPhoto } from "./types";
 
 interface Props {
@@ -26,6 +26,7 @@ export function PhotoViewer({ photos, index, ratings, onRate, onClose, originRec
   const [src, setSrc] = useState<string | null>(null);   // 高清图 (preview/full)
   const [showSrc, setShowSrc] = useState(false);          // 高清图淡入
   const [scale, setScale] = useState(1);
+  const [rotation, setRotation] = useState(0);            // 0/90/180/270
   const [offset, setOffset] = useState({ x: 0, y: 0 });
   const dragRef = useRef<{ startX: number; startY: number; ox: number; oy: number; dragging: boolean }>({ startX: 0, startY: 0, ox: 0, oy: 0, dragging: false });
 
@@ -49,6 +50,7 @@ export function PhotoViewer({ photos, index, ratings, onRate, onClose, originRec
     if (!photo) return;
     setScale(1);
     setOffset({ x: 0, y: 0 });
+    setRotation(0);
     setShowSrc(false);
     setSrc(null);
 
@@ -113,7 +115,8 @@ export function PhotoViewer({ photos, index, ratings, onRate, onClose, originRec
       else if (e.key === "ArrowRight") { setCur((c) => (c + 1) % photos.length); }
       else if (e.key === "=" || e.key === "+") { setScale((s) => Math.min(8, s * 1.25)); }
       else if (e.key === "-") { setScale((s) => Math.max(0.2, s / 1.25)); }
-      else if (e.key === "0") { setScale(1); setOffset({ x: 0, y: 0 }); }
+      else if (e.key === "0") { setScale(1); setOffset({ x: 0, y: 0 }); setRotation(0); }
+      else if (e.key.toLowerCase() === "r") { setRotation((r) => (e.shiftKey ? (r + 270) % 360 : (r + 90) % 360)); }
       else if (e.key.toLowerCase() === "j") { onRate(photo.path, 3); }
       else if (e.key.toLowerCase() === "x") { onRate(photo.path, 0); }
       else if (e.key >= "1" && e.key <= "5") { onRate(photo.path, Number(e.key)); }
@@ -122,12 +125,13 @@ export function PhotoViewer({ photos, index, ratings, onRate, onClose, originRec
     return () => window.removeEventListener("keydown", handler);
   }, [photo, photos.length, onClose, onRate]);
 
-  // Wheel zoom (centered)
+  // Wheel zoom — 缩到<=1时居中(重置offset)
   const onWheel = useCallback((e: React.WheelEvent) => {
     e.preventDefault();
     setScale((s) => {
-      const next = e.deltaY < 0 ? s * 1.15 : s / 1.15;
-      return Math.min(8, Math.max(0.2, next));
+      const next = Math.min(8, Math.max(0.2, e.deltaY < 0 ? s * 1.15 : s / 1.15));
+      if (next <= 1) setOffset({ x: 0, y: 0 });
+      return next;
     });
   }, []);
 
@@ -177,6 +181,15 @@ export function PhotoViewer({ photos, index, ratings, onRate, onClose, originRec
           </span>
         </div>
         <div className="flex items-center gap-1">
+          {/* 旋转按钮 — 逆时针/顺时针 */}
+          <button data-tauri-drag-region={false} onClick={() => setRotation((r) => (r + 270) % 360)}
+            className="w-8 h-8 flex items-center justify-center rounded hover:bg-zinc-800 text-zinc-400"
+            title="逆时针旋转 (Shift+R)"
+          ><Rotate theme="filled" size="15" strokeWidth={3} style={{ transform: "scaleX(-1)" }} /></button>
+          <button data-tauri-drag-region={false} onClick={() => setRotation((r) => (r + 90) % 360)}
+            className="w-8 h-8 flex items-center justify-center rounded hover:bg-zinc-800 text-zinc-400"
+            title="顺时针旋转 (R)"
+          ><RotateOne theme="filled" size="15" strokeWidth={3} /></button>
           {/* 星级 */}
           {[1, 2, 3, 4, 5].map((s) => (
             <button key={s} data-tauri-drag-region={false} onClick={() => onRate(photo.path, rating === s ? 0 : s)}
@@ -204,18 +217,20 @@ export function PhotoViewer({ photos, index, ratings, onRate, onClose, originRec
             />
           ) : null;
         })()}
-        {/* 高清图 (preview/full, 淡入) */}
+        {/* 高清图 (preview/full, 淡入) — 拖拽时禁用transform过渡保证跟手 */}
         {src ? (
           <img
             src={src}
             alt={photo.fileName}
             draggable={false}
-            className="max-w-full max-h-full object-contain transition-transform duration-100"
+            className="max-w-full max-h-full object-contain"
             style={{
-              transform: `translate(${offset.x}px, ${offset.y}px) scale(${scale})`,
+              transform: `translate(${offset.x}px, ${offset.y}px) rotate(${rotation}deg) scale(${scale})`,
               cursor: scale > 1 ? "grab" : "default",
               opacity: showSrc ? 1 : 0,
-              transition: "opacity 300ms ease, transform 100ms",
+              transition: dragRef.current.dragging
+                ? "opacity 300ms ease"
+                : "opacity 300ms ease, transform 100ms",
             }}
           />
         ) : null}
@@ -239,6 +254,7 @@ export function PhotoViewer({ photos, index, ratings, onRate, onClose, originRec
         <span>滚轮 缩放</span>
         <span>拖动 平移</span>
         <span>0 重置</span>
+        <span>R 旋转</span>
         <span>J 保留 / X 废弃 / 1-5 星级</span>
       </div>
     </div>

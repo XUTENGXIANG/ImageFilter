@@ -2,6 +2,7 @@ mod analyzer;
 mod db;
 mod importer;
 mod scanner;
+mod tinydng;
 mod win_wic;
 
 use tauri::Manager;
@@ -46,6 +47,7 @@ pub fn run() {
             db::save_rule,
             scanner::detect_drives,
             scanner::open_folder,
+            scanner::eject_drive,
             scanner::browse_directory,
             scanner::count_folders,
             scanner::scan_directory,

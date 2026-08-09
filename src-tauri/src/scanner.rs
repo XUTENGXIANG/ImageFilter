@@ -116,6 +116,81 @@ pub fn open_folder(path: String) {
     { let _ = std::process::Command::new("xdg-open").arg(&path).spawn(); }
 }
 
+/// 安全弹出可移动设备 — 完整 IOCTL 序列 (与资源管理器"弹出"一致)
+/// CreateFile(GENERIC_READ|GENERIC_WRITE) → LOCK → DISMOUNT → MEDIA_REMOVAL → EJECT
+#[tauri::command]
+pub fn eject_drive(mount_point: String) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        use std::ffi::OsStr;
+        use std::os::windows::ffi::OsStrExt;
+        use windows::core::PCWSTR;
+
+        // 卷路径: "D:" → "\\\\.\\D:"
+        let letter = mount_point.trim_end_matches('\\');
+        let vol_path = format!("\\\\.\\{}", letter);
+        let wide: Vec<u16> = OsStr::new(&vol_path).encode_wide().chain(Some(0)).collect();
+
+        // GENERIC_READ | GENERIC_WRITE (必须, 否则IOCTL失败 ERROR_INVALID_FUNCTION)
+        let handle = unsafe {
+            windows::Win32::Storage::FileSystem::CreateFileW(
+                PCWSTR::from_raw(wide.as_ptr()),
+                (windows::Win32::Foundation::GENERIC_READ | windows::Win32::Foundation::GENERIC_WRITE).0,
+                windows::Win32::Storage::FileSystem::FILE_SHARE_READ
+                    | windows::Win32::Storage::FileSystem::FILE_SHARE_WRITE,
+                None,
+                windows::Win32::Storage::FileSystem::OPEN_EXISTING,
+                windows::Win32::Storage::FileSystem::FILE_ATTRIBUTE_NORMAL,
+                None,
+            )
+        }
+        .map_err(|e| format!("打开卷失败: {}", e))?;
+        if handle.is_invalid() {
+            return Err(format!("打开卷失败: 句柄无效"));
+        }
+
+        let mut ret: u32 = 0;
+        let mut ioctl = |code: u32| -> bool {
+            unsafe {
+                windows::Win32::System::IO::DeviceIoControl(
+                    handle,
+                    code,
+                    None,
+                    0,
+                    None,
+                    0,
+                    Some(&mut ret),
+                    None,
+                )
+            }
+            .is_ok()
+        };
+
+        // 1. 锁卷
+        if !ioctl(0x0009_0018) { unsafe { let _ = windows::Win32::Foundation::CloseHandle(handle); } return Err("锁卷失败（设备被占用?）".into()); }
+        // 2. 卸载卷
+        if !ioctl(0x0009_0020) { unsafe { let _ = windows::Win32::Foundation::CloseHandle(handle); } return Err("卸载卷失败".into()); }
+        // 3. 禁用移除保护
+        let _ = ioctl(0x002D_4804); // IOCTL_STORAGE_MEDIA_REMOVAL (失败忽略)
+        // 4. 弹出介质
+        let ejected = ioctl(0x002D_4808); // IOCTL_STORAGE_EJECT_MEDIA
+
+        unsafe { let _ = windows::Win32::Foundation::CloseHandle(handle); };
+
+        if ejected {
+            Ok(())
+        } else {
+            Err("弹出失败（设备可能不支持热插拔）".into())
+        }
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = mount_point;
+        Err("仅支持 Windows".into())
+    }
+}
+
 /// Detect all drives, removable drives first
 #[tauri::command]
 pub fn detect_drives() -> Vec<DriveInfo> {
@@ -476,7 +551,7 @@ pub async fn get_full_image(file_path: String) -> Result<String, String> {
 
     // RAW: 优先提取最大内嵌JPEG（多数相机=全分辨率,秒开）
     // 无内嵌或太小才全解码
-    let cache_dir = cache_dir().ok_or("No cache dir")?.join("pixel-flow").join("full");
+    let cache_dir = cache_dir().ok_or("No cache dir")?.join("pixel-flow").join("full_v2");
     std::fs::create_dir_all(&cache_dir).map_err(|e| format!("Mkdir: {}", e))?;
 
     use std::hash::{Hash, Hasher};
@@ -498,9 +573,34 @@ pub async fn get_full_image(file_path: String) -> Result<String, String> {
     let cache_path_clone = cache_path.clone();
     let is_dng = ext == "dng";
 
-    // ═══ DNG 独立路径: WIC → rawler 兜底（不内嵌JPEG优先） ═══
+    // ═══ DNG 独立路径: tinydng优先 → WIC → rawler 兜底 ═══
     if is_dng {
-        // 1. Windows WIC 解码 (系统支持时, 300ms级)
+        // 1. tinydng 解码器 (优先, 支持lossless JPEG, 完整demosaic)
+        {
+            let fp = file_path.clone();
+            let cc = cache_path_clone.clone();
+            if tokio::task::spawn_blocking(move || {
+                if let Some(img) = crate::tinydng::decode_dng_tinydng(&fp) {
+                    let max_edge = 5000u32;
+                    let img = if img.width().max(img.height()) > max_edge {
+                        img.resize(max_edge, max_edge, image::imageops::FilterType::Lanczos3)
+                    } else {
+                        img
+                    };
+                    if img.save(&cc).is_ok() {
+                        return Some(cc.to_string_lossy().to_string());
+                    }
+                }
+                None
+            })
+            .await
+            .unwrap_or(None)
+            .is_some()
+            {
+                return Ok(cache_path_clone.to_string_lossy().to_string());
+            }
+        }
+        // 2. Windows WIC 解码 (系统支持时, 300ms级)
         #[cfg(target_os = "windows")]
         {
             let fp = file_path.clone();

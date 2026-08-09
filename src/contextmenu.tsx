@@ -14,7 +14,7 @@ interface Props {
 }
 
 const itemClass = "group text-[11px] leading-none text-zinc-300 rounded-sm flex items-center h-7 px-2 relative select-none outline-none data-[disabled]:text-zinc-600 data-[disabled]:pointer-events-none data-[highlighted]:bg-zinc-700 data-[highlighted]:text-zinc-100 cursor-pointer";
-const contentClass = "min-w-[160px] bg-zinc-800 border border-zinc-700 rounded-lg p-1 shadow-2xl";
+const contentClass = "min-w-[160px] bg-zinc-800 border border-zinc-700 rounded-lg p-1 shadow-2xl z-[100]";
 
 export function PixelMenu({ items, onOpenChange, children }: Props) {
   return (
