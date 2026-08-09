@@ -43,6 +43,15 @@
     ],
     "category": "Utility",
     "copyright": "PixelFlow Contributors",
-    "publisher": "PixelFlow"
+    "publisher": "PixelFlow",
+    "shortDescription": "SD 卡照片智能导入工具",
+    "longDescription": "PixelFlow — 插卡→秒级预览→AI筛废片→一键导入电脑。支持主流 RAW 格式、视频缩略图、星级评分、命名规则导入。",
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser",
+        "languages": ["SimpChinese", "English"],
+        "displayLanguageSelector": true
+      }
+    }
   }
 }

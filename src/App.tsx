@@ -25,6 +25,16 @@ function formatBytes(bytes: number): string {
   return `${(bytes / 1073741824).toFixed(2)} GB`;
 }
 
+/** 自定义圆角 tooltip — 替代浏览器默认方形提示 */
+function Tip({ label, children, className = "" }: { label: string; children: React.ReactNode; className?: string }) {
+  return (
+    <span className={`tooltip-wrap ${className}`}>
+      {children}
+      <span className="tooltip">{label}</span>
+    </span>
+  );
+}
+
 // ── 标题栏 ──────────────────────────────────
 // 高度: h-9 (36px)  背景: bg-zinc-900  底部边框: border-zinc-800
 // 拖拽: data-tauri-drag-region  禁止选中: select-none
@@ -58,43 +68,52 @@ function TitleBar({ preloadFull, onTogglePreloadFull }: { preloadFull: boolean; 
       <span className="text-[11px] text-zinc-500 ml-3">PixelFlow</span>
       <div className="flex items-center h-full">
         {/* 使用说明按钮 — IconPark Help */}
+        <Tip label="使用说明" className="h-full flex items-center">
         <button onClick={() => setShowHelp(true)}
-          className="w-8 h-full flex items-center justify-center text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800"
-          title="使用说明"
+          className="w-8 h-7 flex items-center justify-center text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800/70 rounded"
         >
           <Help theme="filled" size="15" strokeWidth={3} />
         </button>
+        </Tip>
         {/* 设置按钮 — IconPark Setting */}
+        <Tip label="设置" className="h-full flex items-center">
         <button onClick={() => setShowSettings(true)}
-          className="w-8 h-full flex items-center justify-center text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800"
-          title="设置"
+          className="w-8 h-7 flex items-center justify-center text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800/70 rounded"
         >
           <Setting theme="filled" size="15" strokeWidth={3} />
         </button>
+        </Tip>
         {/* 主题切换按钮 — IconPark Sun/Moon */}
+        <Tip label={theme === "dark" ? "切换到浅色主题" : "切换到深色主题"} className="h-full flex items-center">
         <button onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
-          className="w-8 h-full flex items-center justify-center text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800"
-          title={theme === "dark" ? "切换到浅色主题" : "切换到深色主题"}
+          className="w-8 h-7 flex items-center justify-center text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800/70 rounded"
         >
           {theme === "dark" ? <Sun theme="filled" size="15" strokeWidth={3} /> : <Moon theme="filled" size="15" strokeWidth={3} />}
         </button>
+        </Tip>
         {/* 最小化按钮 */}
+        <Tip label="最小化" className="h-full flex items-center">
         <button onClick={() => win.minimize()}
-          className="w-10 h-full flex items-center justify-center text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800">
+          className="w-10 h-7 flex items-center justify-center text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800/70 rounded">
           <svg width="10" height="1"><rect width="10" height="1" fill="currentColor"/></svg>
         </button>
+        </Tip>
         {/* 最大化按钮 */}
+        <Tip label="最大化" className="h-full flex items-center">
         <button onClick={() => win.toggleMaximize()}
-          className="w-10 h-full flex items-center justify-center text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800">
+          className="w-10 h-7 flex items-center justify-center text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800/70 rounded">
           <svg width="10" height="10" viewBox="0 0 10 10">
             <rect x="0.5" y="0.5" width="9" height="9" fill="none" stroke="currentColor" strokeWidth="1"/>
           </svg>
         </button>
+        </Tip>
         {/* 关闭按钮 — IconPark Close, hover变红 */}
+        <Tip label="关闭" className="h-full flex items-center">
         <button onClick={() => win.close()}
-          className="w-10 h-full flex items-center justify-center text-zinc-500 hover:text-red-400 hover:bg-red-400/10">
+          className="w-10 h-7 flex items-center justify-center text-zinc-500 hover:text-red-400 hover:bg-red-400/10 rounded">
           <Close theme="filled" size="14" strokeWidth={4} />
         </button>
+        </Tip>
       </div>
 
       {/* ═══ 设置浮窗（白板占位, 后续填充设置项） ═══ */}

@@ -7,6 +7,16 @@ import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { Close, Left, Right, RotateOne, Rotate } from "@icon-park/react";
 import type { ScannedPhoto } from "./types";
 
+/** 自定义圆角 tooltip 包装 */
+function Tip({ label, children, className = "" }: { label: string; children: React.ReactNode; className?: string }) {
+  return (
+    <span className={`tooltip-wrap ${className}`}>
+      {children}
+      <span className="tooltip">{label}</span>
+    </span>
+  );
+}
+
 interface Props {
   photos: ScannedPhoto[];
   index: number;
@@ -171,8 +181,11 @@ export function PhotoViewer({ photos, index, ratings, onRate, onClose, originRec
       onMouseMove={onMouseMove}
       onMouseUp={onMouseUp}
     >
-      {/* 顶部工具栏 — 可拖拽窗口 */}
-      <div data-tauri-drag-region className="flex items-center justify-between px-4 py-2 flex-shrink-0 select-none">
+      {/* 顶部工具栏 — 可拖拽窗口, 半透明背景不遮挡图片 */}
+      <div data-tauri-drag-region
+        className="flex items-center justify-between px-4 py-2 flex-shrink-0 select-none"
+        style={{ background: "rgba(0,0,0,0.55)" }}
+      >
         <div className="flex items-center gap-2" data-tauri-drag-region>
           <span className="text-xs text-zinc-400">{photo.fileName}</span>
           <span className="text-[10px] text-zinc-600">
@@ -182,23 +195,29 @@ export function PhotoViewer({ photos, index, ratings, onRate, onClose, originRec
         </div>
         <div className="flex items-center gap-1">
           {/* 旋转按钮 — 逆时针/顺时针 */}
+          <Tip label="逆时针旋转 (Shift+R)">
           <button data-tauri-drag-region={false} onClick={() => setRotation((r) => (r + 270) % 360)}
             className="w-8 h-8 flex items-center justify-center rounded hover:bg-zinc-800 text-zinc-400"
-            title="逆时针旋转 (Shift+R)"
           ><Rotate theme="filled" size="15" strokeWidth={3} style={{ transform: "scaleX(-1)" }} /></button>
+          </Tip>
+          <Tip label="顺时针旋转 (R)">
           <button data-tauri-drag-region={false} onClick={() => setRotation((r) => (r + 90) % 360)}
             className="w-8 h-8 flex items-center justify-center rounded hover:bg-zinc-800 text-zinc-400"
-            title="顺时针旋转 (R)"
           ><RotateOne theme="filled" size="15" strokeWidth={3} /></button>
+          </Tip>
           {/* 星级 */}
           {[1, 2, 3, 4, 5].map((s) => (
-            <button key={s} data-tauri-drag-region={false} onClick={() => onRate(photo.path, rating === s ? 0 : s)}
+            <Tip key={s} label={`${s} 星`}>
+            <button data-tauri-drag-region={false} onClick={() => onRate(photo.path, rating === s ? 0 : s)}
               className={`text-sm px-0.5 ${rating >= s ? "text-amber-400" : "text-zinc-600 hover:text-zinc-400"}`}
             >★</button>
+            </Tip>
           ))}
+          <Tip label="关闭 (Esc)">
           <button data-tauri-drag-region={false} onClick={handleClose} className="ml-3 w-8 h-8 flex items-center justify-center rounded hover:bg-zinc-800 text-zinc-400">
             <Close theme="filled" size="16" strokeWidth={3} />
           </button>
+          </Tip>
         </div>
       </div>
 
@@ -236,20 +255,24 @@ export function PhotoViewer({ photos, index, ratings, onRate, onClose, originRec
         ) : null}
 
         {/* 左右切换按钮 — 鼠标静止2秒淡出 */}
+        <Tip label="上一张 (←)" className="absolute left-3 top-1/2 -translate-y-1/2">
         <button
           onClick={(e) => { e.stopPropagation(); setCur((c) => (c - 1 + photos.length) % photos.length); }}
-          className={`absolute left-3 top-1/2 -translate-y-1/2 w-10 h-10 rounded-full bg-black/35 hover:bg-black/60 text-white/80 hover:text-white flex items-center justify-center transition-opacity duration-300 ${showNav ? "opacity-100" : "opacity-0"}`}
-          title="上一张 (←)"
+          className={`w-10 h-10 rounded-full bg-black/35 hover:bg-black/60 text-white/80 hover:text-white flex items-center justify-center transition-opacity duration-300 ${showNav ? "opacity-100" : "opacity-0"}`}
         ><Left theme="filled" size="18" strokeWidth={3} /></button>
+        </Tip>
+        <Tip label="下一张 (→)" className="absolute right-3 top-1/2 -translate-y-1/2">
         <button
           onClick={(e) => { e.stopPropagation(); setCur((c) => (c + 1) % photos.length); }}
-          className={`absolute right-3 top-1/2 -translate-y-1/2 w-10 h-10 rounded-full bg-black/35 hover:bg-black/60 text-white/80 hover:text-white flex items-center justify-center transition-opacity duration-300 ${showNav ? "opacity-100" : "opacity-0"}`}
-          title="下一张 (→)"
+          className={`w-10 h-10 rounded-full bg-black/35 hover:bg-black/60 text-white/80 hover:text-white flex items-center justify-center transition-opacity duration-300 ${showNav ? "opacity-100" : "opacity-0"}`}
         ><Right theme="filled" size="18" strokeWidth={3} /></button>
+        </Tip>
       </div>
 
-      {/* 底部提示 */}
-      <div className="flex items-center justify-center gap-3 py-2 flex-shrink-0 text-[10px] text-zinc-600">
+      {/* 底部提示 — 半透明背景不遮挡图片 */}
+      <div className="flex items-center justify-center gap-3 py-2 flex-shrink-0 text-[10px] text-zinc-600"
+        style={{ background: "rgba(0,0,0,0.55)" }}
+      >
         <span>← → 切换</span>
         <span>滚轮 缩放</span>
         <span>拖动 平移</span>

@@ -62,6 +62,33 @@ body {
 .no-scrollbar::-webkit-scrollbar { display: none; }
 .no-scrollbar { scrollbar-width: none; -ms-overflow-style: none; }
 
+/* 自定义圆角 tooltip — 替代浏览器默认方形提示
+   @layer components: 低于 Tailwind utilities, 调用方传 absolute 时不被 relative 覆盖 */
+@layer components {
+  .tooltip-wrap { position: relative; }
+  .tooltip-wrap .tooltip {
+    position: absolute;
+    top: calc(100% + 8px);
+    left: 50%;
+    transform: translateX(-50%);
+    background: rgba(0, 0, 0, 0.85);
+    color: #e4e4e7;
+    border-radius: 8px;
+    padding: 4px 10px;
+    font-size: 11px;
+    white-space: nowrap;
+    opacity: 0;
+    visibility: hidden;
+    transition: opacity 0.15s ease;
+    pointer-events: none;
+    z-index: 60;
+  }
+  .tooltip-wrap:hover .tooltip {
+    opacity: 1;
+    visibility: visible;
+  }
+}
+
 /* 缩略图滑块 — 双色填充渐变 + 无边框球 */
 .thumb-slider {
   -webkit-appearance: none;

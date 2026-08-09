@@ -6,3 +6,6 @@ Thumbs.db
 *.log
 .claude/
 .agents/
+skills-lock.json
+mkshortcut.ps1
+.agents/
