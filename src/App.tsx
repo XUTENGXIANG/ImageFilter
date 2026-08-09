@@ -18,6 +18,22 @@ function formatBytes(bytes: number): string {
 // 拖拽: data-tauri-drag-region  禁止选中: select-none
 function TitleBar() {
   const win = getCurrentWindow();
+  // 主题状态: dark=深色(默认) light=浅色
+  const [theme, setTheme] = useState<"dark" | "light">(() =>
+    (localStorage.getItem("pixelflow-theme") as "dark" | "light") || "dark"
+  );
+  useEffect(() => {
+    const root = document.documentElement;
+    if (theme === "dark") {
+      root.classList.add("dark");
+      root.setAttribute("data-theme", "dark");
+    } else {
+      root.classList.remove("dark");
+      root.setAttribute("data-theme", "light");
+    }
+    localStorage.setItem("pixelflow-theme", theme);
+  }, [theme]);
+
   return (
     <div
       data-tauri-drag-region
@@ -25,6 +41,13 @@ function TitleBar() {
     >
       <span className="text-[11px] text-zinc-500 ml-3">PixelFlow</span>
       <div className="flex items-center h-full">
+        {/* 主题切换按钮 — ☀️浅色 / 🌙深色 */}
+        <button onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
+          className="w-8 h-full flex items-center justify-center text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800"
+          title={theme === "dark" ? "切换到浅色主题" : "切换到深色主题"}
+        >
+          <span className="text-[12px]">{theme === "dark" ? "☀️" : "🌙"}</span>
+        </button>
         {/* 最小化按钮 — w-10(40px) 文字色 zinc-500 hover变亮 hover背景 zinc-800 */}
         <button onClick={() => win.minimize()}
           className="w-10 h-full flex items-center justify-center text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800">

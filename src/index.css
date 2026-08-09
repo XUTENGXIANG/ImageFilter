@@ -146,3 +146,28 @@ body {
     @apply font-sans;
   }
 }
+
+/* ── 浅色主题：反转 zinc 色板，让硬编码类自动适配 ── */
+:root[data-theme="light"] {
+  --color-zinc-950: oklch(0.985 0 0);   /* 背景 → 近白 */
+  --color-zinc-900: oklch(0.97 0 0);    /* 面板 → 亮灰 */
+  --color-zinc-800: oklch(0.93 0 0);    /* 按钮/面板 */
+  --color-zinc-700: oklch(0.87 0 0);    /* hover */
+  --color-zinc-600: oklch(0.72 0 0);    /* 次要文字 */
+  --color-zinc-500: oklch(0.58 0 0);    /* 次要文字 */
+  --color-zinc-400: oklch(0.45 0 0);    /* 常规文字 */
+  --color-zinc-300: oklch(0.35 0 0);    /* 主文字 */
+  --color-zinc-200: oklch(0.28 0 0);    /* 主文字 */
+  --color-zinc-100: oklch(0.2 0 0);     /* 强调文字 */
+
+  /* 选中态绿色适配 */
+  --color-emerald-900: oklch(0.696 0.17 162.48);
+  --color-emerald-300: oklch(0.696 0.17 162.48);
+  --color-emerald-800: oklch(0.62 0.15 160.5);
+  --color-emerald-700: oklch(0.58 0.13 159);
+
+  /* 点阵背景在浅色下用暗点 */
+  .bg-grid {
+    background-image: radial-gradient(rgba(0,0,0,0.04) 1px, transparent 1px);
+  }
+}
