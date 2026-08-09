@@ -15,7 +15,7 @@ export function FloatingPanel({ side, title, defaultOpen = true, children }: Pro
     // 外层容器常驻 — 宽度类切换触发 CSS transition 平滑动画
     <div className={`flex-shrink-0 self-stretch flex flex-col transition-[width] duration-200 ease-linear ${open ? "w-60" : "w-6"}`}>
       {open ? (
-        <div className="flex-1 min-h-0 flex flex-col bg-zinc-900/95 border border-zinc-800 rounded-2xl shadow-2xl shadow-black/50 m-2 overflow-hidden">
+        <div className="flex-1 min-h-0 flex flex-col bg-zinc-900/95 border border-zinc-800 rounded-2xl shadow-2xl shadow-black/50 m-2 overflow-hidden relative z-20">
           {/* Header with collapse button */}
           <div className="flex items-center justify-between px-3 py-2 border-b border-zinc-800/50 flex-shrink-0">
             <span className="text-xs font-semibold text-zinc-400 tracking-wider">{title}</span>

@@ -62,6 +62,40 @@ body {
 .no-scrollbar::-webkit-scrollbar { display: none; }
 .no-scrollbar { scrollbar-width: none; -ms-overflow-style: none; }
 
+/* 缩略图滑块 — 双色填充渐变 + 无边框球 */
+.thumb-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 4px;
+  border-radius: 9999px;
+  outline: none;
+  /* 默认(深色): 左灰右浅灰 */
+  --thumb-left: #52525b;
+  --thumb-right: #a1a1aa;
+  --thumb-color: #52525b;
+}
+:root[data-theme="light"] .thumb-slider {
+  /* 浅色: 左灰 右淡灰 */
+  --thumb-left: #71717a;
+  --thumb-right: #d4d4d8;
+  --thumb-color: #52525b;
+}
+.thumb-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 12px; height: 12px;
+  border-radius: 9999px;
+  background: var(--thumb-color);
+  border: none;
+  cursor: pointer;
+}
+
+
+/* 照片 hover 描述渐变 — 统一黑色底（深浅主题一致） */
+.hover-overlay {
+  background: linear-gradient(to top, rgba(0, 0, 0, 0.8), transparent);
+}
+
 @theme inline {
   --font-heading: var(--font-sans);
   --font-sans: 'Geist Variable', sans-serif;
@@ -153,6 +187,10 @@ body {
 
 /* ── 浅色主题：反转 zinc 色板，让硬编码类自动适配 ── */
 :root[data-theme="light"] {
+  color-scheme: light;   /* 原生控件(checkbox/slider)跟随浅色 */
+
+  /* 高级选项勾选框 — 底色淡灰 */
+  input[type="checkbox"] { accent-color: rgba(190, 190, 195, 0.9); }
   --color-zinc-950: oklch(0.985 0 0);   /* 背景 → 近白 */
   --color-zinc-900: oklch(0.97 0 0);    /* 面板 → 亮灰 */
   --color-zinc-800: oklch(0.93 0 0);    /* 按钮/面板 */

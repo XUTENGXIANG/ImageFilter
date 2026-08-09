@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo } from "react";
+import { useEffect, useState, useMemo, useRef } from "react";
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { PixelMenu, SEPARATOR, type MenuItem } from "./contextmenu";
@@ -321,7 +321,8 @@ function App() {
 
         <PixelMenu items={emptyMenuItems}>
         {/* 中心主区域 — 照片网格/空状态/加载中 */}
-<div className="flex-1 overflow-auto p-3 no-scrollbar">
+        <ScrollFadeZone>
+<div className="h-full overflow-auto p-3 no-scrollbar">
           {browsing || loadingFolder ? (
             <div className="flex items-center justify-center h-full">
               <div className="flex flex-col items-center gap-3">
@@ -374,6 +375,7 @@ function App() {
             </PixelMenu>
           )}
         </div>
+        </ScrollFadeZone>
         </PixelMenu>
 
 {/* ═══ 底部导入栏 — 目标文件夹 + 导入按钮 + 进度 ═══ */}
@@ -569,7 +571,7 @@ function PhotoCard({
           {"★".repeat(rating ?? 0)}
         </div>
       )}
-      <div className="absolute bottom-0 inset-x-0 bg-gradient-to-t from-black/80 to-transparent p-2 pt-6 opacity-0 group-hover:opacity-100 transition-opacity">
+      <div className="absolute bottom-0 inset-x-0 hover-overlay p-2 pt-6 opacity-0 group-hover:opacity-100 transition-opacity">
         <p className="text-[10px] text-zinc-200 truncate leading-tight">{photo.fileName}</p>
         <p className="text-[9px] text-zinc-400">{formatBytes(photo.fileSize)}</p>
         {onRate && (
@@ -666,13 +668,53 @@ function ThumbSizeSlider() {
     el.textContent = `.photo-grid { grid-template-columns: repeat(${cols}, minmax(0, 1fr)); }`;
     localStorage.setItem("pixelflow-cols", String(cols));
   }, [cols]);
+  const pct = ((cols - 2) / (8 - 2)) * 100;
   return (
     <input
       type="range" min={2} max={8} value={cols}
       onChange={(e) => setCols(Number(e.target.value))}
-      className="w-16 h-4 accent-emerald-500 cursor-pointer"
+      className="thumb-slider w-16 h-4 cursor-pointer"
       title={`${cols} 列`}
+      style={{
+        background: `linear-gradient(to right,
+          var(--thumb-left) 0%, var(--thumb-left) ${pct}%,
+          var(--thumb-right) ${pct}%, var(--thumb-right) 100%)`,
+      }}
     />
+  );
+}
+
+// 滚动遮罩 — 滚动时上下淡入淡出，静止时隐藏
+function ScrollFadeZone({ children }: { children: React.ReactNode }) {
+  const [scrolling, setScrolling] = useState(false);
+  const timer = useRef<number | undefined>(undefined);
+  const zoneRef = useRef<HTMLDivElement>(null);
+
+  // 原生捕获阶段监听所有后代滚动事件
+  useEffect(() => {
+    const el = zoneRef.current;
+    if (!el) return;
+    const handler = () => {
+      setScrolling(true);
+      window.clearTimeout(timer.current);
+      timer.current = window.setTimeout(() => setScrolling(false), 250);
+    };
+    el.addEventListener("scroll", handler, true);
+    return () => el.removeEventListener("scroll", handler, true);
+  }, []);
+
+  const maskCls = `pointer-events-none absolute left-0 right-0 h-7 z-10 transition-opacity duration-300 ${
+    scrolling ? "opacity-100" : "opacity-0"
+  }`;
+
+  return (
+    <div ref={zoneRef} className="relative flex-1 min-h-0">
+      {children}
+      {/* 顶部遮罩 */}
+      <div className={maskCls} style={{ top: 0, background: "linear-gradient(to bottom, var(--color-zinc-950), transparent)" }} />
+      {/* 底部遮罩 */}
+      <div className={maskCls} style={{ bottom: 0, background: "linear-gradient(to top, var(--color-zinc-950), transparent)" }} />
+    </div>
   );
 }
 
