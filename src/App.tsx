@@ -219,7 +219,7 @@ function App() {
         <div className="px-3 pt-2 pb-1 flex items-center"> 
           <button onClick={detectDrives} className="text-[10px] px-3 py-0.5 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-400 transition-colors">刷新</button>
         </div>
-        <div className="px-2.5 pb-1 space-y-0.5 max-h-36 overflow-auto">
+        <div className="px-2.5 pb-1 space-y-0.5 max-h-36 overflow-auto no-scrollbar">
             {drives.map((d) => (
             <button
               key={d.mountPoint}
@@ -239,7 +239,7 @@ function App() {
           )}
         </div>
 
-        <div className="flex-1 overflow-auto px-1.5 py-1.5">
+        <div className="flex-1 overflow-auto px-1.5 py-1.5 no-scrollbar">
           {browsing ? (
             <p className="text-[11px] text-emerald-500 px-1 animate-pulse">
               扫描目录结构...
@@ -321,7 +321,7 @@ function App() {
 
         <PixelMenu items={emptyMenuItems}>
         {/* 中心主区域 — 照片网格/空状态/加载中 */}
-<div className="flex-1 overflow-auto p-3">
+<div className="flex-1 overflow-auto p-3 no-scrollbar">
           {browsing || loadingFolder ? (
             <div className="flex items-center justify-center h-full">
               <div className="flex flex-col items-center gap-3">
@@ -430,7 +430,7 @@ function App() {
             setUseCustomFolder={setUseCustomFolder}
           />
           {importing && importProgress.length > 0 && (
-            <div className="px-3 pb-1.5 max-h-16 overflow-auto">
+            <div className="px-3 pb-1.5 max-h-16 overflow-auto no-scrollbar">
               {importProgress.slice(-4).map((p, i) => (
                 <div key={i} className="text-[9px] text-zinc-500 flex gap-1.5">
                   <span className={
@@ -453,7 +453,7 @@ function App() {
 
       {/* ═══ 右侧面板 — EXIF详细信息浮窗 ═══ */}
       <FloatingPanel side="right" title="详细信息">
-        <div className="flex-1 overflow-auto p-3">
+        <div className="flex-1 overflow-auto p-3 no-scrollbar">
           {selectedPhoto ? (
             <ExifPanel photo={selectedPhoto} previewSrc={previewSrc} />
           ) : (
