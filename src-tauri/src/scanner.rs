@@ -496,15 +496,64 @@ pub async fn get_full_image(file_path: String) -> Result<String, String> {
 
     let src_path = std::path::PathBuf::from(&file_path);
     let cache_path_clone = cache_path.clone();
+    let is_dng = ext == "dng";
 
-    // 路径1: 内嵌最大 JPEG（快, 零IO竞争）— 先显示
-    if let Some(bytes) = extract_largest_preview_bytes(&src_path) {
-        if std::fs::write(&cache_path_clone, &bytes).is_ok() {
-            return Ok(cache_path_clone.to_string_lossy().to_string());
+    // ═══ DNG 独立路径: WIC → rawler 兜底（不内嵌JPEG优先） ═══
+    if is_dng {
+        // 1. Windows WIC 解码 (系统支持时, 300ms级)
+        #[cfg(target_os = "windows")]
+        {
+            let fp = file_path.clone();
+            let cc = cache_path_clone.clone();
+            if tokio::task::spawn_blocking(move || {
+                if let Some(img) = crate::win_wic::decode_raw_wic(&fp) {
+                    let max_edge = 5000u32;
+                    let img = if img.width().max(img.height()) > max_edge {
+                        img.resize(max_edge, max_edge, image::imageops::FilterType::Lanczos3)
+                    } else {
+                        img
+                    };
+                    if img.save(&cc).is_ok() {
+                        return Some(cc.to_string_lossy().to_string());
+                    }
+                }
+                None
+            })
+            .await
+            .unwrap_or(None)
+            .is_some()
+            {
+                return Ok(cache_path_clone.to_string_lossy().to_string());
+            }
+        }
+        // 2. rawler 全分辨率解码 (兜底)
+        tokio::task::spawn_blocking(move || {
+            let img = decode_raw_slow(&src_path)?;
+            let max_edge = 5000u32;
+            let img = if img.width().max(img.height()) > max_edge {
+                img.resize(max_edge, max_edge, image::imageops::FilterType::Lanczos3)
+            } else {
+                img
+            };
+            img.save(&cache_path_clone).map_err(|e| format!("Save: {}", e))?;
+            Ok::<(), String>(())
+        })
+        .await
+        .map_err(|e| format!("Join: {}", e))??;
+        return Ok(cache_path.to_string_lossy().to_string());
+    }
+
+    // ═══ 其他RAW: 内嵌(≥3000px) → WIC → rawler ═══
+    // 路径1: 内嵌最大 JPEG（≥3000px 才算高清, 否则继续解码）
+    if let Some((w, h, bytes)) = extract_largest_preview_full(&src_path) {
+        if w.max(h) >= 3000 {
+            if std::fs::write(&cache_path_clone, &bytes).is_ok() {
+                return Ok(cache_path_clone.to_string_lossy().to_string());
+            }
         }
     }
 
-    // 路径2/3: 全图解码统一信号量(并发1, WIC+rawler共用) — 防磁盘IO竞争
+    // 路径2: 全图解码统一信号量(并发1) — 防磁盘IO竞争
     if my_id != FULL_TASK_ID.load(Ordering::SeqCst) {
         return Err("superseded".into());
     }
@@ -513,7 +562,7 @@ pub async fn get_full_image(file_path: String) -> Result<String, String> {
         return Err("superseded".into());
     }
 
-    // 路径2: WIC 系统 codec（300ms级）
+    // 路径2a: WIC 系统 codec（300ms级）
     #[cfg(target_os = "windows")]
     {
         let fp = file_path.clone();
@@ -540,7 +589,7 @@ pub async fn get_full_image(file_path: String) -> Result<String, String> {
         }
     }
 
-    // 路径3: rawler 全分辨率解码 (极慢兜底)
+    // 路径2b: rawler 全分辨率解码（非DNG, 正常支持）
     tokio::task::spawn_blocking(move || {
         let img = decode_raw_slow(&src_path)?;
         let max_edge = 5000u32;
@@ -558,8 +607,8 @@ pub async fn get_full_image(file_path: String) -> Result<String, String> {
     Ok(cache_path.to_string_lossy().to_string())
 }
 
-/// 提取RAW中分辨率最大的内嵌JPEG原始字节（mmap映射, 零解码零编码）
-fn extract_largest_preview_bytes(path: &std::path::Path) -> Option<Vec<u8>> {
+/// 提取RAW中分辨率最大的内嵌JPEG（返回尺寸+原始字节, mmap零解码）
+fn extract_largest_preview_full(path: &std::path::Path) -> Option<(u32, u32, Vec<u8>)> {
     let file = std::fs::File::open(path).ok()?;
     let map = unsafe { memmap2::Mmap::map(&file).ok()? };
     let data = &map[..];
@@ -591,9 +640,14 @@ fn extract_largest_preview_bytes(path: &std::path::Path) -> Option<Vec<u8>> {
     }
 
     let (w, h, start, end) = best?;
-    // 任意内嵌JPEG都返回（>=600px即可预览，宁可小图不空白）
+    Some((w, h, data[start..end].to_vec()))
+}
+
+/// 预览用: 任意内嵌JPEG都返回（>=600px即可, 宁可小图不空白）
+fn extract_largest_preview_bytes(path: &std::path::Path) -> Option<Vec<u8>> {
+    let (w, h, bytes) = extract_largest_preview_full(path)?;
     if w.max(h) < 600 { return None; }
-    Some(data[start..end].to_vec())
+    Some(bytes)
 }
 
 /// 从 JPEG 字节解析宽高（找 SOF0/SOF2 段）

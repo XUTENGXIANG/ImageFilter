@@ -149,6 +149,18 @@ export function useScanner() {
   const [useCustomFolder, setUseCustomFolder] = useState(false);
   const [importResult, setImportResult] = useState<{ok: number; fail: number} | null>(null);
 
+  // 文件夹原图预加载开关 (不预解码RAW, 仅预载非RAW原图到浏览器缓存)
+  const [preloadFull, setPreloadFull] = useState(() => {
+    try { return localStorage.getItem("pixelflow-preload-full") === "true"; } catch { return false; }
+  });
+  const togglePreloadFull = useCallback(() => {
+    setPreloadFull((prev) => {
+      const next = !prev;
+      try { localStorage.setItem("pixelflow-preload-full", String(next)); } catch {}
+      return next;
+    });
+  }, []);
+
   const detectDrives = useCallback(async () => {
     try {
       const list = await invoke<DriveInfo[]>("detect_drives");
@@ -212,6 +224,19 @@ export function useScanner() {
 
       setPhotos(photosList);
 
+      // 预加载开关开启时: 逐个预载非RAW原图到浏览器缓存(间隔50ms,低IO)
+      if (preloadFull && photosList.length > 0) {
+        const nonRaw = photosList.filter((p) => !p.isRaw);
+        let idx = 0;
+        const preloadTimer = setInterval(() => {
+          if (idx >= nonRaw.length) { clearInterval(preloadTimer); return; }
+          const p = nonRaw[idx++];
+          invoke<string>("get_full_image", { filePath: p.path })
+            .then((diskPath) => { const img = new Image(); img.src = convertFileSrc(diskPath); })
+            .catch(() => {});
+        }, 50);
+      }
+
       if (photosList.length > 0) {
         const paths = photosList.map((p) => p.path);
         const onProgress = new Channel<[string, string]>();
@@ -235,7 +260,7 @@ export function useScanner() {
     } finally {
       setLoadingFolder(false);
     }
-  }, []);
+  }, [preloadFull]);
 
   /** Load EXIF on demand when user selects a photo */
   /** Pick destination folder */
@@ -352,6 +377,6 @@ export function useScanner() {
     customFolder, setCustomFolder, useCustomFolder, setUseCustomFolder,
     analyzing, analysis, runAnalysis, stopAnalysis,
     ratings, setRating, sortBy, setSortBy, starFilter, setStarFilter,
-    pickDestDir, startImport,
+    pickDestDir, startImport, preloadFull, togglePreloadFull,
   };
 }

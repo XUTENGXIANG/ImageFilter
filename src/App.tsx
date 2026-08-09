@@ -8,6 +8,14 @@ import { useScanner, type FolderNode } from "./useScanner";
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription,
 } from "@/components/ui/dialog";
+// ═══════════════════════════════════════════════════════════════════
+// 🎨 图标约定: 本项目所有图标一律使用 bytedance/IconPark (@icon-park/react)
+//    参考: https://github.com/bytedance/IconPark
+//    用法: import { 图标名 } from "@icon-park/react"
+//    支持 theme="outline|filled|two-tone|multi-color" size fill 等
+//    请不要混用 emoji/文字符号 等其他图标方案
+// ═══════════════════════════════════════════════════════════════════
+import { Setting, Sun, Moon, Close } from "@icon-park/react";
 import type { ScannedPhoto } from "./types";
 
 function formatBytes(bytes: number): string {
@@ -20,7 +28,7 @@ function formatBytes(bytes: number): string {
 // ── 标题栏 ──────────────────────────────────
 // 高度: h-9 (36px)  背景: bg-zinc-900  底部边框: border-zinc-800
 // 拖拽: data-tauri-drag-region  禁止选中: select-none
-function TitleBar() {
+function TitleBar({ preloadFull, onTogglePreloadFull }: { preloadFull: boolean; onTogglePreloadFull: () => void }) {
   const win = getCurrentWindow();
   // 设置面板开关
   const [showSettings, setShowSettings] = useState(false);
@@ -47,21 +55,21 @@ function TitleBar() {
     >
       <span className="text-[11px] text-zinc-500 ml-3">PixelFlow</span>
       <div className="flex items-center h-full">
-        {/* 设置按钮 */}
+        {/* 设置按钮 — IconPark Setting */}
         <button onClick={() => setShowSettings(true)}
           className="w-8 h-full flex items-center justify-center text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800"
           title="设置"
         >
-          <span className="text-[12px]">⚙</span>
+          <Setting theme="filled" size="15" strokeWidth={3} />
         </button>
-        {/* 主题切换按钮 — ☀️浅色 / 🌙深色 */}
+        {/* 主题切换按钮 — IconPark Sun/Moon */}
         <button onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
           className="w-8 h-full flex items-center justify-center text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800"
           title={theme === "dark" ? "切换到浅色主题" : "切换到深色主题"}
         >
-          <span className="text-[12px]">{theme === "dark" ? "☀️" : "🌙"}</span>
+          {theme === "dark" ? <Sun theme="filled" size="15" strokeWidth={3} /> : <Moon theme="filled" size="15" strokeWidth={3} />}
         </button>
-        {/* 最小化按钮 — w-10(40px) 文字色 zinc-500 hover变亮 hover背景 zinc-800 */}
+        {/* 最小化按钮 */}
         <button onClick={() => win.minimize()}
           className="w-10 h-full flex items-center justify-center text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800">
           <svg width="10" height="1"><rect width="10" height="1" fill="currentColor"/></svg>
@@ -73,13 +81,10 @@ function TitleBar() {
             <rect x="0.5" y="0.5" width="9" height="9" fill="none" stroke="currentColor" strokeWidth="1"/>
           </svg>
         </button>
-        {/* 关闭按钮 — hover变红 */}
+        {/* 关闭按钮 — IconPark Close, hover变红 */}
         <button onClick={() => win.close()}
           className="w-10 h-full flex items-center justify-center text-zinc-500 hover:text-red-400 hover:bg-red-400/10">
-          <svg width="10" height="10" viewBox="0 0 10 10">
-            <line x1="0" y1="0" x2="10" y2="10" stroke="currentColor" strokeWidth="1"/>
-            <line x1="10" y1="0" x2="0" y2="10" stroke="currentColor" strokeWidth="1"/>
-          </svg>
+          <Close theme="filled" size="14" strokeWidth={4} />
         </button>
       </div>
 
@@ -104,9 +109,22 @@ function TitleBar() {
                 {theme === "dark" ? "🌙 深色" : "☀️ 浅色"}
               </button>
             </div>
+            {/* 文件夹原图预加载 */}
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm text-foreground">文件夹原图预加载</p>
+                <p className="text-xs text-muted-foreground">打开文件夹时预载非RAW原图，查看器秒开（不预解码RAW）</p>
+              </div>
+              <button
+                onClick={onTogglePreloadFull}
+                className={`w-10 h-6 rounded-full relative transition-colors ${preloadFull ? "bg-emerald-500" : "bg-muted"}`}
+              >
+                <span className={`absolute top-0.5 w-5 h-5 rounded-full bg-white shadow transition-all ${preloadFull ? "left-[18px]" : "left-0.5"}`} />
+              </button>
+            </div>
             {/* 更多设置占位 */}
             <div className="border-t border-border pt-3">
-              <p className="text-xs text-muted-foreground text-center py-6">
+              <p className="text-xs text-muted-foreground text-center py-4">
                 更多设置项即将上线...
               </p>
             </div>
@@ -164,6 +182,8 @@ function App() {
     setFileRule,
     pickDestDir,
     startImport,
+    preloadFull,
+    togglePreloadFull,
   } = useScanner();
 
   // Disable browser default context menu
@@ -263,6 +283,7 @@ function App() {
 
   // 图片查看器: viewerIndex=null 关闭, 数字=打开第N张
   const [viewerIndex, setViewerIndex] = useState<number | null>(null);
+  const [viewerOrigin, setViewerOrigin] = useState<{ x: number; y: number; w: number; h: number } | undefined>(undefined);
 
   const previewSrc = selectedPhoto
     ? (thumbnails[selectedPhoto.path] && thumbnails[selectedPhoto.path] !== "__err__"
@@ -273,7 +294,7 @@ function App() {
   return (
     <div className="flex flex-col h-screen w-screen bg-zinc-950 text-zinc-100">
       {/* Custom title bar */}
-      <TitleBar />
+      <TitleBar preloadFull={preloadFull} onTogglePreloadFull={togglePreloadFull} />
       <div className="flex flex-1 min-h-0">
       {/* === Left Sidebar === */}
       <PixelMenu items={[{ label: "刷新设备列表", action: detectDrives }]}>
@@ -423,7 +444,12 @@ function App() {
                   analysis={analysis[photo.path]}
                   rating={ratings[photo.path]}
                   onRate={(s: number) => setRating(photo.path, s)}
-                  onDoubleClick={() => setViewerIndex(sortedPhotos.indexOf(photo))}
+                  onDoubleClick={(e: React.MouseEvent) => {
+                    if (photo.isVideo) return; // 视频暂不支持预览
+                    const r = e.currentTarget.getBoundingClientRect();
+                    setViewerOrigin({ x: r.x, y: r.y, w: r.width, h: r.height });
+                    setViewerIndex(sortedPhotos.indexOf(photo));
+                  }}
                   onContextMenu={() => setCtxTarget(photo)}
                   onClick={(e: React.MouseEvent) => {
                     handlePhotoClick(photo.path, { ctrlKey: e.ctrlKey, shiftKey: e.shiftKey });
@@ -535,6 +561,8 @@ function App() {
           ratings={ratings}
           onRate={setRating}
           onClose={() => setViewerIndex(null)}
+          originRect={viewerOrigin}
+          thumbnails={thumbnails}
         />
       )}
     </div>
@@ -600,7 +628,7 @@ function PhotoCard({
   photo: ScannedPhoto; thumbnail?: string; isSelected: boolean; isChecked: boolean;
   onClick: (e: React.MouseEvent) => void; onToggle: (e: React.MouseEvent) => void;
   analysis?: { isBlurry?: boolean; isOverexposed?: boolean; isUnderexposed?: boolean; isBestInGroup?: boolean; duplicateGroup?: number };
-  rating?: number; onRate?: (stars: number) => void; onContextMenu?: () => void; onDoubleClick?: () => void;
+  rating?: number; onRate?: (stars: number) => void; onContextMenu?: () => void; onDoubleClick?: (e: React.MouseEvent) => void;
 }) {
   return (
     <div

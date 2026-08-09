@@ -1,5 +1,10 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
+// ═══════════════════════════════════════════════════════
+// 🎨 图标约定: 本项目所有图标一律使用 bytedance/IconPark (@icon-park/react)
+//    参考: https://github.com/bytedance/IconPark
+// ═══════════════════════════════════════════════════════
+import { Close, Left, Right } from "@icon-park/react";
 import type { ScannedPhoto } from "./types";
 
 interface Props {
@@ -8,33 +13,52 @@ interface Props {
   ratings: Record<string, number>;
   onRate: (path: string, stars: number) => void;
   onClose: () => void;
+  originRect?: { x: number; y: number; w: number; h: number }; // 缩略图位置
+  thumbnails: Record<string, string>; // 已有缩略图缓存 (秒显)
 }
 
-export function PhotoViewer({ photos, index, ratings, onRate, onClose }: Props) {
+export function PhotoViewer({ photos, index, ratings, onRate, onClose, originRect, thumbnails }: Props) {
   const [cur, setCur] = useState(index);
+  // 缩放动画: entering=true 从缩略图位置放大; leaving=true 缩回后关闭
+  const [entered, setEntered] = useState(false);
+  const [leaving, setLeaving] = useState(false);
   const lastSwitchRef = useRef(0);
-  const [src, setSrc] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
+  const [src, setSrc] = useState<string | null>(null);   // 高清图 (preview/full)
+  const [showSrc, setShowSrc] = useState(false);          // 高清图淡入
   const [scale, setScale] = useState(1);
   const [offset, setOffset] = useState({ x: 0, y: 0 });
   const dragRef = useRef<{ startX: number; startY: number; ox: number; oy: number; dragging: boolean }>({ startX: 0, startY: 0, ox: 0, oy: 0, dragging: false });
 
   const photo = photos[cur];
 
+  // 进入动画: 先渲染缩略图矩形, 30ms后过渡到全屏
+  useEffect(() => {
+    const t = window.setTimeout(() => setEntered(true), 30);
+    return () => window.clearTimeout(t);
+  }, []);
+
+  // 关闭: 先缩回缩略图位置再真正关闭
+  const handleClose = () => {
+    if (leaving) return;
+    setLeaving(true);
+    window.setTimeout(onClose, 250);
+  };
+
   // 渐进加载: 先内嵌JPEG秒开, 后台全解码后无感替换
   useEffect(() => {
     if (!photo) return;
     setScale(1);
     setOffset({ x: 0, y: 0 });
+    setShowSrc(false);
+    setSrc(null);
 
     // 非RAW直接显示原文件（零解码）
     if (!photo.isRaw) {
       setSrc(convertFileSrc(photo.path));
-      setLoading(false);
+      setShowSrc(true);
       return;
     }
 
-    setLoading(true);
     let cancelled = false;
     let fullTimer: number | undefined;
 
@@ -45,9 +69,9 @@ export function PhotoViewer({ photos, index, ratings, onRate, onClose }: Props) 
     const doPreview = () => {
       invoke<string>("get_preview_image", { filePath: photo.path })
         .then((p) => {
-          if (!cancelled) { setSrc(convertFileSrc(p)); setLoading(false); }
+          if (!cancelled) { setSrc(convertFileSrc(p)); setShowSrc(true); }
         })
-        .catch(() => { if (!cancelled) setLoading(false); });
+        .catch(() => {});
     };
     if (rapid) {
       const pt = window.setTimeout(doPreview, 120);
@@ -59,7 +83,7 @@ export function PhotoViewer({ photos, index, ratings, onRate, onClose }: Props) 
     fullTimer = window.setTimeout(() => {
       invoke<string>("get_full_image", { filePath: photo.path })
         .then((p) => {
-          if (!cancelled) setSrc(convertFileSrc(p));
+          if (!cancelled) { setSrc(convertFileSrc(p)); setShowSrc(true); }
         })
         .catch(() => {});
     }, 300);
@@ -84,7 +108,7 @@ export function PhotoViewer({ photos, index, ratings, onRate, onClose }: Props) 
   // Keyboard: ←/→ navigate, Esc close, +/- zoom, J/X/1-5 rate
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if (e.key === "Escape") { onClose(); }
+      if (e.key === "Escape") { handleClose(); }
       else if (e.key === "ArrowLeft") { setCur((c) => (c - 1 + photos.length) % photos.length); }
       else if (e.key === "ArrowRight") { setCur((c) => (c + 1) % photos.length); }
       else if (e.key === "=" || e.key === "+") { setScale((s) => Math.min(8, s * 1.25)); }
@@ -125,9 +149,19 @@ export function PhotoViewer({ photos, index, ratings, onRate, onClose }: Props) 
   if (!photo) return null;
   const rating = ratings[photo.path] || 0;
 
+  // 缩放动画 clip-path: 始终保留属性, 从缩略图矩形过渡到全屏 inset(0)
+  const clipPathVal = originRect && (!entered || leaving)
+    ? `inset(${originRect.y}px calc(100% - ${originRect.x + originRect.w}px) calc(100% - ${originRect.y + originRect.h}px) ${originRect.x}px round 12px)`
+    : "inset(0px round 0px)";
+  const clipStyle: React.CSSProperties = {
+    clipPath: clipPathVal,
+    transition: "clip-path 250ms cubic-bezier(0.4, 0, 0.2, 1)",
+  };
+
   return (
     <div
-      className="fixed inset-0 z-50 bg-black/95 flex flex-col"
+      className="fixed inset-0 z-50 bg-black/95 flex flex-col overflow-hidden"
+      style={clipStyle}
       onWheel={onWheel}
       onMouseDown={onMouseDown}
       onMouseMove={onMouseMove}
@@ -149,20 +183,29 @@ export function PhotoViewer({ photos, index, ratings, onRate, onClose }: Props) 
               className={`text-sm px-0.5 ${rating >= s ? "text-amber-400" : "text-zinc-600 hover:text-zinc-400"}`}
             >★</button>
           ))}
-          <button data-tauri-drag-region={false} onClick={onClose} className="ml-3 w-8 h-8 flex items-center justify-center rounded hover:bg-zinc-800 text-zinc-400">
-            ✕
+          <button data-tauri-drag-region={false} onClick={handleClose} className="ml-3 w-8 h-8 flex items-center justify-center rounded hover:bg-zinc-800 text-zinc-400">
+            <Close theme="filled" size="16" strokeWidth={3} />
           </button>
         </div>
       </div>
 
-      {/* 图片区 */}
+      {/* 图片区 — 缩略图铺底秒显, 高清图加载后淡入替换 */}
       <div className="flex-1 relative overflow-hidden flex items-center justify-center select-none">
-        {loading && !src ? (
-          <div className="flex flex-col items-center gap-3">
-            <div className="w-8 h-8 border-2 border-emerald-500 border-t-transparent rounded-full animate-spin" />
-            <p className="text-zinc-500 text-xs">解码原图中...</p>
-          </div>
-        ) : src ? (
+        {/* 缩略图 (秒显) */}
+        {(() => {
+          const thumb = thumbnails[photo.path];
+          return thumb && thumb !== "__err__" ? (
+            <img
+              src={thumb}
+              alt=""
+              draggable={false}
+              className="absolute inset-0 w-full h-full object-contain transition-opacity duration-300"
+              style={{ opacity: src && showSrc ? 0 : 1 }}
+            />
+          ) : null;
+        })()}
+        {/* 高清图 (preview/full, 淡入) */}
+        {src ? (
           <img
             src={src}
             alt={photo.fileName}
@@ -171,6 +214,8 @@ export function PhotoViewer({ photos, index, ratings, onRate, onClose }: Props) 
             style={{
               transform: `translate(${offset.x}px, ${offset.y}px) scale(${scale})`,
               cursor: scale > 1 ? "grab" : "default",
+              opacity: showSrc ? 1 : 0,
+              transition: "opacity 300ms ease, transform 100ms",
             }}
           />
         ) : null}
@@ -178,14 +223,14 @@ export function PhotoViewer({ photos, index, ratings, onRate, onClose }: Props) 
         {/* 左右切换按钮 — 鼠标静止2秒淡出 */}
         <button
           onClick={(e) => { e.stopPropagation(); setCur((c) => (c - 1 + photos.length) % photos.length); }}
-          className={`absolute left-3 top-1/2 -translate-y-1/2 w-10 h-10 rounded-full bg-black/35 hover:bg-black/60 text-white/80 hover:text-white flex items-center justify-center text-lg transition-opacity duration-300 ${showNav ? "opacity-100" : "opacity-0"}`}
+          className={`absolute left-3 top-1/2 -translate-y-1/2 w-10 h-10 rounded-full bg-black/35 hover:bg-black/60 text-white/80 hover:text-white flex items-center justify-center transition-opacity duration-300 ${showNav ? "opacity-100" : "opacity-0"}`}
           title="上一张 (←)"
-        >&lt;</button>
+        ><Left theme="filled" size="18" strokeWidth={3} /></button>
         <button
           onClick={(e) => { e.stopPropagation(); setCur((c) => (c + 1) % photos.length); }}
-          className={`absolute right-3 top-1/2 -translate-y-1/2 w-10 h-10 rounded-full bg-black/35 hover:bg-black/60 text-white/80 hover:text-white flex items-center justify-center text-lg transition-opacity duration-300 ${showNav ? "opacity-100" : "opacity-0"}`}
+          className={`absolute right-3 top-1/2 -translate-y-1/2 w-10 h-10 rounded-full bg-black/35 hover:bg-black/60 text-white/80 hover:text-white flex items-center justify-center transition-opacity duration-300 ${showNav ? "opacity-100" : "opacity-0"}`}
           title="下一张 (→)"
-        >&gt;</button>
+        ><Right theme="filled" size="18" strokeWidth={3} /></button>
       </div>
 
       {/* 底部提示 */}
