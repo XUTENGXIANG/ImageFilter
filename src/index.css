@@ -52,6 +52,10 @@ body {
   color: #fafafa;
 }
 
+img {
+  image-orientation: from-image;
+}
+
 /* Dot grid on center area */
 .bg-grid {
   background-image: radial-gradient(rgba(255,255,255,0.025) 1px, transparent 1px);

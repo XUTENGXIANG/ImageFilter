@@ -118,15 +118,15 @@ function TitleBar({ preloadFull, onTogglePreloadFull }: { preloadFull: boolean; 
                 {theme === "dark" ? "🌙 深色" : "☀️ 浅色"}
               </button>
             </div>
-            {/* 文件夹原图预加载 */}
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-sm text-foreground">文件夹原图预加载</p>
-                <p className="text-xs text-muted-foreground">打开文件夹时预载非RAW原图，查看器秒开（不预解码RAW）</p>
+            {/* 可见区域全图预加载 */}
+            <div className="flex items-start justify-between gap-3">
+              <div className="flex-1 min-w-0">
+                <p className="text-sm text-foreground">可见区域全图预加载</p>
+                <p className="text-xs text-muted-foreground">预载当前可见区域所有照片全图，打开查看器更快；开关立即生效，无需重启</p>
               </div>
               <button
                 onClick={onTogglePreloadFull}
-                className={`w-10 h-6 rounded-full relative transition-colors ${preloadFull ? "bg-emerald-500" : "bg-muted"}`}
+                className={`mt-0.5 w-10 h-6 rounded-full relative shrink-0 transition-colors ${preloadFull ? "bg-emerald-500" : "bg-muted"}`}
               >
                 <span className={`absolute top-0.5 w-5 h-5 rounded-full bg-white shadow transition-all ${preloadFull ? "left-[18px]" : "left-0.5"}`} />
               </button>
@@ -342,6 +342,64 @@ function App() {
   // 图片查看器: viewerIndex=null 关闭, 数字=打开第N张
   const [viewerIndex, setViewerIndex] = useState<number | null>(null);
   const [viewerOrigin, setViewerOrigin] = useState<{ x: number; y: number; w: number; h: number } | undefined>(undefined);
+
+  // 可见区域全图预加载
+  const [visiblePaths, setVisiblePaths] = useState<Set<string>>(new Set());
+  const preloadVersionRef = useRef(0);
+
+  useEffect(() => {
+    setVisiblePaths(new Set());
+    const observer = new IntersectionObserver((entries) => {
+      setVisiblePaths((prev) => {
+        let changed = false;
+        const next = new Set(prev);
+        for (const entry of entries) {
+          const path = (entry.target as HTMLElement).dataset.photoPath;
+          if (!path) continue;
+          if (entry.isIntersecting) {
+            if (!next.has(path)) { next.add(path); changed = true; }
+          } else if (next.delete(path)) {
+            changed = true;
+          }
+        }
+        return changed ? next : prev;
+      });
+    }, { rootMargin: "250px", threshold: 0.01 });
+    document.querySelectorAll<HTMLElement>("[data-photo-path]").forEach((el) => observer.observe(el));
+    return () => observer.disconnect();
+  }, [sortedPhotos]);
+
+  useEffect(() => {
+    const version = ++preloadVersionRef.current;
+    if (!preloadFull || viewerIndex !== null) return;
+    const visiblePhotoPaths = [...visiblePaths].filter((path) =>
+      photos.some((p) => p.path === path && !p.isVideo)
+    );
+    if (visiblePhotoPaths.length === 0) return;
+
+    const timer = window.setTimeout(() => {
+      const queue = [...visiblePhotoPaths];
+      let cancelled = false;
+      const next = () => {
+        if (cancelled || version !== preloadVersionRef.current) return;
+        const path = queue.shift();
+        if (!path) return;
+        invoke<string>("get_full_image", { filePath: path })
+          .then((diskPath) => new Promise<void>((resolve) => {
+            const img = new Image();
+            img.onload = () => resolve();
+            img.onerror = () => resolve();
+            img.src = convertFileSrc(diskPath);
+          }))
+          .catch(() => {})
+          .finally(() => next());
+      };
+      next();
+      return () => { cancelled = true; };
+    }, 300);
+
+    return () => window.clearTimeout(timer);
+  }, [preloadFull, viewerIndex, visiblePaths, photos]);
 
   const previewSrc = selectedPhoto
     ? (thumbnails[selectedPhoto.path] && thumbnails[selectedPhoto.path] !== "__err__"
@@ -718,6 +776,7 @@ function PhotoCard({
 }) {
   return (
     <div
+      data-photo-path={photo.path}
       onClick={onClick}
       onDoubleClick={onDoubleClick}
       onContextMenu={onContextMenu}

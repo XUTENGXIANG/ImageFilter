@@ -13,6 +13,92 @@ fn raw_decode_sem() -> &'static Semaphore {
 /// 全图解码任务号 — 新请求递增; 旧请求检测到被取代即放弃
 static FULL_TASK_ID: AtomicU64 = AtomicU64::new(0);
 
+const FULL_MIN_EDGE: u32 = 1500;
+
+fn is_full_res_image(img: &image::DynamicImage) -> bool {
+    img.width().max(img.height()) >= FULL_MIN_EDGE
+}
+
+fn is_full_res_cache(path: &std::path::Path) -> bool {
+    image::image_dimensions(path)
+        .map(|(w, h)| w.max(h) >= FULL_MIN_EDGE)
+        .unwrap_or(false)
+}
+
+fn save_full_res_image(
+    img: image::DynamicImage,
+    source_path: &std::path::Path,
+    cache_path: &std::path::Path,
+) -> Result<(), String> {
+    let img = apply_exif_orientation(source_path, img);
+    if !is_full_res_image(&img) {
+        return Err("decode returned low resolution".into());
+    }
+    let max_edge = 5000u32;
+    let img = if img.width().max(img.height()) > max_edge {
+        img.resize(max_edge, max_edge, image::imageops::FilterType::Lanczos3)
+    } else {
+        img
+    };
+    img.save(cache_path).map_err(|e| format!("Save: {}", e))
+}
+
+fn save_jpeg_quality(
+    img: &image::DynamicImage,
+    path: &std::path::Path,
+    quality: u8,
+) -> Result<(), String> {
+    let file = std::fs::File::create(path).map_err(|e| format!("Create: {}", e))?;
+    let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(file, quality);
+    img.write_with_encoder(encoder)
+        .map_err(|e| format!("Encode: {}", e))
+}
+
+fn read_exif_orientation(path: &std::path::Path) -> Option<u16> {
+    let file = std::fs::File::open(path).ok()?;
+    let mut reader = std::io::BufReader::new(file);
+    let exif_reader = exif::Reader::new().read_from_container(&mut reader).ok()?;
+    for field in exif_reader.fields() {
+        if field.tag == exif::Tag::Orientation {
+            return field.value.get_uint(0).map(|v| v as u16);
+        }
+    }
+    None
+}
+
+fn transpose_image(img: &image::DynamicImage) -> image::DynamicImage {
+    let (w, h) = (img.width(), img.height());
+    let rgb = img.to_rgb8();
+    let mut out = image::RgbImage::new(h, w);
+    for y in 0..h {
+        for x in 0..w {
+            out.put_pixel(y, x, *rgb.get_pixel(x, y));
+        }
+    }
+    image::DynamicImage::ImageRgb8(out)
+}
+
+fn apply_exif_orientation(
+    path: &std::path::Path,
+    img: image::DynamicImage,
+) -> image::DynamicImage {
+    let Some(orientation) = read_exif_orientation(path) else {
+        return img;
+    };
+    let (swap, flip_x, flip_y) = rawler::decoders::Orientation::from_u16(orientation).to_flips();
+    let mut img = img;
+    if flip_x {
+        img = img.fliph();
+    }
+    if flip_y {
+        img = img.flipv();
+    }
+    if swap {
+        img = transpose_image(&img);
+    }
+    img
+}
+
 const SUPPORTED_EXTENSIONS: &[&str] = &[
     "jpg", "jpeg", "png", "gif", "bmp", "tiff", "tif", "webp",
     "arw", "cr2", "cr3", "nef", "dng", "orf", "rw2", "raf", "pef", "srw", "raw",
@@ -501,7 +587,7 @@ pub async fn get_preview_image(file_path: String) -> Result<String, String> {
         return Ok(file_path);
     }
 
-    let cache_dir = cache_dir().ok_or("No cache dir")?.join("pixel-flow").join("preview");
+    let cache_dir = cache_dir().ok_or("No cache dir")?.join("pixel-flow").join("preview_v3");
     std::fs::create_dir_all(&cache_dir).map_err(|e| format!("Mkdir: {}", e))?;
 
     use std::hash::{Hash, Hasher};
@@ -518,10 +604,18 @@ pub async fn get_preview_image(file_path: String) -> Result<String, String> {
         return Ok(cache_path.to_string_lossy().to_string());
     }
 
-    // 提取内嵌最大 JPEG 字节（mmap扫描+直接写盘, 零解码零编码, 毫秒级）
+    // 提取内嵌最大 JPEG：方向正常时零拷贝原字节（最快+质量无损），特殊方向才解码校正
     if let Some(bytes) = extract_largest_preview_bytes(src) {
-        if std::fs::write(&cache_path, &bytes).is_ok() {
-            return Ok(cache_path.to_string_lossy().to_string());
+        let orientation = read_exif_orientation(src);
+        if orientation.is_none() || orientation == Some(1) {
+            if std::fs::write(&cache_path, &bytes).is_ok() {
+                return Ok(cache_path.to_string_lossy().to_string());
+            }
+        } else if let Ok(img) = image::load_from_memory(&bytes) {
+            let oriented = apply_exif_orientation(src, img);
+            if save_jpeg_quality(&oriented, &cache_path, 92).is_ok() {
+                return Ok(cache_path.to_string_lossy().to_string());
+            }
         }
     }
 
@@ -551,7 +645,7 @@ pub async fn get_full_image(file_path: String) -> Result<String, String> {
 
     // RAW: 优先提取最大内嵌JPEG（多数相机=全分辨率,秒开）
     // 无内嵌或太小才全解码
-    let cache_dir = cache_dir().ok_or("No cache dir")?.join("pixel-flow").join("full_v2");
+    let cache_dir = cache_dir().ok_or("No cache dir")?.join("pixel-flow").join("full_v3");
     std::fs::create_dir_all(&cache_dir).map_err(|e| format!("Mkdir: {}", e))?;
 
     use std::hash::{Hash, Hasher};
@@ -566,28 +660,37 @@ pub async fn get_full_image(file_path: String) -> Result<String, String> {
     let cache_path = cache_dir.join(&cache_name);
 
     if cache_path.exists() {
-        return Ok(cache_path.to_string_lossy().to_string());
+        if is_full_res_cache(&cache_path) {
+            return Ok(cache_path.to_string_lossy().to_string());
+        }
+        let _ = std::fs::remove_file(&cache_path);
     }
 
     let src_path = std::path::PathBuf::from(&file_path);
     let cache_path_clone = cache_path.clone();
     let is_dng = ext == "dng";
 
-    // ═══ DNG 独立路径: tinydng优先 → WIC → rawler 兜底 ═══
+    // ═══ DNG 独立路径: rawler完整显影优先 → tinydng → WIC 兜底 ═══
     if is_dng {
-        // 1. tinydng 解码器 (优先, 支持lossless JPEG, 完整demosaic)
+        if my_id != FULL_TASK_ID.load(Ordering::SeqCst) {
+            return Err("superseded".into());
+        }
+        let _permit = raw_decode_sem().acquire().await.map_err(|e| e.to_string())?;
+        if my_id != FULL_TASK_ID.load(Ordering::SeqCst) {
+            return Err("superseded".into());
+        }
+        // 1. rawler 完整显影 (raw_to_srgb, 与 Windows Photos 同档清晰度)
         {
             let fp = file_path.clone();
             let cc = cache_path_clone.clone();
             if tokio::task::spawn_blocking(move || {
+                if let Ok(img) = decode_raw_slow(std::path::Path::new(&fp)) {
+                    if save_full_res_image(img, std::path::Path::new(&fp), &cc).is_ok() {
+                        return Some(cc.to_string_lossy().to_string());
+                    }
+                }
                 if let Some(img) = crate::tinydng::decode_dng_tinydng(&fp) {
-                    let max_edge = 5000u32;
-                    let img = if img.width().max(img.height()) > max_edge {
-                        img.resize(max_edge, max_edge, image::imageops::FilterType::Lanczos3)
-                    } else {
-                        img
-                    };
-                    if img.save(&cc).is_ok() {
+                    if save_full_res_image(img, std::path::Path::new(&fp), &cc).is_ok() {
                         return Some(cc.to_string_lossy().to_string());
                     }
                 }
@@ -613,7 +716,8 @@ pub async fn get_full_image(file_path: String) -> Result<String, String> {
                     } else {
                         img
                     };
-                    if img.save(&cc).is_ok() {
+                    let img = apply_exif_orientation(std::path::Path::new(&fp), img);
+                    if is_full_res_image(&img) && img.save(&cc).is_ok() {
                         return Some(cc.to_string_lossy().to_string());
                     }
                 }
@@ -626,9 +730,12 @@ pub async fn get_full_image(file_path: String) -> Result<String, String> {
                 return Ok(cache_path_clone.to_string_lossy().to_string());
             }
         }
-        // 2. rawler 全分辨率解码 (兜底)
+        // 3. rawler 兜底 (仅当上面全部失败时执行)
         tokio::task::spawn_blocking(move || {
             let img = decode_raw_slow(&src_path)?;
+            if !is_full_res_image(&img) {
+                return Err("DNG full decode returned low resolution".into());
+            }
             let max_edge = 5000u32;
             let img = if img.width().max(img.height()) > max_edge {
                 img.resize(max_edge, max_edge, image::imageops::FilterType::Lanczos3)
@@ -675,7 +782,8 @@ pub async fn get_full_image(file_path: String) -> Result<String, String> {
                 } else {
                     img
                 };
-                if img.save(&cc).is_ok() {
+                let img = apply_exif_orientation(std::path::Path::new(&fp), img);
+                if is_full_res_image(&img) && img.save(&cc).is_ok() {
                     return Some(cc.to_string_lossy().to_string());
                 }
             }
@@ -692,6 +800,9 @@ pub async fn get_full_image(file_path: String) -> Result<String, String> {
     // 路径2b: rawler 全分辨率解码（非DNG, 正常支持）
     tokio::task::spawn_blocking(move || {
         let img = decode_raw_slow(&src_path)?;
+        if !is_full_res_image(&img) {
+            return Err("RAW full decode returned low resolution".into());
+        }
         let max_edge = 5000u32;
         let img = if img.width().max(img.height()) > max_edge {
             img.resize(max_edge, max_edge, image::imageops::FilterType::Lanczos3)
@@ -780,12 +891,25 @@ pub async fn batch_thumbnails(
     max_size: u32,
     on_progress: tauri::ipc::Channel<(String, String)>, // (source_path, cache_path)
 ) -> Result<(), String> {
-    for path in &file_paths {
-        if let Ok(cache_path) = thumb_single(path, max_size) {
-            on_progress.send((path.clone(), cache_path)).ok();
+    let semaphore = std::sync::Arc::new(Semaphore::new(4));
+    let mut tasks = tokio::task::JoinSet::new();
+
+    for path in file_paths {
+        let semaphore = semaphore.clone();
+        tasks.spawn(async move {
+            let _permit = semaphore.acquire().await.ok()?;
+            let path_for_task = path.clone();
+            let result = tokio::task::spawn_blocking(move || thumb_single(&path_for_task, max_size))
+                .await
+                .ok()?;
+            Some((path, result.ok()?))
+        });
+    }
+
+    while let Some(joined) = tasks.join_next().await {
+        if let Ok(Some((path, cache_path))) = joined {
+            on_progress.send((path, cache_path)).ok();
         }
-        // Rate limit: 5ms between COM calls to avoid overwhelming Explorer
-        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
     }
     Ok(())
 }
@@ -799,7 +923,7 @@ fn thumb_single(file_path: &str, max_size: u32) -> Result<String, String> {
         return Err(format!("File not found: {}", file_path));
     }
 
-    let cache_dir = cache_dir().ok_or("No cache dir")?.join("pixel-flow").join("thumbnails");
+    let cache_dir = cache_dir().ok_or("No cache dir")?.join("pixel-flow").join("thumbnails_v2");
     std::fs::create_dir_all(&cache_dir).map_err(|e| format!("Mkdir: {}", e))?;
 
     let mtime = std::fs::metadata(src)
@@ -817,6 +941,14 @@ fn thumb_single(file_path: &str, max_size: u32) -> Result<String, String> {
 
     if cache_path.exists() {
         return Ok(cache_path.to_string_lossy().to_string());
+    }
+
+    // Explorer/系统缩略图缓存优先，命中时几乎零解码
+    #[cfg(target_os = "windows")]
+    if let Some(img) = crate::win_wic::thumbnail_from_shell(file_path, max_size) {
+        if img.save(&cache_path).is_ok() {
+            return Ok(cache_path.to_string_lossy().to_string());
+        }
     }
 
     // Optimized thumbnail path:
@@ -841,12 +973,11 @@ fn thumb_single(file_path: &str, max_size: u32) -> Result<String, String> {
         image::open(src).map_err(|e| format!("Open: {}", e))?
     };
 
-    let thumb = img.thumbnail(max_size, max_size);
+    let thumb = apply_exif_orientation(src, img.thumbnail(max_size, max_size));
     thumb.save(&cache_path).map_err(|e| format!("Save: {}", e))?;
 
     Ok(cache_path.to_string_lossy().to_string())
 }
-
 
 /// Fast JPEG decode using zune-jpeg (2x faster than image-rs default)
 fn decode_jpeg_fast(path: &std::path::Path) -> Result<image::DynamicImage, String> {
@@ -890,6 +1021,16 @@ fn extract_raw_preview(path: &std::path::Path) -> Result<image::DynamicImage, St
 
 /// Slow fallback: full RAW sensor decode via rawler
 fn decode_raw_slow(path: &std::path::Path) -> Result<image::DynamicImage, String> {
+    let params = rawler::decoders::RawDecodeParams::default();
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rawler::analyze::raw_to_srgb(path, &params)
+    }));
+
+    if let Ok(Ok(img)) = result {
+        return Ok(apply_exif_orientation(path, img));
+    }
+
+    // 极少数非 Bayer 文件会走老路径: 输出原始整数数据灰度图
     let raw = rawler::decode_file(path).map_err(|e| format!("RAW: {}", e))?;
     let (w, h) = (raw.width as u32, raw.height as u32);
     if let rawler::RawImageData::Integer(data) = raw.data {
@@ -906,6 +1047,7 @@ fn decode_raw_slow(path: &std::path::Path) -> Result<image::DynamicImage, String
         }
         image::RgbImage::from_raw(w, h, rgb)
             .map(image::DynamicImage::ImageRgb8)
+            .map(|img| apply_exif_orientation(path, img))
             .ok_or_else(|| "Bad RGB buffer".into())
     } else {
         Err("Unsupported RAW format".into())

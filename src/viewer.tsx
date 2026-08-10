@@ -17,6 +17,15 @@ interface Props {
   thumbnails: Record<string, string>; // 已有缩略图缓存 (秒显)
 }
 
+function preloadImage(src: string): Promise<string> {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => resolve(src);
+    img.onerror = () => resolve(src);
+    img.src = src;
+  });
+}
+
 export function PhotoViewer({ photos, index, ratings, onRate, onClose, originRect, thumbnails }: Props) {
   const [cur, setCur] = useState(index);
   // 缩放动画: entering=true 从缩略图位置放大; leaving=true 缩回后关闭
@@ -29,6 +38,43 @@ export function PhotoViewer({ photos, index, ratings, onRate, onClose, originRec
   const [rotation, setRotation] = useState(0);            // 0/90/180/270
   const [offset, setOffset] = useState({ x: 0, y: 0 });
   const dragRef = useRef<{ startX: number; startY: number; ox: number; oy: number; dragging: boolean }>({ startX: 0, startY: 0, ox: 0, oy: 0, dragging: false });
+  const loadedSrcRef = useRef<Record<string, string>>({});
+  const currentPathRef = useRef<string | null>(null);
+  const prefetchingRef = useRef<Set<string>>(new Set());
+  const prefetchTimerRef = useRef<number | undefined>(undefined);
+
+  const commitLoaded = useCallback((path: string, ready: string) => {
+    loadedSrcRef.current[path] = ready;
+    if (currentPathRef.current === path) {
+      setSrc(ready);
+      setShowSrc(true);
+    }
+  }, []);
+
+  const prefetchNeighbors = useCallback((list: ScannedPhoto[], idx: number) => {
+    const pending: string[] = [];
+    for (const ni of [idx - 1, idx + 1]) {
+      const neighbor = list[ni];
+      if (!neighbor || loadedSrcRef.current[neighbor.path] || prefetchingRef.current.has(neighbor.path)) continue;
+      prefetchingRef.current.add(neighbor.path);
+      pending.push(neighbor.path);
+    }
+    for (const path of pending) {
+      invoke<string>("get_preview_image", { filePath: path })
+        .then((p) => preloadImage(convertFileSrc(p)))
+        .then((ready) => { loadedSrcRef.current[path] = ready; })
+        .catch(() => {})
+        .finally(() => { prefetchingRef.current.delete(path); });
+    }
+  }, []);
+
+  const schedulePrefetch = useCallback((list: ScannedPhoto[], idx: number) => {
+    if (prefetchTimerRef.current) window.clearTimeout(prefetchTimerRef.current);
+    prefetchTimerRef.current = window.setTimeout(() => {
+      prefetchTimerRef.current = undefined;
+      prefetchNeighbors(list, idx);
+    }, 250);
+  }, [prefetchNeighbors]);
 
   const photo = photos[cur];
 
@@ -48,20 +94,45 @@ export function PhotoViewer({ photos, index, ratings, onRate, onClose, originRec
   // 渐进加载: 先内嵌JPEG秒开, 后台全解码后无感替换
   useEffect(() => {
     if (!photo) return;
+    const path = photo.path;
+    currentPathRef.current = path;
+    const cached = loadedSrcRef.current[path];
     setScale(1);
     setOffset({ x: 0, y: 0 });
     setRotation(0);
-    setShowSrc(false);
-    setSrc(null);
-
-    // 非RAW直接显示原文件（零解码）
-    if (!photo.isRaw) {
-      setSrc(convertFileSrc(photo.path));
+    if (cached) {
+      setSrc(cached);
       setShowSrc(true);
-      return;
+    } else {
+      setShowSrc(false);
+      setSrc(null);
     }
 
     let cancelled = false;
+    const handleReady = (ready: string) => {
+      loadedSrcRef.current[path] = ready;
+      if (cancelled) return;
+      commitLoaded(path, ready);
+      schedulePrefetch(photos, cur);
+    };
+
+    // 非RAW直接显示原文件（零解码）
+    if (!photo.isRaw) {
+      const src = convertFileSrc(photo.path);
+      if (!cached) {
+        preloadImage(src).then(handleReady);
+      } else {
+        schedulePrefetch(photos, cur);
+      }
+      return () => {
+        cancelled = true;
+        if (prefetchTimerRef.current) {
+          window.clearTimeout(prefetchTimerRef.current);
+          prefetchTimerRef.current = undefined;
+        }
+      };
+    }
+
     let fullTimer: number | undefined;
 
     // 第1步: 内嵌JPEG — 单次切换立即发(零延迟), 快速连续切换时debounce 120ms
@@ -71,32 +142,44 @@ export function PhotoViewer({ photos, index, ratings, onRate, onClose, originRec
     const doPreview = () => {
       invoke<string>("get_preview_image", { filePath: photo.path })
         .then((p) => {
-          if (!cancelled) { setSrc(convertFileSrc(p)); setShowSrc(true); }
+          return preloadImage(convertFileSrc(p));
         })
+        .then(handleReady)
         .catch(() => {});
     };
     if (rapid) {
       const pt = window.setTimeout(doPreview, 120);
-      return () => { cancelled = true; window.clearTimeout(pt); window.clearTimeout(fullTimer); };
+      return () => {
+        cancelled = true;
+        window.clearTimeout(pt);
+        window.clearTimeout(fullTimer);
+        if (prefetchTimerRef.current) {
+          window.clearTimeout(prefetchTimerRef.current);
+          prefetchTimerRef.current = undefined;
+        }
+      };
     }
     doPreview();
 
-    // 第2步: 后台全解码（debounce 300ms — 快速切换时旧请求根本不发）
+    // 第2步: 后台全解码（debounce 600ms — 快速切换时旧请求根本不发）
     fullTimer = window.setTimeout(() => {
       invoke<string>("get_full_image", { filePath: photo.path })
         .then((p) => {
-          if (!cancelled) { setSrc(convertFileSrc(p)); setShowSrc(true); }
+          return preloadImage(convertFileSrc(p));
         })
+        .then(handleReady)
         .catch(() => {});
-    }, 300);
+    }, 600);
 
     return () => {
       cancelled = true;
       window.clearTimeout(fullTimer);
+      if (prefetchTimerRef.current) {
+        window.clearTimeout(prefetchTimerRef.current);
+        prefetchTimerRef.current = undefined;
+      }
     };
-
-    return () => { cancelled = true; };
-  }, [photo]);
+  }, [photo, photos, cur, commitLoaded, schedulePrefetch]);
 
   // 导航按钮显隐: 鼠标移动显示, 静止2秒隐藏
   const [showNav, setShowNav] = useState(true);
@@ -152,6 +235,7 @@ export function PhotoViewer({ photos, index, ratings, onRate, onClose, originRec
 
   if (!photo) return null;
   const rating = ratings[photo.path] || 0;
+  const activeSrc = src && currentPathRef.current === photo.path ? src : null;
 
   // 缩放动画 clip-path: 始终保留属性, 从缩略图矩形过渡到全屏 inset(0)
   const clipPathVal = originRect && (!entered || leaving)
@@ -160,6 +244,7 @@ export function PhotoViewer({ photos, index, ratings, onRate, onClose, originRec
   const clipStyle: React.CSSProperties = {
     clipPath: clipPathVal,
     transition: "clip-path 250ms cubic-bezier(0.4, 0, 0.2, 1)",
+    willChange: "clip-path, opacity",
   };
 
   return (
@@ -213,16 +298,17 @@ export function PhotoViewer({ photos, index, ratings, onRate, onClose, originRec
               alt=""
               draggable={false}
               className="absolute inset-0 w-full h-full object-contain transition-opacity duration-300"
-              style={{ opacity: src && showSrc ? 0 : 1 }}
+              style={{ opacity: activeSrc && showSrc ? 0 : 1 }}
             />
           ) : null;
         })()}
         {/* 高清图 (preview/full, 淡入) — 拖拽时禁用transform过渡保证跟手 */}
-        {src ? (
+        {activeSrc ? (
           <img
-            src={src}
+            src={activeSrc}
             alt={photo.fileName}
             draggable={false}
+            decoding="async"
             className="max-w-full max-h-full object-contain"
             style={{
               transform: `translate(${offset.x}px, ${offset.y}px) rotate(${rotation}deg) scale(${scale})`,

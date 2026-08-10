@@ -6,6 +6,102 @@ use image::{DynamicImage, RgbaImage};
 
 #[cfg(target_os = "windows")]
 pub fn decode_raw_wic(path: &str) -> Option<DynamicImage> {
+    use windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_APARTMENTTHREADED};
+
+    let com_init = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) };
+    let result = decode_raw_wic_inner(path);
+    if com_init.is_ok() {
+        unsafe { CoUninitialize() };
+    }
+    result
+}
+
+#[cfg(target_os = "windows")]
+pub fn thumbnail_from_shell(path: &str, max_size: u32) -> Option<DynamicImage> {
+    use windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_APARTMENTTHREADED};
+
+    let com_init = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) };
+    let result = thumbnail_from_shell_inner(path, max_size);
+    if com_init.is_ok() {
+        unsafe { CoUninitialize() };
+    }
+    result
+}
+
+#[cfg(target_os = "windows")]
+fn thumbnail_from_shell_inner(path: &str, max_size: u32) -> Option<DynamicImage> {
+    use std::ffi::OsStr;
+    use std::os::windows::ffi::OsStrExt;
+    use windows::core::PCWSTR;
+    use windows::Win32::Foundation::SIZE;
+    use windows::Win32::Graphics::Gdi::{DeleteObject, HBITMAP, HPALETTE};
+    use windows::Win32::Graphics::Imaging::{
+        CLSID_WICImagingFactory, GUID_WICPixelFormat32bppBGRA, IWICImagingFactory,
+        WICBitmapIgnoreAlpha, WICConvertBitmapSource, WICRect,
+    };
+    use windows::Win32::System::Com::{CoCreateInstance, CLSCTX_INPROC_SERVER};
+    use windows::Win32::UI::Shell::{
+        SHCreateItemFromParsingName, IShellItemImageFactory, SIIGBF_BIGGERSIZEOK,
+        SIIGBF_THUMBNAILONLY,
+    };
+
+    let wide: Vec<u16> = OsStr::new(path).encode_wide().chain(Some(0)).collect();
+    let pcwstr = PCWSTR::from_raw(wide.as_ptr());
+    let shell_item: IShellItemImageFactory =
+        unsafe { SHCreateItemFromParsingName(pcwstr, None) }.ok()?;
+
+    let size = SIZE {
+        cx: max_size as i32,
+        cy: max_size as i32,
+    };
+    let hbitmap: HBITMAP = unsafe {
+        shell_item.GetImage(size, SIIGBF_THUMBNAILONLY | SIIGBF_BIGGERSIZEOK)
+    }
+    .ok()?;
+
+    let factory: IWICImagingFactory = unsafe {
+        CoCreateInstance(&CLSID_WICImagingFactory, None, CLSCTX_INPROC_SERVER)
+    }
+    .ok()?;
+
+    let bitmap = unsafe {
+        factory.CreateBitmapFromHBITMAP(hbitmap, HPALETTE::default(), WICBitmapIgnoreAlpha)
+    };
+    unsafe { let _ = DeleteObject(hbitmap.into()); };
+    let bitmap = bitmap.ok()?;
+
+    let mut w: u32 = 0;
+    let mut h: u32 = 0;
+    unsafe { bitmap.GetSize(&mut w, &mut h) }.ok()?;
+    if w == 0 || h == 0 {
+        return None;
+    }
+
+    let converted = unsafe { WICConvertBitmapSource(&GUID_WICPixelFormat32bppBGRA, &bitmap) }.ok()?;
+    let stride = w * 4;
+    let mut buffer: Vec<u8> = vec![0u8; (w * h * 4) as usize];
+    let rect = WICRect {
+        X: 0,
+        Y: 0,
+        Width: w as i32,
+        Height: h as i32,
+    };
+    unsafe { converted.CopyPixels(&rect, stride, &mut buffer) }.ok()?;
+
+    for chunk in buffer.chunks_exact_mut(4) {
+        chunk.swap(0, 2);
+    }
+
+    let img = RgbaImage::from_raw(w, h, buffer).map(DynamicImage::ImageRgba8)?;
+    if img.width().max(img.height()) > max_size {
+        Some(img.thumbnail(max_size, max_size))
+    } else {
+        Some(img)
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn decode_raw_wic_inner(path: &str) -> Option<DynamicImage> {
     use std::ffi::OsStr;
     use std::os::windows::ffi::OsStrExt;
     use windows::core::PCWSTR;
