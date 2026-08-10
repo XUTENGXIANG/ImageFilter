@@ -41,7 +41,7 @@ export function PhotoToolbar({
 
   return (
     <CollapsibleBar align="top" expanded={expanded} onToggle={onToggle} glass={glass}>
-      {selectedDrive && photosCount > 0 && (
+      {selectedDrive && photosCount > 0 ? (
         <div className="flex items-center px-4 h-9 gap-2">
           <button onClick={onSelectAll} className="text-[10px] text-zinc-500 hover:text-zinc-300">{t("toolbar.selectAll")}</button>
           <button onClick={onClearSelection} className="text-[10px] text-zinc-500 hover:text-zinc-300">{t("toolbar.clear")}</button>
@@ -77,6 +77,8 @@ export function PhotoToolbar({
             {analyzing ? t("toolbar.stop") : t("toolbar.ai")}
           </button>
         </div>
+      ) : (
+        <div className="flex items-center px-4 h-9 text-[10px] text-zinc-600">{t("toolbar.empty")}</div>
       )}
     </CollapsibleBar>
   );

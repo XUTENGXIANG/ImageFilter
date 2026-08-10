@@ -25,7 +25,7 @@ export function CollapsibleBar({ align, expanded, onToggle, glass, children }: P
           inert={!expanded}
           aria-hidden={!expanded}
         >
-          <div className="p-3">
+          <div className={`${expanded ? "p-3" : "p-0"} transition-[padding] duration-200`}>
             <div className={`rounded-2xl border border-zinc-800 shadow-xl shadow-black/40 overflow-hidden transition-colors duration-200 ${glass ? "bg-zinc-900/70" : "bg-zinc-900/95"}`}>
               {children}
             </div>

@@ -90,6 +90,7 @@ export default {
     all: "全部",
     stop: "停止",
     ai: "AI 分析",
+    empty: "打开照片文件夹后显示工具栏",
   },
 
   // ── 照片网格 ──

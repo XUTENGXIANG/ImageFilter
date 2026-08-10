@@ -85,6 +85,7 @@ export default {
     all: "All",
     stop: "Stop",
     ai: "AI Analyze",
+    empty: "Open a photo folder to show toolbar",
   },
 
   grid: {
