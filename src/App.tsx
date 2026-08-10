@@ -493,7 +493,7 @@ function App() {
       </main>
 
       {/* ═══ 右侧面板 — EXIF详细信息浮窗 ═══ */}
-      <FloatingPanel side="right" title={t("exif.panel")} glass={transparentBg}>
+      <FloatingPanel side="right" title={t("exif.panel")} glass={transparentBg} defaultOpen={false} autoOpenKey={selectedPhoto?.path}>
         <div className="flex-1 overflow-auto p-3 no-scrollbar">
           {selectedPhoto ? (
             <ExifPanel photo={selectedPhoto} previewSrc={previewSrc} />

@@ -1,18 +1,24 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 
 interface Props {
   side: "left" | "right";
   title?: string;
   defaultOpen?: boolean;
+  /** 该值变化时自动展开面板（用于选中照片后弹出详情） */
+  autoOpenKey?: string;
   glass?: boolean;
   children: React.ReactNode;
 }
 
-export function FloatingPanel({ side, title, defaultOpen = true, glass = false, children }: Props) {
+export function FloatingPanel({ side, title, defaultOpen = true, autoOpenKey, glass = false, children }: Props) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(defaultOpen);
   const isLeft = side === "left";
+
+  useEffect(() => {
+    if (autoOpenKey) setOpen(true);
+  }, [autoOpenKey]);
 
   return (
     <div className={`relative z-40 flex-shrink-0 self-stretch flex flex-col transition-[width] duration-300 ease-in-out ${open ? "w-60" : "w-6"}`}>
