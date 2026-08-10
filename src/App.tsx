@@ -225,10 +225,18 @@ function App() {
         const path = queue.shift();
         if (!path) return;
         invoke<string>("get_full_image", { filePath: path })
-          .then((diskPath) => new Promise<void>((resolve) => {
+          .then((diskPath) => new Promise<void>((resolve, reject) => {
             const img = new Image();
-            img.onload = () => resolve();
-            img.onerror = () => resolve();
+            img.decoding = "async";
+            const ready = () => {
+              if (typeof img.decode === "function") {
+                img.decode().then(() => resolve()).catch(() => reject(new Error("decode failed")));
+              } else {
+                resolve();
+              }
+            };
+            img.onload = ready;
+            img.onerror = () => reject(new Error("load failed"));
             img.src = convertFileSrc(diskPath);
           }))
           .catch(() => {})

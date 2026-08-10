@@ -19,10 +19,18 @@ interface Props {
 }
 
 function preloadImage(src: string): Promise<string> {
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     const img = new Image();
-    img.onload = () => resolve(src);
-    img.onerror = () => resolve(src);
+    img.decoding = "async";
+    const ready = () => {
+      if (typeof img.decode === "function") {
+        img.decode().then(() => resolve(src)).catch(() => reject(new Error("decode failed")));
+      } else {
+        resolve(src);
+      }
+    };
+    img.onload = ready;
+    img.onerror = () => reject(new Error("load failed"));
     img.src = src;
   });
 }
@@ -90,8 +98,7 @@ export function PhotoViewer({ photos, index, ratings, onRate, onClose, originRec
       setSrc(cached);
       setShowSrc(true);
     } else {
-      setSrc(null);
-      setShowSrc(false);
+      // 不主动清空当前图: 新图就绪前保留旧图, 避免空 src 黑帧
     }
     setCur(next);
   }, [photos]);
@@ -122,8 +129,7 @@ export function PhotoViewer({ photos, index, ratings, onRate, onClose, originRec
       setSrc(cached);
       setShowSrc(true);
     } else {
-      setShowSrc(false);
-      setSrc(null);
+      // 不主动清空当前图: 新图就绪前保留旧图, 避免空 src 黑帧
     }
 
     let cancelled = false;
@@ -267,7 +273,6 @@ export function PhotoViewer({ photos, index, ratings, onRate, onClose, originRec
 
   if (!photo) return null;
   const rating = ratings[photo.path] || 0;
-  const activeSrc = src && currentPathRef.current === photo.path ? src : null;
 
   // 缩放动画 clip-path: 始终保留属性, 从缩略图矩形过渡到全屏 inset(0)
   const clipPathVal = originRect && (!entered || leaving)
@@ -332,14 +337,14 @@ export function PhotoViewer({ photos, index, ratings, onRate, onClose, originRec
               alt=""
               draggable={false}
               className="absolute inset-0 w-full h-full object-contain transition-opacity duration-300"
-              style={{ opacity: activeSrc && showSrc ? 0 : 1 }}
+              style={{ opacity: src && showSrc ? 0 : 1 }}
             />
           ) : null;
         })()}
         {/* 高清图 (preview/full, 淡入) — 拖拽时禁用transform过渡保证跟手 */}
-        {activeSrc ? (
+        {src ? (
           <img
-            src={activeSrc}
+            src={src}
             alt={photo.fileName}
             draggable={false}
             decoding="async"
