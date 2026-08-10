@@ -20,6 +20,13 @@ PixelFlow 是面向摄影师的 SD 卡照片智能导入工具：插卡 → 秒�
 
 ## 最近开发
 
+### 2026-08-10：代码清理 P3 — 拆分 App.tsx 组件
+
+- 抽出 `TitleBar`、`ExifPanel`、`PhotoCard`、`FolderTreeItem`、`WelcomeGuide`、`ScrollFadeZone`、`ThumbSizeSlider`、`AdvancedOptions`
+- 新增 `Step` 与 `formatBytes` 共享模块，App 主文件负责状态与页面组装
+- `App.tsx` 从约 1099 行降至约 557 行；JSX、className、i18n key、事件逻辑未改动
+- 验证：`tsc --noEmit`、`cargo check` 通过，开发版窗口正常
+
 ### 2026-08-10：代码清理 P2 — 消除后端重复代码
 
 - 新增共享 `exif_common::open_exif`，scanner 与 importer 复用同一 EXIF 打开/读取样板
