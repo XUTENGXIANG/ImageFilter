@@ -404,7 +404,7 @@ function App() {
 
         <PixelMenu items={emptyMenuItems}>
         {/* 中心主区域 — 照片网格/空状态/加载中 */}
-        <ScrollFadeZone>
+        <ScrollFadeZone glass={transparentBg}>
 <div className="h-full overflow-auto p-3 no-scrollbar">
           {browsing || loadingFolder ? (
             <div className="flex items-center justify-center h-full">
