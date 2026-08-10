@@ -11,7 +11,7 @@ import { WelcomeGuide } from "./components/welcome-guide";
 import { ScrollFadeZone } from "./components/scroll-fade-zone";
 import { FolderTreeItem } from "./components/folder-tree-item";
 import { PhotoCard } from "./components/photo-card";
-import { ThumbSizeSlider } from "./components/thumb-size-slider";
+import { PhotoToolbar } from "./components/photo-toolbar";
 import { ImportBar } from "./components/import-bar";
 // ═══════════════════════════════════════════════════════════════════
 // 🎨 图标约定: 本项目所有图标一律使用 bytedance/IconPark (@icon-park/react)
@@ -190,6 +190,7 @@ function App() {
   }, [transparentBg]);
 
   // 导入栏/工具栏默认收起: 照片或选中数从空变非空时自动展开, 清空后自动收起
+  const [toolbarOpen, setToolbarOpen] = useState(false);
   const [importBarOpen, setImportBarOpen] = useState(false);
   const hadPhotosRef = useRef(false);
   const hadSelectionRef = useRef(false);
@@ -199,9 +200,11 @@ function App() {
     const hasPhotos = photos.length > 0;
     const hasSelection = selectedCount > 0;
     if ((hasPhotos && !hadPhotosRef.current) || (hasSelection && !hadSelectionRef.current)) {
+      setToolbarOpen(true);
       setImportBarOpen(true);
     }
     if (!hasPhotos) {
+      setToolbarOpen(false);
       setImportBarOpen(false);
     }
     hadPhotosRef.current = hasPhotos;
@@ -380,41 +383,24 @@ function App() {
 
       {/* === Center === */}
       <main className="flex-1 flex flex-col min-w-0 bg-grid">
-        {/* 工具栏 — 全选/取消/排序/星级筛选/缩略图滑块/AI分析 */}
-<div className={`h-9 border-b border-white/5 flex items-center px-4 gap-2 flex-shrink-0 ${transparentBg ? "bg-zinc-950/70" : "bg-zinc-950"}`}>
-          {selectedDrive && photos.length > 0 && (
-            <>
-              <button onClick={selectAll} className="text-[10px] text-zinc-500 hover:text-zinc-300">{t("toolbar.selectAll")}</button>
-              <button onClick={clearSelection} className="text-[10px] text-zinc-500 hover:text-zinc-300">{t("toolbar.clear")}</button>
-              <span className="text-[10px] text-zinc-600">{t("toolbar.selected", { n: selectedPaths.size, total: photos.length })}</span>
-              {/* Sort */}
-              <select value={sortBy} onChange={(e) => setSortBy(e.target.value as any)}
-                className="bg-zinc-800 text-[10px] text-zinc-400 px-1 py-0.5 rounded border border-zinc-700">
-                <option value="name">{t("toolbar.sortName")}</option>
-                <option value="type">{t("toolbar.sortType")}</option>
-                <option value="date">{t("toolbar.sortDate")}</option>
-              </select>
-              {/* Star filter */}
-              {[0,1,2,3,4,5].map((s) => (
-                <button key={s} onClick={() => setStarFilter(starFilter === s ? 0 : s)}
-                  className={`text-[10px] px-1 rounded ${starFilter === s ? "text-amber-400 bg-amber-400/10" : "text-zinc-600 hover:text-zinc-400"}`}
-                >{s === 0 ? t("toolbar.all") : "★".repeat(s)}</button>
-              ))}
-              <ThumbSizeSlider />
-              <div className="flex-1" />
-              <button
-                onClick={() => analyzing ? stopAnalysis() : runAnalysis(photos.map((p) => p.path))}
-                className={`text-[10px] px-2 py-0.5 rounded text-zinc-400 ${
-                  analyzing
-                    ? "bg-red-900/50 hover:bg-red-800/50 text-red-400"
-                    : "bg-zinc-800 hover:bg-zinc-700"
-                }`}
-              >
-                {analyzing ? t("toolbar.stop") : t("toolbar.ai")}
-              </button>
-            </>
-          )}
-        </div>
+        {/* 顶部工具栏 — 可折叠圆角浮窗 */}
+        <PhotoToolbar
+          selectedDrive={selectedDrive}
+          photosCount={photos.length}
+          selectedCount={selectedPaths.size}
+          sortBy={sortBy}
+          onSortByChange={(v) => setSortBy(v)}
+          starFilter={starFilter}
+          onStarFilterChange={setStarFilter}
+          analyzing={analyzing}
+          onSelectAll={selectAll}
+          onClearSelection={clearSelection}
+          onAnalyzeAll={() => runAnalysis(photos.map((p) => p.path))}
+          onStopAnalysis={stopAnalysis}
+          expanded={toolbarOpen}
+          onToggle={() => setToolbarOpen((v) => !v)}
+          glass={transparentBg}
+        />
 
         <PixelMenu items={emptyMenuItems}>
         {/* 中心主区域 — 照片网格/空状态/加载中 */}
