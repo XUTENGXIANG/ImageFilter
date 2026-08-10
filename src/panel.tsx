@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useTranslation } from "react-i18next";
 
 interface Props {
   side: "left" | "right";
@@ -8,6 +9,7 @@ interface Props {
 }
 
 export function FloatingPanel({ side, title, defaultOpen = true, children }: Props) {
+  const { t } = useTranslation();
   const [open, setOpen] = useState(defaultOpen);
   const isLeft = side === "left";
 
@@ -38,7 +40,7 @@ export function FloatingPanel({ side, title, defaultOpen = true, children }: Pro
           className={`flex-1 min-h-0 w-full bg-zinc-900 border border-zinc-800 hover:bg-zinc-800 cursor-pointer flex items-center justify-center ${
             isLeft ? "rounded-r-lg border-l-0" : "rounded-l-lg border-r-0"
           }`}
-          title={isLeft ? "展开设备面板" : "展开信息面板"}
+          title={isLeft ? t("panel.expandLeft") : t("panel.expandRight")}
         >
           <span className="text-[9px] text-zinc-500">{isLeft ? "▶" : "◀"}</span>
         </button>

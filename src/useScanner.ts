@@ -1,6 +1,7 @@
 import { useState, useCallback } from "react";
 import { invoke, convertFileSrc, Channel } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
+import i18n from "./i18n";
 import type { DriveInfo, ScannedPhoto, FolderEntry } from "./types";
 
 export interface ImportProgress {
@@ -182,7 +183,7 @@ export function useScanner() {
     try {
       const entry = await invoke<FolderEntry>("browse_directory", { dirPath: mountPoint });
       const root: FolderNode = {
-        name: "根目录", path: mountPoint, photoCount: entry.photoCount,
+        name: i18n.t("devices.root"), path: mountPoint, photoCount: entry.photoCount,
         hasSubdirs: entry.hasSubdirs, children: entry.subfolders.map(entryToNode),
       };
       setFolderTree(root);
@@ -252,7 +253,7 @@ export function useScanner() {
   /** Load EXIF on demand when user selects a photo */
   /** Pick destination folder */
   const pickDestDir = useCallback(async () => {
-    const dir = await open({ directory: true, title: "选择导入目标文件夹" });
+    const dir = await open({ directory: true, title: i18n.t("import.pickDestTitle") });
     if (dir) setDestDir(dir as string);
     return dir;
   }, []);

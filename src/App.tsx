@@ -1,10 +1,12 @@
 import { useEffect, useState, useMemo, useRef } from "react";
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { useTranslation } from "react-i18next";
 import { PixelMenu, SEPARATOR, type MenuItem } from "./contextmenu";
 import { FloatingPanel } from "./panel";
 import { PhotoViewer } from "./viewer";
 import { useScanner, type FolderNode } from "./useScanner";
+import { setLanguage, type Lang } from "./i18n";
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription,
 } from "@/components/ui/dialog";
@@ -29,14 +31,19 @@ function formatBytes(bytes: number): string {
 // 高度: h-9 (36px)  背景: bg-zinc-900  底部边框: border-zinc-800
 // 拖拽: data-tauri-drag-region  禁止选中: select-none
 function TitleBar({ preloadFull, onTogglePreloadFull }: { preloadFull: boolean; onTogglePreloadFull: () => void }) {
+  const { t } = useTranslation();
   const win = getCurrentWindow();
   // 设置面板开关
   const [showSettings, setShowSettings] = useState(false);
   // 使用说明开关
   const [showHelp, setShowHelp] = useState(false);
-  // 主题状态: dark=深色(默认) light=浅色
+  // 主题状态: dark=深色 light=浅色(默认)
   const [theme, setTheme] = useState<"dark" | "light">(() =>
-    (localStorage.getItem("pixelflow-theme") as "dark" | "light") || "dark"
+    (localStorage.getItem("pixelflow-theme") as "dark" | "light") || "light"
+  );
+  // 语言状态: 跟随 localStorage 持久化
+  const [lang, setLang] = useState<Lang>(() =>
+    (localStorage.getItem("pixelflow-lang") as Lang) || "zh"
   );
   useEffect(() => {
     const root = document.documentElement;
@@ -60,21 +67,21 @@ function TitleBar({ preloadFull, onTogglePreloadFull }: { preloadFull: boolean; 
         {/* 使用说明按钮 — IconPark Help */}
         <button onClick={() => setShowHelp(true)}
           className="w-8 h-full flex items-center justify-center text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800"
-          title="使用说明"
+          title={t("titlebar.help")}
         >
           <Help theme="filled" size="15" strokeWidth={3} />
         </button>
         {/* 设置按钮 — IconPark Setting */}
         <button onClick={() => setShowSettings(true)}
           className="w-8 h-full flex items-center justify-center text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800"
-          title="设置"
+          title={t("titlebar.settings")}
         >
           <Setting theme="filled" size="15" strokeWidth={3} />
         </button>
         {/* 主题切换按钮 — IconPark Sun/Moon */}
         <button onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
           className="w-8 h-full flex items-center justify-center text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800"
-          title={theme === "dark" ? "切换到浅色主题" : "切换到深色主题"}
+          title={theme === "dark" ? t("titlebar.themeLight") : t("titlebar.themeDark")}
         >
           {theme === "dark" ? <Sun theme="filled" size="15" strokeWidth={3} /> : <Moon theme="filled" size="15" strokeWidth={3} />}
         </button>
@@ -97,32 +104,50 @@ function TitleBar({ preloadFull, onTogglePreloadFull }: { preloadFull: boolean; 
         </button>
       </div>
 
-      {/* ═══ 设置浮窗（白板占位, 后续填充设置项） ═══ */}
+      {/* ═══ 设置浮窗 ═══ */}
       <Dialog open={showSettings} onOpenChange={setShowSettings}>
         <DialogContent className="w-[420px] max-h-[80vh] overflow-auto">
           <DialogHeader>
-            <DialogTitle>设置</DialogTitle>
-            <DialogDescription>PixelFlow 应用设置</DialogDescription>
+            <DialogTitle>{t("settings.title")}</DialogTitle>
+            <DialogDescription>{t("settings.subtitle")}</DialogDescription>
           </DialogHeader>
           <div className="space-y-4 py-2">
+            {/* 语言设置 */}
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm text-foreground">{t("settings.language")}</p>
+                <p className="text-xs text-muted-foreground">{t("settings.languageDesc")}</p>
+              </div>
+              <div className="flex rounded-md border border-border overflow-hidden text-sm">
+                {(["zh", "en"] as Lang[]).map((l) => (
+                  <button
+                    key={l}
+                    onClick={() => { setLang(l); setLanguage(l); }}
+                    className={`px-3 py-1.5 transition-colors ${lang === l ? "bg-foreground text-background" : "hover:bg-muted text-muted-foreground"}`}
+                  >
+                    {l === "zh" ? "中文" : "EN"}
+                  </button>
+                ))}
+              </div>
+            </div>
             {/* 主题设置 */}
             <div className="flex items-center justify-between">
               <div>
-                <p className="text-sm text-foreground">主题</p>
-                <p className="text-xs text-muted-foreground">深色 / 浅色</p>
+                <p className="text-sm text-foreground">{t("settings.theme")}</p>
+                <p className="text-xs text-muted-foreground">{t("settings.themeDesc")}</p>
               </div>
               <button
                 onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
                 className="px-3 py-1.5 rounded-md border border-border text-sm hover:bg-muted"
               >
-                {theme === "dark" ? "🌙 深色" : "☀️ 浅色"}
+                {theme === "dark" ? `🌙 ${t("settings.dark")}` : `☀️ ${t("settings.light")}`}
               </button>
             </div>
             {/* 可见区域全图预加载 */}
             <div className="flex items-start justify-between gap-3">
               <div className="flex-1 min-w-0">
-                <p className="text-sm text-foreground">可见区域全图预加载</p>
-                <p className="text-xs text-muted-foreground">预载当前可见区域所有照片全图，打开查看器更快；开关立即生效，无需重启</p>
+                <p className="text-sm text-foreground">{t("settings.preload")}</p>
+                <p className="text-xs text-muted-foreground">{t("settings.preloadDesc")}</p>
               </div>
               <button
                 onClick={onTogglePreloadFull}
@@ -134,7 +159,7 @@ function TitleBar({ preloadFull, onTogglePreloadFull }: { preloadFull: boolean; 
             {/* 更多设置占位 */}
             <div className="border-t border-border pt-3">
               <p className="text-xs text-muted-foreground text-center py-4">
-                更多设置项即将上线...
+                {t("settings.more")}
               </p>
             </div>
           </div>
@@ -145,36 +170,36 @@ function TitleBar({ preloadFull, onTogglePreloadFull }: { preloadFull: boolean; 
       <Dialog open={showHelp} onOpenChange={setShowHelp}>
         <DialogContent className="w-[480px] max-h-[80vh] overflow-auto">
           <DialogHeader>
-            <DialogTitle>使用说明</DialogTitle>
-            <DialogDescription>PixelFlow — SD 卡照片智能导入工具</DialogDescription>
+            <DialogTitle>{t("help.title")}</DialogTitle>
+            <DialogDescription>{t("help.subtitle")}</DialogDescription>
           </DialogHeader>
           <div className="space-y-4 py-2 text-sm">
             <div className="space-y-2">
-              <Step num="1" title="插入 SD 卡" desc="插入相机存储卡，左栏自动检测设备（U盘图标=可移动设备）" />
-              <Step num="2" title="浏览照片" desc="点设备 → 文件夹树秒出 → 点文件夹查看照片" />
-              <Step num="3" title="筛选/评分" desc="点 AI 分析检查废片，hover 缩略图打星评分" />
-              <Step num="4" title="导入电脑" desc="勾选照片 → 选目标文件夹 → 点导入（支持命名规则）" />
+              <Step num="1" title={t("help.step1Title")} desc={t("help.step1Desc")} />
+              <Step num="2" title={t("help.step2Title")} desc={t("help.step2Desc")} />
+              <Step num="3" title={t("help.step3Title")} desc={t("help.step3Desc")} />
+              <Step num="4" title={t("help.step4Title")} desc={t("help.step4Desc")} />
             </div>
             <div className="border-t border-border pt-3">
-              <p className="text-xs font-medium text-foreground mb-2">键盘快捷键</p>
+              <p className="text-xs font-medium text-foreground mb-2">{t("help.shortcuts")}</p>
               <div className="grid grid-cols-2 gap-x-4 gap-y-1.5 text-xs text-muted-foreground">
-                <span><kbd className="px-1 bg-muted rounded">J</kbd> 保留(3星)</span>
-                <span><kbd className="px-1 bg-muted rounded">X</kbd> 废弃(0星)</span>
-                <span><kbd className="px-1 bg-muted rounded">1-5</kbd> 星级评分</span>
-                <span><kbd className="px-1 bg-muted rounded">R</kbd> 旋转(查看器)</span>
-                <span><kbd className="px-1 bg-muted rounded">←→</kbd> 切换(查看器)</span>
-                <span><kbd className="px-1 bg-muted rounded">0</kbd> 重置(查看器)</span>
-                <span><kbd className="px-1 bg-muted rounded">Ctrl+点击</kbd> 多选</span>
-                <span><kbd className="px-1 bg-muted rounded">Shift+点击</kbd> 范围选择</span>
+                <span><kbd className="px-1 bg-muted rounded">J</kbd> {t("help.keep")}</span>
+                <span><kbd className="px-1 bg-muted rounded">X</kbd> {t("help.trash")}</span>
+                <span><kbd className="px-1 bg-muted rounded">1-5</kbd> {t("help.star")}</span>
+                <span><kbd className="px-1 bg-muted rounded">R</kbd> {t("help.rotate")}</span>
+                <span><kbd className="px-1 bg-muted rounded">←→</kbd> {t("help.nav")}</span>
+                <span><kbd className="px-1 bg-muted rounded">0</kbd> {t("help.reset")}</span>
+                <span><kbd className="px-1 bg-muted rounded">Ctrl+点击</kbd> {t("help.multi")}</span>
+                <span><kbd className="px-1 bg-muted rounded">Shift+点击</kbd> {t("help.range")}</span>
               </div>
             </div>
             <div className="border-t border-border pt-3">
-              <p className="text-xs font-medium text-foreground mb-2">右键菜单</p>
+              <p className="text-xs font-medium text-foreground mb-2">{t("help.contextMenu")}</p>
               <div className="grid grid-cols-2 gap-x-4 gap-y-1.5 text-xs text-muted-foreground">
-                <span>照片: 导入/评分/EXIF/打开位置</span>
-                <span>空白: 刷新/导入全部/AI分析</span>
-                <span>设备: 打开/弹出设备(可移动)</span>
-                <span>文件夹: 打开/导入全部</span>
+                <span>{t("help.ctxPhoto")}</span>
+                <span>{t("help.ctxEmpty")}</span>
+                <span>{t("help.ctxDevice")}</span>
+                <span>{t("help.ctxFolder")}</span>
               </div>
             </div>
           </div>
@@ -185,6 +210,7 @@ function TitleBar({ preloadFull, onTogglePreloadFull }: { preloadFull: boolean; 
 }
 
 function App() {
+  const { t } = useTranslation();
   const {
     drives,
     selectedDrive,
@@ -306,29 +332,29 @@ function App() {
     const sp = ctxTarget;
     const isSel = selectedPaths.has(sp.path);
     return [
-      { label: isSel && selectedPaths.size > 1 ? `导入 ${selectedPaths.size} 张` : "导入选中", action: () => startImport(isSel ? [...selectedPaths] : [sp.path]) },
-      { label: "评分", children: [
+      { label: isSel && selectedPaths.size > 1 ? t("menu.importCount", { n: selectedPaths.size }) : t("menu.importSelected"), action: () => startImport(isSel ? [...selectedPaths] : [sp.path]) },
+      { label: t("menu.rating"), children: [
         { label: "★★★★★", action: () => setRating(sp.path, 5) },
         { label: "★★★★", action: () => setRating(sp.path, 4) },
         { label: "★★★", action: () => setRating(sp.path, 3) },
         { label: "★★", action: () => setRating(sp.path, 2) },
         { label: "★", action: () => setRating(sp.path, 1) },
-        { label: "清除评分", action: () => setRating(sp.path, 0) },
+        { label: t("menu.clearRating"), action: () => setRating(sp.path, 0) },
       ]},
-      { label: "查看 EXIF", action: () => { setSelectedPhoto(sp); loadExif(sp); } },
-      { label: "打开位置", action: () => { const dir = sp.path.replace(/\\[^\\]+$/, ""); invoke("open_folder", { path: dir }); } },
+      { label: t("menu.viewExif"), action: () => { setSelectedPhoto(sp); loadExif(sp); } },
+      { label: t("menu.openLocation"), action: () => { const dir = sp.path.replace(/\\[^\\]+$/, ""); invoke("open_folder", { path: dir }); } },
       SEPARATOR,
-      { label: "全选", action: selectAll },
-      { label: "取消选择", action: clearSelection },
+      { label: t("menu.selectAll"), action: selectAll },
+      { label: t("menu.deselect"), action: clearSelection },
     ];
-  }, [ctxTarget, selectedPaths, startImport, setRating, loadExif, selectAll, clearSelection]);
+  }, [ctxTarget, selectedPaths, startImport, setRating, loadExif, selectAll, clearSelection, t]);
 
   const emptyMenuItems = useMemo((): MenuItem[] => [
-    { label: "刷新", action: () => selectedDrive && browseDrive(selectedDrive!) },
-    { label: "导入全部", action: () => startImport(photos.map((p) => p.path)) },
-    { label: "全选", action: selectAll },
-    { label: "AI 分析", action: () => runAnalysis(photos.map((p) => p.path)) },
-  ], [photos, selectedDrive, startImport, selectAll, browseDrive, runAnalysis]);
+    { label: t("menu.refresh"), action: () => selectedDrive && browseDrive(selectedDrive!) },
+    { label: t("menu.importAll"), action: () => startImport(photos.map((p) => p.path)) },
+    { label: t("menu.selectAll"), action: selectAll },
+    { label: t("menu.ai"), action: () => runAnalysis(photos.map((p) => p.path)) },
+  ], [photos, selectedDrive, startImport, selectAll, browseDrive, runAnalysis, t]);
 
   // 弹出提示浮窗
   const [toast, setToast] = useState<string | null>(null);
@@ -413,29 +439,29 @@ function App() {
       <TitleBar preloadFull={preloadFull} onTogglePreloadFull={togglePreloadFull} />
       <div className="flex flex-1 min-h-0">
       {/* === Left Sidebar === */}
-      <FloatingPanel side="left" title="设备">
+      <FloatingPanel side="left" title={t("devices.panel")}>
         {/* 面板级右键菜单 (空白区域/刷新按钮区域) */}
         <PixelMenu items={[
-          { label: "刷新", action: () => selectedDrive && browseDrive(selectedDrive!) },
+          { label: t("devices.refresh"), action: () => selectedDrive && browseDrive(selectedDrive!) },
           //{ label: "刷新设备列表", action: detectDrives },
         ]}>
         <div className="px-3 pt-2 pb-1 flex items-center">
-          <button onClick={() => selectedDrive && browseDrive(selectedDrive!)} className="text-[10px] px-3 py-0.5 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-400 transition-colors">刷新</button>
+          <button onClick={() => selectedDrive && browseDrive(selectedDrive!)} className="text-[10px] px-3 py-0.5 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-400 transition-colors">{t("devices.refresh")}</button>
         </div>
         {/* 设备列表 — 每个设备独立右键菜单, 可移动设备含"弹出设备" */}
         <div className="px-2.5 pb-1 space-y-0.5 max-h-36 overflow-auto no-scrollbar">
             {drives.map((d) => (
             <PixelMenu key={d.mountPoint} items={[
-              { label: "打开", action: () => browseDrive(d.mountPoint) },
-              d.driveType === "removable" ? { label: "弹出设备", action: () => {
+              { label: t("devices.open"), action: () => browseDrive(d.mountPoint) },
+              d.driveType === "removable" ? { label: t("devices.eject"), action: () => {
                 invoke("eject_drive", { mountPoint: d.mountPoint })
                   .then(() => {
-                    showToast(`已弹出 ${d.mountPoint}`);
+                    showToast(t("devices.ejectOk", { dir: d.mountPoint }));
                     setTimeout(detectDrives, 800); // 弹出后刷新设备列表
                   })
-                  .catch((e) => { console.error("弹出失败:", e); showToast("弹出失败"); });
-              } } : { label: "固定磁盘不可弹出", action: () => {} },
-              { label: "刷新设备列表", action: () => selectedDrive && browseDrive(selectedDrive!)  },
+                  .catch((e) => { console.error("eject failed:", e); showToast(t("devices.ejectFail")); });
+              } } : { label: t("devices.fixedDisk"), disabled: true },
+              { label: t("devices.refreshList"), action: () => selectedDrive && browseDrive(selectedDrive!)  },
             ].filter(Boolean) as MenuItem[]}>
             <button
               onClick={() => browseDrive(d.mountPoint)}
@@ -454,14 +480,14 @@ function App() {
             </PixelMenu>
           ))}
           {drives.length === 0 && (
-            <p className="text-zinc-600 text-[11px] px-2">未检测到设备</p>
+            <p className="text-zinc-600 text-[11px] px-2">{t("devices.noDevices")}</p>
           )}
         </div>
 
         <div className="flex-1 overflow-auto px-1.5 py-1.5 no-scrollbar">
           {browsing ? (
             <p className="text-[11px] text-emerald-500 px-1 animate-pulse">
-              扫描目录结构...
+              {t("devices.scanning")}
             </p>
           ) : folderTree ? (
             <div>
@@ -474,7 +500,7 @@ function App() {
                     : "bg-zinc-800/20 border-zinc-800/30 text-zinc-400 hover:bg-zinc-800/40"
                 }`}
               >
-                根目录
+                {t("devices.root")}
               </button>
               {folderTree.children.map((child) => (
                 <FolderTreeItem
@@ -489,13 +515,13 @@ function App() {
             </div>
           ) : (
             <p className="text-zinc-600 text-[11px] px-1">
-              {selectedDrive ? "未扫描" : "选择设备"}
+              {selectedDrive ? t("devices.notScanned") : t("devices.selectDevice")}
             </p>
           )}
         </div>
 
         <div className="p-2 border-t border-zinc-800 text-[10px] text-zinc-600">
-          {browsing ? "浏览中..." : loadingFolder ? "加载中..." : counting ? "正在读取照片数..." : selectedDrive ? `${photos.length} 张` : "就绪"}
+          {browsing ? t("devices.browsing") : loadingFolder ? t("devices.loading") : counting ? t("devices.counting") : selectedDrive ? t("devices.photos", { n: photos.length }) : t("devices.ready")}
         </div>
         </PixelMenu>
       </FloatingPanel>
@@ -506,21 +532,21 @@ function App() {
 <div className="h-9 border-b border-white/5 flex items-center px-4 gap-2 flex-shrink-0 bg-zinc-950">
           {selectedDrive && photos.length > 0 && (
             <>
-              <button onClick={selectAll} className="text-[10px] text-zinc-500 hover:text-zinc-300">全选</button>
-              <button onClick={clearSelection} className="text-[10px] text-zinc-500 hover:text-zinc-300">取消</button>
-              <span className="text-[10px] text-zinc-600">已选 {selectedPaths.size}/{photos.length}</span>
+              <button onClick={selectAll} className="text-[10px] text-zinc-500 hover:text-zinc-300">{t("toolbar.selectAll")}</button>
+              <button onClick={clearSelection} className="text-[10px] text-zinc-500 hover:text-zinc-300">{t("toolbar.clear")}</button>
+              <span className="text-[10px] text-zinc-600">{t("toolbar.selected", { n: selectedPaths.size, total: photos.length })}</span>
               {/* Sort */}
               <select value={sortBy} onChange={(e) => setSortBy(e.target.value as any)}
                 className="bg-zinc-800 text-[10px] text-zinc-400 px-1 py-0.5 rounded border border-zinc-700">
-                <option value="name">文件名</option>
-                <option value="type">类型</option>
-                <option value="date">日期</option>
+                <option value="name">{t("toolbar.sortName")}</option>
+                <option value="type">{t("toolbar.sortType")}</option>
+                <option value="date">{t("toolbar.sortDate")}</option>
               </select>
               {/* Star filter */}
               {[0,1,2,3,4,5].map((s) => (
                 <button key={s} onClick={() => setStarFilter(starFilter === s ? 0 : s)}
                   className={`text-[10px] px-1 rounded ${starFilter === s ? "text-amber-400 bg-amber-400/10" : "text-zinc-600 hover:text-zinc-400"}`}
-                >{s === 0 ? "全部" : "★".repeat(s)}</button>
+                >{s === 0 ? t("toolbar.all") : "★".repeat(s)}</button>
               ))}
               <ThumbSizeSlider />
               <div className="flex-1" />
@@ -532,7 +558,7 @@ function App() {
                     : "bg-zinc-800 hover:bg-zinc-700"
                 }`}
               >
-                {analyzing ? "停止" : "AI 分析"}
+                {analyzing ? t("toolbar.stop") : t("toolbar.ai")}
               </button>
             </>
           )}
@@ -547,7 +573,7 @@ function App() {
               <div className="flex flex-col items-center gap-3">
                 <div className="w-8 h-8 border-2 border-emerald-500 border-t-transparent rounded-full animate-spin" />
                 <p className="text-zinc-500 text-sm">
-                  {browsing ? "浏览目录..." : "加载照片..."}
+                  {browsing ? t("grid.browsing") : t("grid.loading")}
                 </p>
               </div>
             </div>
@@ -555,7 +581,7 @@ function App() {
             <div className="flex items-center justify-center h-full">
               {selectedDrive ? (
                 <p className="text-zinc-600 text-sm">
-                  {activeFolder ? "此文件夹无照片" : "点击左侧文件夹查看照片"}
+                  {activeFolder ? t("grid.noPhotos") : t("grid.clickFolder")}
                 </p>
               ) : (
                 <WelcomeGuide />
@@ -610,22 +636,22 @@ function App() {
               onClick={pickDestDir}
               className="text-[10px] px-2 py-1 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-400 truncate max-w-[180px]"
             >
-              {destDir ? `...${destDir.slice(-25)}` : "选择目标文件夹"}
+              {destDir ? `...${destDir.slice(-25)}` : t("import.pickDest")}
             </button>
             {destDir && (
               <button
                 onClick={() => invoke("open_folder", { path: destDir })}
                 className="text-[10px] px-1.5 py-1 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-500"
-                title="打开文件夹"
+                title={t("import.openFolder")}
               >
                 📂
               </button>
             )}
             <div className="flex-1" />
             <span className="text-[10px] text-zinc-600">
-              {!destDir ? "请先选目标文件夹" :
-               selectedPaths.size === 0 ? "请勾选要导入的照片" :
-               importing ? "导入中..." : ""}
+              {!destDir ? t("import.needDest") :
+               selectedPaths.size === 0 ? t("import.needSelect") :
+               importing ? t("import.importing") : ""}
             </span>
             <button
               disabled={!destDir || selectedPaths.size === 0 || importing}
@@ -633,17 +659,17 @@ function App() {
               className="text-[10px] px-3 py-1 rounded bg-emerald-600 hover:bg-emerald-500 disabled:bg-zinc-700 disabled:text-zinc-500 text-white font-medium"
             >
               {importing
-                ? `导入中 ${importProgress.filter((p: {status: string}) => p.status === "done").length}/${selectedPaths.size}`
-                : `导入 ${selectedPaths.size} 张`}
+                ? t("import.importingCount", { done: importProgress.filter((p: {status: string}) => p.status === "done").length, total: selectedPaths.size })
+                : t("import.importCount", { n: selectedPaths.size })}
             </button>
           </div>
           {/* Advanced: naming rules */}
           {importError && (
-            <div className="px-3 pb-1 text-[10px] text-red-400">错误: {importError}</div>
+            <div className="px-3 pb-1 text-[10px] text-red-400">{t("import.error", { msg: importError })}</div>
           )}
           {importResult && (
             <div className="px-3 pb-1 text-[10px] text-emerald-400">
-              导入完成 ✓ {importResult.ok} 张成功{importResult.fail > 0 ? `，${importResult.fail} 张失败` : ""}
+              {t("import.doneOk", { n: importResult.ok })}{importResult.fail > 0 ? t("import.doneFail", { n: importResult.fail }) : ""}
             </div>
           )}
           <AdvancedOptions
@@ -679,12 +705,12 @@ function App() {
       </main>
 
       {/* ═══ 右侧面板 — EXIF详细信息浮窗 ═══ */}
-      <FloatingPanel side="right" title="详细信息">
+      <FloatingPanel side="right" title={t("exif.panel")}>
         <div className="flex-1 overflow-auto p-3 no-scrollbar">
           {selectedPhoto ? (
             <ExifPanel photo={selectedPhoto} previewSrc={previewSrc} />
           ) : (
-            <p className="text-zinc-600 text-xs text-center mt-8">选中照片查看 EXIF</p>
+            <p className="text-zinc-600 text-xs text-center mt-8">{t("exif.hint")}</p>
           )}
         </div>
       </FloatingPanel>
@@ -774,6 +800,7 @@ function PhotoCard({
   analysis?: { isBlurry?: boolean; isOverexposed?: boolean; isUnderexposed?: boolean; isBestInGroup?: boolean; duplicateGroup?: number };
   rating?: number; onRate?: (stars: number) => void; onContextMenu?: () => void; onDoubleClick?: (e: React.MouseEvent) => void;
 }) {
+  const { t } = useTranslation();
   return (
     <div
       data-photo-path={photo.path}
@@ -807,12 +834,12 @@ function PhotoCard({
       <div className="absolute top-1.5 left-1.5 flex gap-1">
         {photo.isRaw && <Badge color="bg-amber-600/80" label={formatBadge(photo.fileName)} />}
         {!photo.isRaw && !photo.isVideo && <Badge color="bg-zinc-600/80" label={formatBadge(photo.fileName)} />}
-        {photo.isVideo && <Badge color="bg-blue-600/80" label="视频" />}
-        {analysis?.isBlurry && <Badge color="bg-red-600/80" label="模糊" />}
-        {analysis?.isOverexposed && <Badge color="bg-yellow-600/80" label="过曝" />}
-        {analysis?.isUnderexposed && <Badge color="bg-indigo-600/80" label="欠曝" />}
-        {analysis?.duplicateGroup !== undefined && !analysis?.isBestInGroup && <Badge color="bg-gray-600/80" label="重复" />}
-        {analysis?.isBestInGroup && <Badge color="bg-emerald-600/80" label="最佳" />}
+        {photo.isVideo && <Badge color="bg-blue-600/80" label={t("grid.video")} />}
+        {analysis?.isBlurry && <Badge color="bg-red-600/80" label={t("grid.blurry")} />}
+        {analysis?.isOverexposed && <Badge color="bg-yellow-600/80" label={t("grid.overexposed")} />}
+        {analysis?.isUnderexposed && <Badge color="bg-indigo-600/80" label={t("grid.underexposed")} />}
+        {analysis?.duplicateGroup !== undefined && !analysis?.isBestInGroup && <Badge color="bg-gray-600/80" label={t("grid.duplicate")} />}
+        {analysis?.isBestInGroup && <Badge color="bg-emerald-600/80" label={t("grid.best")} />}
       </div>
       {(rating ?? 0) > 0 && (
         <div className="absolute bottom-1.5 right-1.5 text-[10px] text-amber-400">
@@ -838,6 +865,7 @@ function PhotoCard({
 
 {/* ═══ 右侧 EXIF 信息面板 ═══ */}
 function ExifPanel({ photo, previewSrc }: { photo: ScannedPhoto; previewSrc: string | null }) {
+  const { t } = useTranslation();
   const { exif } = photo;
   return (
     <div className="space-y-4">
@@ -846,33 +874,33 @@ function ExifPanel({ photo, previewSrc }: { photo: ScannedPhoto; previewSrc: str
           <img src={previewSrc} alt={photo.fileName} className="w-full h-full object-cover" />
         </div>
       )}
-      <Section title="文件信息">
-        <Row label="文件名" value={photo.fileName} />
-        <Row label="大小" value={formatBytes(photo.fileSize)} />
-        <Row label="类型" value={photo.isRaw ? "RAW" : photo.isVideo ? "视频" : "图片"} />
+      <Section title={t("exif.fileInfo")}>
+        <Row label={t("exif.fileName")} value={photo.fileName} />
+        <Row label={t("exif.size")} value={formatBytes(photo.fileSize)} />
+        <Row label={t("exif.type")} value={photo.isRaw ? "RAW" : photo.isVideo ? t("exif.typeVideo") : t("exif.typeImage")} />
       </Section>
       {(exif.cameraMake || exif.cameraModel) && (
-        <Section title="相机">
-          <Row label="品牌" value={exif.cameraMake} />
-          <Row label="型号" value={exif.cameraModel} />
-          <Row label="镜头" value={exif.lensModel} />
+        <Section title={t("exif.camera")}>
+          <Row label={t("exif.brand")} value={exif.cameraMake} />
+          <Row label={t("exif.model")} value={exif.cameraModel} />
+          <Row label={t("exif.lens")} value={exif.lensModel} />
         </Section>
       )}
       {(exif.aperture || exif.shutterSpeed || exif.iso) && (
-        <Section title="拍摄参数">
-          <Row label="光圈" value={exif.aperture} />
-          <Row label="快门" value={exif.shutterSpeed} />
-          <Row label="ISO" value={exif.iso?.toString()} />
-          <Row label="焦距" value={exif.focalLength} />
+        <Section title={t("exif.params")}>
+          <Row label={t("exif.aperture")} value={exif.aperture} />
+          <Row label={t("exif.shutter")} value={exif.shutterSpeed} />
+          <Row label={t("exif.iso")} value={exif.iso?.toString()} />
+          <Row label={t("exif.focal")} value={exif.focalLength} />
         </Section>
       )}
       {exif.dateTaken && (
-        <Section title="日期">
+        <Section title={t("exif.date")}>
           <p className="text-[11px] text-zinc-300">{exif.dateTaken}</p>
         </Section>
       )}
       {exif.imageWidth && (
-        <Section title="尺寸">
+        <Section title={t("exif.dims")}>
           <p className="text-[11px] text-zinc-300">{exif.imageWidth} × {exif.imageHeight}</p>
         </Section>
       )}
@@ -928,7 +956,7 @@ function ThumbSizeSlider() {
       type="range" min={2} max={8} value={cols}
       onChange={(e) => setCols(Number(e.target.value))}
       className="thumb-slider w-16 h-4 cursor-pointer"
-      title={`${cols} 列`}
+      title={`${cols} cols`}
       style={{
         background: `linear-gradient(to right,
           var(--thumb-left) 0%, var(--thumb-left) ${pct}%,
@@ -973,19 +1001,20 @@ function ScrollFadeZone({ children }: { children: React.ReactNode }) {
 }
 
 function WelcomeGuide() {
+  const { t } = useTranslation();
   return (
     <div className="max-w-md text-center space-y-6 p-8">
       <h1 className="text-2xl font-light text-zinc-300 tracking-wide">PixelFlow</h1>
-      <p className="text-xs text-zinc-500">SD 卡照片智能导入工具</p>
+      <p className="text-xs text-zinc-500">{t("welcome.subtitle")}</p>
       <div className="space-y-3 text-left">
-        <Step num="1" title="插入 SD 卡" desc="插入相机存储卡，左栏自动检测设备" />
-        <Step num="2" title="浏览照片" desc="点设备 → 文件夹树秒出 → 点文件夹查看照片" />
-        <Step num="3" title="筛选/评分" desc="点 AI 分析检查废片，鼠标 hover 缩略图打星评分" />
-        <Step num="4" title="导入电脑" desc="勾选照片 → 选目标文件夹 → 点导入" />
+        <Step num="1" title={t("help.step1Title")} desc={t("help.step1Desc")} />
+        <Step num="2" title={t("help.step2Title")} desc={t("help.step2Desc")} />
+        <Step num="3" title={t("help.step3Title")} desc={t("help.step3Desc")} />
+        <Step num="4" title={t("help.step4Title")} desc={t("help.step4Desc")} />
       </div>
       <div className="pt-4 border-t border-zinc-800 text-left text-[10px] text-zinc-600 space-y-1">
-        <p><kbd className="px-1 bg-zinc-800 rounded text-zinc-400">J</kbd> 保留 <kbd className="px-1 bg-zinc-800 rounded text-zinc-400">X</kbd> 废弃 <kbd className="px-1 bg-zinc-800 rounded text-zinc-400">1-5</kbd> 星级</p>
-        <p><kbd className="px-1 bg-zinc-800 rounded text-zinc-400">Ctrl+点击</kbd> 多选 <kbd className="px-1 bg-zinc-800 rounded text-zinc-400">Shift+点击</kbd> 范围选择</p>
+        <p><kbd className="px-1 bg-zinc-800 rounded text-zinc-400">J</kbd> {t("welcome.keep")} <kbd className="px-1 bg-zinc-800 rounded text-zinc-400">X</kbd> {t("welcome.trash")} <kbd className="px-1 bg-zinc-800 rounded text-zinc-400">1-5</kbd> {t("welcome.star")}</p>
+        <p><kbd className="px-1 bg-zinc-800 rounded text-zinc-400">Ctrl+点击</kbd> {t("help.multi")} <kbd className="px-1 bg-zinc-800 rounded text-zinc-400">Shift+点击</kbd> {t("help.range")}</p>
       </div>
     </div>
   );
@@ -1012,6 +1041,7 @@ function AdvancedOptions({
   customFolder: string; setCustomFolder: (v: string) => void;
   useCustomFolder: boolean; setUseCustomFolder: (v: boolean) => void;
 }) {
+  const { t } = useTranslation();
   const [open, setOpen] = useState(false);
 
   const toggleDate = () => setFolderRule(folderRule.includes("{date}") ? "" : "{date}");
@@ -1024,38 +1054,38 @@ function AdvancedOptions({
         onClick={() => setOpen(!open)}
         className="text-[10px] text-zinc-600 hover:text-zinc-400"
       >
-        {open ? "▾ 高级选项" : "▸ 高级选项"}
+        {open ? `▾ ${t("import.advanced")}` : `▸ ${t("import.advanced")}`}
       </button>
       {open && (
         <div className="mt-1 pb-1.5 space-y-1">
           <label className="flex items-center gap-1.5 cursor-pointer">
             <input type="checkbox" checked={folderRule.includes("{date}")} onChange={toggleDate}
               className="w-3 h-3 accent-emerald-500" />
-            <span className="text-[10px] text-zinc-400">按拍摄日期分文件夹</span>
-            <span className="text-[9px] text-zinc-600">如 2024-08-08/照片.jpg</span>
+            <span className="text-[10px] text-zinc-400">{t("import.dateFolder")}</span>
+            <span className="text-[9px] text-zinc-600">{t("import.dateFolderEx")}</span>
           </label>
           <label className="flex items-center gap-1.5 cursor-pointer">
             <input type="checkbox" checked={folderRule.includes("{camera}")} onChange={toggleCamera}
               className="w-3 h-3 accent-emerald-500" />
-            <span className="text-[10px] text-zinc-400">按相机型号分文件夹</span>
-            <span className="text-[9px] text-zinc-600">如 Sony-A7M4/照片.jpg</span>
+            <span className="text-[10px] text-zinc-400">{t("import.cameraFolder")}</span>
+            <span className="text-[9px] text-zinc-600">{t("import.cameraFolderEx")}</span>
           </label>
           <label className="flex items-center gap-1.5 cursor-pointer">
             <input type="checkbox" checked={fileRule === "{seq}.{ext}"} onChange={toggleSeq}
               className="w-3 h-3 accent-emerald-500" />
-            <span className="text-[10px] text-zinc-400">按序号重命名</span>
-            <span className="text-[9px] text-zinc-600">如 0001.ARW</span>
+            <span className="text-[10px] text-zinc-400">{t("import.seqRename")}</span>
+            <span className="text-[9px] text-zinc-600">{t("import.seqRenameEx")}</span>
           </label>
           <label className="flex items-center gap-1.5 cursor-pointer">
             <input type="checkbox" checked={useCustomFolder}
               onChange={() => setUseCustomFolder(!useCustomFolder)}
               className="w-3 h-3 accent-emerald-500" />
-            <span className="text-[10px] text-zinc-400">导入到子文件夹</span>
+            <span className="text-[10px] text-zinc-400">{t("import.subFolder")}</span>
             {useCustomFolder && (
               <input
                 value={customFolder}
                 onChange={(e) => setCustomFolder(e.target.value)}
-                placeholder="输入文件夹名"
+                placeholder={t("import.subFolderPlaceholder")}
                 className="w-28 bg-zinc-800 text-[10px] text-zinc-300 px-2 py-0.5 rounded border border-zinc-700"
               />
             )}

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
+import { useTranslation } from "react-i18next";
 // ═══════════════════════════════════════════════════════
 // 🎨 图标约定: 本项目所有图标一律使用 bytedance/IconPark (@icon-park/react)
 //    参考: https://github.com/bytedance/IconPark
@@ -27,6 +28,7 @@ function preloadImage(src: string): Promise<string> {
 }
 
 export function PhotoViewer({ photos, index, ratings, onRate, onClose, originRect, thumbnails }: Props) {
+  const { t } = useTranslation();
   const [cur, setCur] = useState(index);
   // 缩放动画: entering=true 从缩略图位置放大; leaving=true 缩回后关闭
   const [entered, setEntered] = useState(false);
@@ -269,11 +271,11 @@ export function PhotoViewer({ photos, index, ratings, onRate, onClose, originRec
           {/* 旋转按钮 — 逆时针/顺时针 */}
           <button data-tauri-drag-region={false} onClick={() => setRotation((r) => (r + 270) % 360)}
             className="w-8 h-8 flex items-center justify-center rounded hover:bg-zinc-800 text-zinc-400"
-            title="逆时针旋转 (Shift+R)"
+            title={t("viewer.rotateCCW")}
           ><Rotate theme="filled" size="15" strokeWidth={3} style={{ transform: "scaleX(-1)" }} /></button>
           <button data-tauri-drag-region={false} onClick={() => setRotation((r) => (r + 90) % 360)}
             className="w-8 h-8 flex items-center justify-center rounded hover:bg-zinc-800 text-zinc-400"
-            title="顺时针旋转 (R)"
+            title={t("viewer.rotateCW")}
           ><RotateOne theme="filled" size="15" strokeWidth={3} /></button>
           {/* 星级 */}
           {[1, 2, 3, 4, 5].map((s) => (
@@ -325,23 +327,23 @@ export function PhotoViewer({ photos, index, ratings, onRate, onClose, originRec
         <button
           onClick={(e) => { e.stopPropagation(); setCur((c) => (c - 1 + photos.length) % photos.length); }}
           className={`absolute left-3 top-1/2 -translate-y-1/2 w-10 h-10 rounded-full bg-black/35 hover:bg-black/60 text-white/80 hover:text-white flex items-center justify-center transition-opacity duration-300 ${showNav ? "opacity-100" : "opacity-0"}`}
-          title="上一张 (←)"
+          title={t("viewer.prev")}
         ><Left theme="filled" size="18" strokeWidth={3} /></button>
         <button
           onClick={(e) => { e.stopPropagation(); setCur((c) => (c + 1) % photos.length); }}
           className={`absolute right-3 top-1/2 -translate-y-1/2 w-10 h-10 rounded-full bg-black/35 hover:bg-black/60 text-white/80 hover:text-white flex items-center justify-center transition-opacity duration-300 ${showNav ? "opacity-100" : "opacity-0"}`}
-          title="下一张 (→)"
+          title={t("viewer.next")}
         ><Right theme="filled" size="18" strokeWidth={3} /></button>
       </div>
 
       {/* 底部提示 */}
       <div className="flex items-center justify-center gap-3 py-2 flex-shrink-0 text-[10px] text-zinc-600">
-        <span>← → 切换</span>
-        <span>滚轮 缩放</span>
-        <span>拖动 平移</span>
-        <span>0 重置</span>
-        <span>R 旋转</span>
-        <span>J 保留 / X 废弃 / 1-5 星级</span>
+        <span>{t("viewer.nav")}</span>
+        <span>{t("viewer.zoom")}</span>
+        <span>{t("viewer.pan")}</span>
+        <span>{t("viewer.reset")}</span>
+        <span>{t("viewer.rotate")}</span>
+        <span>{t("viewer.rate")}</span>
       </div>
     </div>
   );
