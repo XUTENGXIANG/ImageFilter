@@ -20,6 +20,15 @@ PixelFlow 是面向摄影师的 SD 卡照片智能导入工具：插卡 → 秒�
 
 ## 最近开发
 
+### 2026-08-11：浮窗阴影重构与顶部栏收起按钮集成
+
+- 阴影从卡片剥离为独立阴影层：位于折叠裁剪容器之外，阴影不再被 `overflow-hidden` 裁剪
+- 四浮窗阴影层精确贴卡片区域：`CollapsibleBar` 用 `inset-3`，`FloatingPanel` 用 `left-3 right-3 top-3 bottom-3`
+- 透明窗口 + Mica 毛玻璃下，阴影层改用条件渲染（无渐变过渡），规避 WebView2 合成白色块问题（待确认）
+- `PhotoToolbar` 收起按钮集成到工具栏主体右端（新增 `collapseInside` prop），折叠态保留独立展开按钮
+- i18n 补充 `bars.expand` / `bars.collapse` 键（zh/en）
+- 提交：`a046bf0`，验证：`tsc --noEmit` 通过
+
 ### 2026-08-11：修复顶部栏空状态细线
 
 - 顶部工具栏无照片时手动展开显示占位提示，不再只剩边框细线
