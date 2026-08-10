@@ -284,7 +284,7 @@ function App() {
     : null;
 
   return (
-    <div className={`flex flex-col h-screen w-screen text-zinc-100 transition-colors duration-200 ${transparentBg ? "bg-zinc-950/70" : "bg-zinc-950"}`}>
+    <div className={`flex flex-col h-screen w-screen text-zinc-100 transition-colors duration-200 ${transparentBg ? "bg-transparent" : "bg-zinc-950"}`}>
       {/* Custom title bar */}
       <TitleBar
         preloadFull={preloadFull}
@@ -404,7 +404,7 @@ function App() {
 
         <PixelMenu items={emptyMenuItems}>
         {/* 中心主区域 — 照片网格/空状态/加载中 */}
-        <ScrollFadeZone glass={transparentBg}>
+        <ScrollFadeZone>
 <div className="h-full overflow-auto p-3 no-scrollbar">
           {browsing || loadingFolder ? (
             <div className="flex items-center justify-center h-full">
