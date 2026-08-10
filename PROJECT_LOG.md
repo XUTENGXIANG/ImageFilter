@@ -20,6 +20,13 @@ PixelFlow 是面向摄影师的 SD 卡照片智能导入工具：插卡 → 秒�
 
 ## 最近开发
 
+### 2026-08-10：代码清理 P1 — 移除未使用组件
+
+- 删除未被 App 引用的 shadcn 侧边栏脚手架：`app-sidebar`、`nav-main`、`nav-projects`、`nav-user`、`team-switcher`
+- 删除仅被上述脚手架引用的 UI 组件：`avatar`、`breadcrumb`、`collapsible`、`dropdown-menu`、`sheet`、`sidebar`、`skeleton`、`tooltip`
+- 保留已注册但未调用的 Tauri 命令，遵守“不删除命令”约束
+- 验证：`tsc --noEmit`、`cargo check` 通过，开发版窗口正常
+
 ### 2026-08-10：中英文切换 + 默认浅色主题
 
 - 重建 i18n 体系（`src/i18n/`：zh.ts / en.ts / index.ts，基于 i18next + react-i18next）
