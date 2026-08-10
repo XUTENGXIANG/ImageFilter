@@ -192,6 +192,12 @@ export default {
     rate: "J 保留 / X 废弃 / 1-5 星级",
   },
 
+  // ── 折叠工具条 ──
+  bars: {
+    expand: "展开",
+    collapse: "收起",
+  },
+
   // ── 浮窗面板 ──
   panel: {
     expandLeft: "展开设备面板",

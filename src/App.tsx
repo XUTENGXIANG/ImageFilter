@@ -12,7 +12,7 @@ import { ScrollFadeZone } from "./components/scroll-fade-zone";
 import { FolderTreeItem } from "./components/folder-tree-item";
 import { PhotoCard } from "./components/photo-card";
 import { ThumbSizeSlider } from "./components/thumb-size-slider";
-import { AdvancedOptions } from "./components/advanced-options";
+import { ImportBar } from "./components/import-bar";
 // ═══════════════════════════════════════════════════════════════════
 // 🎨 图标约定: 本项目所有图标一律使用 bytedance/IconPark (@icon-park/react)
 //    参考: https://github.com/bytedance/IconPark
@@ -188,6 +188,25 @@ function App() {
   useEffect(() => {
     localStorage.setItem("pixelflow-glass", transparentBg ? "1" : "0");
   }, [transparentBg]);
+
+  // 导入栏/工具栏默认收起: 照片或选中数从空变非空时自动展开, 清空后自动收起
+  const [importBarOpen, setImportBarOpen] = useState(false);
+  const hadPhotosRef = useRef(false);
+  const hadSelectionRef = useRef(false);
+  const selectedCount = selectedPaths.size;
+
+  useEffect(() => {
+    const hasPhotos = photos.length > 0;
+    const hasSelection = selectedCount > 0;
+    if ((hasPhotos && !hadPhotosRef.current) || (hasSelection && !hadSelectionRef.current)) {
+      setImportBarOpen(true);
+    }
+    if (!hasPhotos) {
+      setImportBarOpen(false);
+    }
+    hadPhotosRef.current = hasPhotos;
+    hadSelectionRef.current = hasSelection;
+  }, [photos.length, selectedCount]);
 
   // 可见区域全图预加载
   const [visiblePaths, setVisiblePaths] = useState<Set<string>>(new Set());
@@ -462,79 +481,29 @@ function App() {
         </ScrollFadeZone>
         </PixelMenu>
 
-{/* ═══ 底部导入栏 — 目标文件夹 + 导入按钮 + 进度 ═══ */}
-        <div className={`border-t border-white/5 flex-shrink-0 ${transparentBg ? "bg-zinc-950/70" : "bg-zinc-950"}`}>
-          <div className="flex items-center gap-2 px-3 py-1.5">
-            <button
-              onClick={pickDestDir}
-              className="text-[10px] px-2 py-1 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-400 truncate max-w-[180px]"
-            >
-              {destDir ? `...${destDir.slice(-25)}` : t("import.pickDest")}
-            </button>
-            {destDir && (
-              <button
-                onClick={() => invoke("open_folder", { path: destDir })}
-                className="text-[10px] px-1.5 py-1 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-500"
-                title={t("import.openFolder")}
-              >
-                📂
-              </button>
-            )}
-            <div className="flex-1" />
-            <span className="text-[10px] text-zinc-600">
-              {!destDir ? t("import.needDest") :
-               selectedPaths.size === 0 ? t("import.needSelect") :
-               importing ? t("import.importing") : ""}
-            </span>
-            <button
-              disabled={!destDir || selectedPaths.size === 0 || importing}
-              onClick={() => startImport([...selectedPaths])}
-              className="text-[10px] px-3 py-1 rounded bg-emerald-600 hover:bg-emerald-500 disabled:bg-zinc-700 disabled:text-zinc-500 text-white font-medium"
-            >
-              {importing
-                ? t("import.importingCount", { done: importProgress.filter((p: {status: string}) => p.status === "done").length, total: selectedPaths.size })
-                : t("import.importCount", { n: selectedPaths.size })}
-            </button>
-          </div>
-          {/* Advanced: naming rules */}
-          {importError && (
-            <div className="px-3 pb-1 text-[10px] text-red-400">{t("import.error", { msg: importError })}</div>
-          )}
-          {importResult && (
-            <div className="px-3 pb-1 text-[10px] text-emerald-400">
-              {t("import.doneOk", { n: importResult.ok })}{importResult.fail > 0 ? t("import.doneFail", { n: importResult.fail }) : ""}
-            </div>
-          )}
-          <AdvancedOptions
-            folderRule={folderRule}
-            fileRule={fileRule}
-            setFolderRule={setFolderRule}
-            setFileRule={setFileRule}
-            customFolder={customFolder}
-            setCustomFolder={setCustomFolder}
-            useCustomFolder={useCustomFolder}
-            setUseCustomFolder={setUseCustomFolder}
-          />
-          {importing && importProgress.length > 0 && (
-            <div className="px-3 pb-1.5 max-h-16 overflow-auto no-scrollbar">
-              {importProgress.slice(-4).map((p, i) => (
-                <div key={i} className="text-[9px] text-zinc-500 flex gap-1.5">
-                  <span className={
-                    p.status === "error" ? "text-red-400" :
-                    p.status === "done" ? "text-emerald-400" :
-                    p.status === "skipped" ? "text-zinc-600" : "text-zinc-500"
-                  }>
-                    {p.status === "done" ? "✓" :
-                     p.status === "error" ? "✗" :
-                     p.status === "skipped" ? "→" : "·"}
-                  </span>
-                  <span className="truncate flex-1">{p.fileName}</span>
-                  <span className="flex-shrink-0">{p.message}</span>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
+        {/* ═══ 底部导入栏 — 可折叠圆角浮窗 ═══ */}
+        <ImportBar
+          destDir={destDir}
+          folderRule={folderRule}
+          fileRule={fileRule}
+          setFolderRule={setFolderRule}
+          setFileRule={setFileRule}
+          customFolder={customFolder}
+          setCustomFolder={setCustomFolder}
+          useCustomFolder={useCustomFolder}
+          setUseCustomFolder={setUseCustomFolder}
+          importing={importing}
+          importProgress={importProgress}
+          importError={importError}
+          importResult={importResult}
+          selectedCount={selectedPaths.size}
+          onPickDestDir={pickDestDir}
+          onOpenFolder={(dir) => invoke("open_folder", { path: dir })}
+          onImport={() => startImport([...selectedPaths])}
+          expanded={importBarOpen}
+          onToggle={() => setImportBarOpen((v) => !v)}
+          glass={transparentBg}
+        />
       </main>
 
       {/* ═══ 右侧面板 — EXIF详细信息浮窗 ═══ */}

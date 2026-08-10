@@ -181,6 +181,12 @@ export default {
     rate: "J keep / X reject / 1-5 rate",
   },
 
+  // ── Collapsible bars ──
+  bars: {
+    expand: "Expand",
+    collapse: "Collapse",
+  },
+
   panel: {
     expandLeft: "Expand devices panel",
     expandRight: "Expand details panel",
