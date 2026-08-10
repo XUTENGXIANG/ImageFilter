@@ -20,6 +20,14 @@ PixelFlow 是面向摄影师的 SD 卡照片智能导入工具：插卡 → 秒�
 
 ## 最近开发
 
+### 2026-08-10：代码清理 P4b — 拆分 scanner EXIF/图片模块
+
+- 新增 `scanner/exif.rs`：EXIF 懒加载命令与字段解析
+- 新增 `scanner/images.rs`：缓存键、方向校正、预览、缩略图、全图解码、Shell 缩略图
+- `mod.rs` 只保留类型与扩展名常量，scanner 单文件拆分完成
+- `lib.rs` 命令路径更新为 `scanner::exif::*`、`scanner::images::*`，前端命令名与行为不变
+- 验证：`tsc --noEmit`、`cargo check` 通过，开发版窗口正常
+
 ### 2026-08-10：代码清理 P4a — 拆分 scanner 设备/浏览模块
 
 - `scanner.rs` 转为 `scanner/mod.rs`

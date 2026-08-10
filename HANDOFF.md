@@ -75,7 +75,11 @@ src/
   panel.tsx        可折叠浮窗面板
   types.ts / index.css
 src-tauri/
-  src/scanner.rs   ~960行 单文件: 设备检测/IOCTL弹出/浏览/扫描/EXIF/缩略图/预览/全解码
+  src/scanner/mod.rs    类型与扩展名常量
+  src/scanner/drives.rs 设备检测/IOCTL弹出/打开文件夹
+  src/scanner/browse.rs 浏览/扫描/文件夹计数
+  src/scanner/exif.rs   EXIF 懒加载
+  src/scanner/images.rs 缓存/方向校正/缩略图/预览/全解码
   src/analyzer.rs   AI分析(模糊/曝光/重复)
   src/importer.rs   导入(模板/MD5/进度)
   src/win_wic.rs     WIC RAW解码
