@@ -1,4 +1,5 @@
 import { useTranslation } from "react-i18next";
+import { UpOne } from "@icon-park/react";
 import { CollapsibleBar } from "./collapsible-bar";
 import { ThumbSizeSlider } from "./thumb-size-slider";
 
@@ -40,7 +41,7 @@ export function PhotoToolbar({
   const { t } = useTranslation();
 
   return (
-    <CollapsibleBar align="top" expanded={expanded} onToggle={onToggle} glass={glass}>
+    <CollapsibleBar align="top" expanded={expanded} onToggle={onToggle} glass={glass} collapseInside>
       {selectedDrive && photosCount > 0 ? (
         <div className="flex items-center px-4 h-9 gap-2">
           <button onClick={onSelectAll} className="text-[10px] text-zinc-500 hover:text-zinc-300">{t("toolbar.selectAll")}</button>
@@ -76,9 +77,26 @@ export function PhotoToolbar({
           >
             {analyzing ? t("toolbar.stop") : t("toolbar.ai")}
           </button>
+          {/* 收起按钮 — 集成在主体内 */}
+          <button
+            onClick={onToggle}
+            title={t("bars.collapse")}
+            className="w-6 h-6 flex items-center justify-center rounded hover:bg-zinc-800 text-zinc-500 hover:text-zinc-300 transition-colors"
+          >
+            <UpOne theme="filled" size="13" strokeWidth={3} />
+          </button>
         </div>
       ) : (
-        <div className="flex items-center px-4 h-9 text-[10px] text-zinc-600">{t("toolbar.empty")}</div>
+        <div className="flex items-center px-4 h-9 gap-2 text-[10px] text-zinc-600">
+          <span className="flex-1">{t("toolbar.empty")}</span>
+          <button
+            onClick={onToggle}
+            title={t("bars.collapse")}
+            className="w-6 h-6 flex items-center justify-center rounded hover:bg-zinc-800 text-zinc-500 hover:text-zinc-300 transition-colors"
+          >
+            <UpOne theme="filled" size="13" strokeWidth={3} />
+          </button>
+        </div>
       )}
     </CollapsibleBar>
   );

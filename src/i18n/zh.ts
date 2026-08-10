@@ -204,4 +204,5 @@ export default {
     expandLeft: "展开设备面板",
     expandRight: "展开信息面板",
   },
+
 };

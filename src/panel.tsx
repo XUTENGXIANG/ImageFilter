@@ -15,14 +15,21 @@ export function FloatingPanel({ side, title, defaultOpen = true, glass = false, 
   const isLeft = side === "left";
 
   return (
-    <div className={`relative flex-shrink-0 self-stretch flex flex-col overflow-hidden transition-[width] duration-300 ease-in-out ${open ? "w-60" : "w-6"}`}>
-      <div className={`flex flex-1 min-h-0 ${isLeft ? "justify-start" : "justify-end"}`}>
+    <div className={`relative flex-shrink-0 self-stretch flex flex-col transition-[width] duration-300 ease-in-out ${open ? "w-60" : "w-6"}`}>
+      {/* 阴影层 — 精确贴卡片区域(卡片在 p-3 内), 放在裁剪容器之外不被裁剪, 折叠时淡出
+           注意: 透明窗口+毛玻璃下, 完全透明元素上的 box-shadow 会被 WebView2 渲染成白色块,
+           因此背景给 0.001 极低 alpha, 走正常合成路径 */}
+      <div
+        className={`absolute left-3 right-3 top-3 bottom-3 rounded-2xl shadow-xl shadow-black/40 pointer-events-none transition-opacity duration-200 ${open ? "opacity-100" : "opacity-0"}`}
+        style={{ background: "rgba(0,0,0,0.001)" }}
+      />
+      <div className={`flex flex-1 min-h-0 overflow-hidden ${isLeft ? "justify-start" : "justify-end"}`}>
         <div
           className={`h-full w-60 p-3 transition-opacity duration-200 ${open ? "opacity-100" : "opacity-0 pointer-events-none"}`}
           inert={!open}
           aria-hidden={!open}
         >
-          <div className={`h-full flex flex-col border border-zinc-800 rounded-2xl shadow-xl shadow-black/40 overflow-hidden relative z-20 transition-colors duration-200 ${glass ? "bg-zinc-900/70" : "bg-zinc-900/95"}`}>
+          <div className={`h-full flex flex-col border border-zinc-800 rounded-2xl overflow-hidden relative z-20 transition-colors duration-200 ${glass ? "bg-zinc-900/70" : "bg-zinc-900/95"}`}>
             {/* Header with collapse button */}
             <div className="flex items-center justify-between px-3 py-2 border-b border-zinc-800/50 flex-shrink-0">
               <span className="text-xs font-semibold text-zinc-400 tracking-wider">{title}</span>

@@ -192,4 +192,5 @@ export default {
     expandLeft: "Expand devices panel",
     expandRight: "Expand details panel",
   },
+
 };
