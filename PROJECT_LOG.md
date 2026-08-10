@@ -20,6 +20,14 @@ PixelFlow 是面向摄影师的 SD 卡照片智能导入工具：插卡 → 秒�
 
 ## 最近开发
 
+### 2026-08-10：代码清理 P4a — 拆分 scanner 设备/浏览模块
+
+- `scanner.rs` 转为 `scanner/mod.rs`
+- 新增 `scanner/drives.rs`：`DriveInfo`、设备检测、打开文件夹、IOCTL 弹出
+- 新增 `scanner/browse.rs`：目录浏览、文件夹计数、照片扫描
+- `lib.rs` 命令路径更新为子模块路径，前端命令名与行为不变
+- 验证：`tsc --noEmit`、`cargo check` 通过，开发版窗口正常
+
 ### 2026-08-10：代码清理 P3 — 拆分 App.tsx 组件
 
 - 抽出 `TitleBar`、`ExifPanel`、`PhotoCard`、`FolderTreeItem`、`WelcomeGuide`、`ScrollFadeZone`、`ThumbSizeSlider`、`AdvancedOptions`
