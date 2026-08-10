@@ -20,6 +20,14 @@ PixelFlow 是面向摄影师的 SD 卡照片智能导入工具：插卡 → 秒�
 
 ## 最近开发
 
+### 2026-08-10：代码清理 P2 — 消除后端重复代码
+
+- 新增共享 `exif_common::open_exif`，scanner 与 importer 复用同一 EXIF 打开/读取样板
+- 新增统一 `cache_hash`，替换预览/全图/缩略图 3 处重复缓存键计算
+- 新增统一 `resize_max_edge`，替换 4 处“5000px 缩放”重复逻辑
+- 命令签名、缓存目录、DNG 链路、CSP 均未改动
+- 验证：`tsc --noEmit`、`cargo check` 通过，开发版窗口正常
+
 ### 2026-08-10：代码清理 P1 — 移除未使用组件
 
 - 删除未被 App 引用的 shadcn 侧边栏脚手架：`app-sidebar`、`nav-main`、`nav-projects`、`nav-user`、`team-switcher`

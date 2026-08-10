@@ -15,6 +15,22 @@ static FULL_TASK_ID: AtomicU64 = AtomicU64::new(0);
 
 const FULL_MIN_EDGE: u32 = 1500;
 
+fn cache_hash(file_path: &str, mtime_secs: u64) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    file_path.hash(&mut h);
+    mtime_secs.hash(&mut h);
+    h.finish()
+}
+
+fn resize_max_edge(img: image::DynamicImage, max_edge: u32) -> image::DynamicImage {
+    if img.width().max(img.height()) > max_edge {
+        img.resize(max_edge, max_edge, image::imageops::FilterType::Lanczos3)
+    } else {
+        img
+    }
+}
+
 fn is_full_res_image(img: &image::DynamicImage) -> bool {
     img.width().max(img.height()) >= FULL_MIN_EDGE
 }
@@ -34,12 +50,7 @@ fn save_full_res_image(
     if !is_full_res_image(&img) {
         return Err("decode returned low resolution".into());
     }
-    let max_edge = 5000u32;
-    let img = if img.width().max(img.height()) > max_edge {
-        img.resize(max_edge, max_edge, image::imageops::FilterType::Lanczos3)
-    } else {
-        img
-    };
+    let img = resize_max_edge(img, 5000);
     img.save(cache_path).map_err(|e| format!("Save: {}", e))
 }
 
@@ -55,9 +66,7 @@ fn save_jpeg_quality(
 }
 
 fn read_exif_orientation(path: &std::path::Path) -> Option<u16> {
-    let file = std::fs::File::open(path).ok()?;
-    let mut reader = std::io::BufReader::new(file);
-    let exif_reader = exif::Reader::new().read_from_container(&mut reader).ok()?;
+    let exif_reader = crate::exif_common::open_exif(path)?;
     for field in exif_reader.fields() {
         if field.tag == exif::Tag::Orientation {
             return field.value.get_uint(0).map(|v| v as u16);
@@ -506,15 +515,8 @@ fn extract_exif(file_path: &std::path::Path) -> PhotoExif {
         exif.file_size = meta.len();
     }
 
-    let file = match std::fs::File::open(file_path) {
-        Ok(f) => f,
-        Err(_) => return exif,
-    };
-
-    let mut reader = std::io::BufReader::new(file);
-    let exif_reader = match exif::Reader::new().read_from_container(&mut reader) {
-        Ok(r) => r,
-        Err(_) => return exif,
+    let Some(exif_reader) = crate::exif_common::open_exif(file_path) else {
+        return exif;
     };
 
     for field in exif_reader.fields() {
@@ -590,15 +592,11 @@ pub async fn get_preview_image(file_path: String) -> Result<String, String> {
     let cache_dir = cache_dir().ok_or("No cache dir")?.join("pixel-flow").join("preview_v3");
     std::fs::create_dir_all(&cache_dir).map_err(|e| format!("Mkdir: {}", e))?;
 
-    use std::hash::{Hash, Hasher};
     let mtime = std::fs::metadata(src)
         .and_then(|m| m.modified())
         .map(|t| t.duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs())
         .unwrap_or(0);
-    let mut h = std::collections::hash_map::DefaultHasher::new();
-    file_path.hash(&mut h);
-    mtime.hash(&mut h);
-    let cache_path = cache_dir.join(format!("{:016x}_prev.jpg", h.finish()));
+    let cache_path = cache_dir.join(format!("{:016x}_prev.jpg", cache_hash(&file_path, mtime)));
 
     if cache_path.exists() {
         return Ok(cache_path.to_string_lossy().to_string());
@@ -648,15 +646,11 @@ pub async fn get_full_image(file_path: String) -> Result<String, String> {
     let cache_dir = cache_dir().ok_or("No cache dir")?.join("pixel-flow").join("full_v3");
     std::fs::create_dir_all(&cache_dir).map_err(|e| format!("Mkdir: {}", e))?;
 
-    use std::hash::{Hash, Hasher};
     let mtime = std::fs::metadata(src)
         .and_then(|m| m.modified())
         .map(|t| t.duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs())
         .unwrap_or(0);
-    let mut h = std::collections::hash_map::DefaultHasher::new();
-    file_path.hash(&mut h);
-    mtime.hash(&mut h);
-    let cache_name = format!("{:016x}_full.jpg", h.finish());
+    let cache_name = format!("{:016x}_full.jpg", cache_hash(&file_path, mtime));
     let cache_path = cache_dir.join(&cache_name);
 
     if cache_path.exists() {
@@ -710,12 +704,7 @@ pub async fn get_full_image(file_path: String) -> Result<String, String> {
             let cc = cache_path_clone.clone();
             if tokio::task::spawn_blocking(move || {
                 if let Some(img) = crate::win_wic::decode_raw_wic(&fp) {
-                    let max_edge = 5000u32;
-                    let img = if img.width().max(img.height()) > max_edge {
-                        img.resize(max_edge, max_edge, image::imageops::FilterType::Lanczos3)
-                    } else {
-                        img
-                    };
+                    let img = resize_max_edge(img, 5000);
                     let img = apply_exif_orientation(std::path::Path::new(&fp), img);
                     if is_full_res_image(&img) && img.save(&cc).is_ok() {
                         return Some(cc.to_string_lossy().to_string());
@@ -736,12 +725,7 @@ pub async fn get_full_image(file_path: String) -> Result<String, String> {
             if !is_full_res_image(&img) {
                 return Err("DNG full decode returned low resolution".into());
             }
-            let max_edge = 5000u32;
-            let img = if img.width().max(img.height()) > max_edge {
-                img.resize(max_edge, max_edge, image::imageops::FilterType::Lanczos3)
-            } else {
-                img
-            };
+            let img = resize_max_edge(img, 5000);
             img.save(&cache_path_clone).map_err(|e| format!("Save: {}", e))?;
             Ok::<(), String>(())
         })
@@ -776,12 +760,7 @@ pub async fn get_full_image(file_path: String) -> Result<String, String> {
         let cc = cache_path_clone.clone();
         if tokio::task::spawn_blocking(move || {
             if let Some(img) = crate::win_wic::decode_raw_wic(&fp) {
-                let max_edge = 5000u32;
-                let img = if img.width().max(img.height()) > max_edge {
-                    img.resize(max_edge, max_edge, image::imageops::FilterType::Lanczos3)
-                } else {
-                    img
-                };
+                let img = resize_max_edge(img, 5000);
                 let img = apply_exif_orientation(std::path::Path::new(&fp), img);
                 if is_full_res_image(&img) && img.save(&cc).is_ok() {
                     return Some(cc.to_string_lossy().to_string());
@@ -803,12 +782,7 @@ pub async fn get_full_image(file_path: String) -> Result<String, String> {
         if !is_full_res_image(&img) {
             return Err("RAW full decode returned low resolution".into());
         }
-        let max_edge = 5000u32;
-        let img = if img.width().max(img.height()) > max_edge {
-            img.resize(max_edge, max_edge, image::imageops::FilterType::Lanczos3)
-        } else {
-            img
-        };
+        let img = resize_max_edge(img, 5000);
         img.save(&cache_path_clone).map_err(|e| format!("Save: {}", e))?;
         Ok::<(), String>(())
     })
@@ -931,12 +905,7 @@ fn thumb_single(file_path: &str, max_size: u32) -> Result<String, String> {
         .map(|t| t.duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs())
         .unwrap_or(0);
 
-    use std::hash::{Hash, Hasher};
-    let mut h = std::collections::hash_map::DefaultHasher::new();
-    file_path.hash(&mut h);
-    mtime.hash(&mut h);
-
-    let cache_name = format!("{:016x}_{}.jpg", h.finish(), max_size);
+    let cache_name = format!("{:016x}_{}.jpg", cache_hash(file_path, mtime), max_size);
     let cache_path = cache_dir.join(&cache_name);
 
     if cache_path.exists() {

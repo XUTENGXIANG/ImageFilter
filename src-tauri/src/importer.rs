@@ -72,15 +72,8 @@ fn get_exif_info(path: &Path) -> (String, String, String, String) {
     let mut day = "00".to_string();
     let mut camera = "Unknown".to_string();
 
-    let file = match std::fs::File::open(path) {
-        Ok(f) => f,
-        Err(_) => return (year, month, day, camera),
-    };
-
-    let mut reader = std::io::BufReader::new(file);
-    let exif_reader = match exif::Reader::new().read_from_container(&mut reader) {
-        Ok(r) => r,
-        Err(_) => return (year, month, day, camera),
+    let Some(exif_reader) = crate::exif_common::open_exif(path) else {
+        return (year, month, day, camera);
     };
 
     for field in exif_reader.fields() {

@@ -1,5 +1,6 @@
 mod analyzer;
 mod db;
+mod exif_common;
 mod importer;
 mod scanner;
 mod tinydng;
