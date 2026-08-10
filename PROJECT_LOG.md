@@ -20,6 +20,14 @@ PixelFlow 是面向摄影师的 SD 卡照片智能导入工具：插卡 → 秒�
 
 ## 最近开发
 
+### 2026-08-11：Mica 毛玻璃透明背景开关
+
+- `tauri.conf.json` 开启 `transparent`，新增 `set_glass_bg` 后端命令按主题应用 `MicaDark` / `MicaLight`
+- 设置面板新增“透明毛玻璃背景”开关，默认开启，持久化到 `pixelflow-glass`，关闭时清除 Mica
+- 照片网格、设备浮窗、详细信息浮窗、顶部栏、工具栏、导入栏改为随主题的半透明背景；查看器保持不透明
+- 回退点：`before-mica` tag
+- 验证：`tsc --noEmit`、`cargo check` 通过，开发版窗口 `BackdropType=2`（Mica 已生效）
+
 ### 2026-08-11：查看器切图黑闪根治
 
 - 参考开源社区 PhotoSwipe 相关方案：切图时不再清空旧高清图，新图下载并解码完成前由旧图/缩略图铺底

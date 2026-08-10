@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { invoke } from "@tauri-apps/api/core";
 import { useTranslation } from "react-i18next";
 import { setLanguage, type Lang } from "../i18n";
 import {
@@ -11,7 +12,17 @@ import { Step } from "./step";
 // ── 标题栏 ──────────────────────────────────
 // 高度: h-9 (36px)  背景: bg-zinc-900  底部边框: border-zinc-800
 // 拖拽: data-tauri-drag-region  禁止选中: select-none
-export function TitleBar({ preloadFull, onTogglePreloadFull }: { preloadFull: boolean; onTogglePreloadFull: () => void }) {
+export function TitleBar({
+  preloadFull,
+  onTogglePreloadFull,
+  transparentBg,
+  onToggleTransparentBg,
+}: {
+  preloadFull: boolean;
+  onTogglePreloadFull: () => void;
+  transparentBg: boolean;
+  onToggleTransparentBg: () => void;
+}) {
   const { t } = useTranslation();
   const win = getCurrentWindow();
   const [showSettings, setShowSettings] = useState(false);
@@ -34,10 +45,14 @@ export function TitleBar({ preloadFull, onTogglePreloadFull }: { preloadFull: bo
     localStorage.setItem("pixelflow-theme", theme);
   }, [theme]);
 
+  useEffect(() => {
+    invoke("set_glass_bg", { enabled: transparentBg, dark: theme === "dark" }).catch(() => {});
+  }, [transparentBg, theme]);
+
   return (
     <div
       data-tauri-drag-region
-      className="h-9 flex items-center justify-between px-1 bg-zinc-900 border-b border-zinc-800 select-none flex-shrink-0"
+      className={`h-9 flex items-center justify-between px-1 border-b border-zinc-800 select-none flex-shrink-0 transition-colors duration-200 ${transparentBg ? "bg-zinc-900/70" : "bg-zinc-900"}`}
     >
       <span className="text-[11px] text-zinc-500 ml-3">PixelFlow</span>
       <div className="flex items-center h-full">
@@ -121,6 +136,18 @@ export function TitleBar({ preloadFull, onTogglePreloadFull }: { preloadFull: bo
                 className={`mt-0.5 w-10 h-6 rounded-full relative shrink-0 transition-colors ${preloadFull ? "bg-emerald-500" : "bg-muted"}`}
               >
                 <span className={`absolute top-0.5 w-5 h-5 rounded-full bg-white shadow transition-all ${preloadFull ? "left-[18px]" : "left-0.5"}`} />
+              </button>
+            </div>
+            <div className="flex items-start justify-between gap-3">
+              <div className="flex-1 min-w-0">
+                <p className="text-sm text-foreground">{t("settings.transparentBg")}</p>
+                <p className="text-xs text-muted-foreground">{t("settings.transparentBgDesc")}</p>
+              </div>
+              <button
+                onClick={onToggleTransparentBg}
+                className={`mt-0.5 w-10 h-6 rounded-full relative shrink-0 transition-colors ${transparentBg ? "bg-emerald-500" : "bg-muted"}`}
+              >
+                <span className={`absolute top-0.5 w-5 h-5 rounded-full bg-white shadow transition-all ${transparentBg ? "left-[18px]" : "left-0.5"}`} />
               </button>
             </div>
             <div className="border-t border-border pt-3">

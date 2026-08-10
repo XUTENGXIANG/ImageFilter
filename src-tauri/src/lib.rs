@@ -7,10 +7,29 @@ mod tinydng;
 mod win_wic;
 
 use tauri::Manager;
+use tauri::window::{Effect, EffectsBuilder};
 
 #[tauri::command]
 fn greet(name: String) -> String {
     format!("Hello, {}! PixelFlow is running.", name)
+}
+
+#[tauri::command]
+fn set_glass_bg(app: tauri::AppHandle, enabled: bool, dark: bool) -> Result<(), String> {
+    let Some(window) = app.get_webview_window("main") else {
+        return Ok(());
+    };
+    if enabled {
+        let effect = if dark { Effect::MicaDark } else { Effect::MicaLight };
+        window
+            .set_effects(EffectsBuilder::new().effect(effect).build())
+            .map_err(|e| e.to_string())?;
+    } else {
+        window
+            .set_effects(None::<tauri::utils::config::WindowEffectsConfig>)
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(())
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -43,6 +62,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             greet,
+            set_glass_bg,
             db::get_import_history,
             db::get_rules,
             db::save_rule,

@@ -22,6 +22,8 @@ export default {
     languageDesc: "Interface language",
     preload: "Preload visible full images",
     preloadDesc: "Preload full images of currently visible photos for faster viewer; takes effect immediately",
+    transparentBg: "Transparent frosted background",
+    transparentBgDesc: "Use Windows Mica glass that follows the dark/light theme; takes effect immediately",
     more: "More settings coming soon...",
   },
 

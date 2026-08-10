@@ -24,6 +24,8 @@ export default {
     languageDesc: "界面显示语言",
     preload: "可见区域全图预加载",
     preloadDesc: "预载当前可见区域所有照片全图，打开查看器更快；开关立即生效，无需重启",
+    transparentBg: "透明毛玻璃背景",
+    transparentBgDesc: "启用后使用 Windows Mica 毛玻璃，随深色/浅色主题自动切换；立即生效",
     more: "更多设置项即将上线...",
   },
 

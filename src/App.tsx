@@ -182,6 +182,12 @@ function App() {
   // 图片查看器: viewerIndex=null 关闭, 数字=打开第N张
   const [viewerIndex, setViewerIndex] = useState<number | null>(null);
   const [viewerOrigin, setViewerOrigin] = useState<{ x: number; y: number; w: number; h: number } | undefined>(undefined);
+  // 透明毛玻璃背景: 默认开启, 深色/浅色随主题切换
+  const [transparentBg, setTransparentBg] = useState<boolean>(() => localStorage.getItem("pixelflow-glass") !== "0");
+
+  useEffect(() => {
+    localStorage.setItem("pixelflow-glass", transparentBg ? "1" : "0");
+  }, [transparentBg]);
 
   // 可见区域全图预加载
   const [visiblePaths, setVisiblePaths] = useState<Set<string>>(new Set());
@@ -256,12 +262,17 @@ function App() {
     : null;
 
   return (
-    <div className="flex flex-col h-screen w-screen bg-zinc-950 text-zinc-100">
+    <div className={`flex flex-col h-screen w-screen text-zinc-100 transition-colors duration-200 ${transparentBg ? "bg-zinc-950/70" : "bg-zinc-950"}`}>
       {/* Custom title bar */}
-      <TitleBar preloadFull={preloadFull} onTogglePreloadFull={togglePreloadFull} />
+      <TitleBar
+        preloadFull={preloadFull}
+        onTogglePreloadFull={togglePreloadFull}
+        transparentBg={transparentBg}
+        onToggleTransparentBg={() => setTransparentBg((v) => !v)}
+      />
       <div className="flex flex-1 min-h-0">
       {/* === Left Sidebar === */}
-      <FloatingPanel side="left" title={t("devices.panel")}>
+      <FloatingPanel side="left" title={t("devices.panel")} glass={transparentBg}>
         {/* 面板级右键菜单 (空白区域/刷新按钮区域) */}
         <PixelMenu items={[
           { label: t("devices.refresh"), action: () => selectedDrive && browseDrive(selectedDrive!) },
@@ -351,7 +362,7 @@ function App() {
       {/* === Center === */}
       <main className="flex-1 flex flex-col min-w-0 bg-grid">
         {/* 工具栏 — 全选/取消/排序/星级筛选/缩略图滑块/AI分析 */}
-<div className="h-9 border-b border-white/5 flex items-center px-4 gap-2 flex-shrink-0 bg-zinc-950">
+<div className={`h-9 border-b border-white/5 flex items-center px-4 gap-2 flex-shrink-0 ${transparentBg ? "bg-zinc-950/70" : "bg-zinc-950"}`}>
           {selectedDrive && photos.length > 0 && (
             <>
               <button onClick={selectAll} className="text-[10px] text-zinc-500 hover:text-zinc-300">{t("toolbar.selectAll")}</button>
@@ -388,7 +399,7 @@ function App() {
 
         <PixelMenu items={emptyMenuItems}>
         {/* 中心主区域 — 照片网格/空状态/加载中 */}
-        <ScrollFadeZone>
+        <ScrollFadeZone glass={transparentBg}>
 <div className="h-full overflow-auto p-3 no-scrollbar">
           {browsing || loadingFolder ? (
             <div className="flex items-center justify-center h-full">
@@ -452,7 +463,7 @@ function App() {
         </PixelMenu>
 
 {/* ═══ 底部导入栏 — 目标文件夹 + 导入按钮 + 进度 ═══ */}
-        <div className="border-t border-white/5 flex-shrink-0 bg-zinc-950">
+        <div className={`border-t border-white/5 flex-shrink-0 ${transparentBg ? "bg-zinc-950/70" : "bg-zinc-950"}`}>
           <div className="flex items-center gap-2 px-3 py-1.5">
             <button
               onClick={pickDestDir}
@@ -527,7 +538,7 @@ function App() {
       </main>
 
       {/* ═══ 右侧面板 — EXIF详细信息浮窗 ═══ */}
-      <FloatingPanel side="right" title={t("exif.panel")}>
+      <FloatingPanel side="right" title={t("exif.panel")} glass={transparentBg}>
         <div className="flex-1 overflow-auto p-3 no-scrollbar">
           {selectedPhoto ? (
             <ExifPanel photo={selectedPhoto} previewSrc={previewSrc} />
