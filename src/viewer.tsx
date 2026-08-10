@@ -36,6 +36,7 @@ export function PhotoViewer({ photos, index, ratings, onRate, onClose, originRec
   const lastSwitchRef = useRef(0);
   const [src, setSrc] = useState<string | null>(null);   // 高清图 (preview/full)
   const [showSrc, setShowSrc] = useState(false);          // 高清图淡入
+  const [fallbackThumbs, setFallbackThumbs] = useState<Record<string, string>>({});
   const [scale, setScale] = useState(1);
   const [rotation, setRotation] = useState(0);            // 0/90/180/270
   const [offset, setOffset] = useState({ x: 0, y: 0 });
@@ -80,6 +81,21 @@ export function PhotoViewer({ photos, index, ratings, onRate, onClose, originRec
 
   const photo = photos[cur];
 
+  const navigateTo = useCallback((next: number) => {
+    const target = photos[next];
+    if (!target) return;
+    currentPathRef.current = target.path;
+    const cached = loadedSrcRef.current[target.path];
+    if (cached) {
+      setSrc(cached);
+      setShowSrc(true);
+    } else {
+      setSrc(null);
+      setShowSrc(false);
+    }
+    setCur(next);
+  }, [photos]);
+
   // 进入动画: 先渲染缩略图矩形, 30ms后过渡到全屏
   useEffect(() => {
     const t = window.setTimeout(() => setEntered(true), 30);
@@ -111,6 +127,20 @@ export function PhotoViewer({ photos, index, ratings, onRate, onClose, originRec
     }
 
     let cancelled = false;
+
+    const knownThumb = thumbnails[path] && thumbnails[path] !== "__err__"
+      ? thumbnails[path]
+      : fallbackThumbs[path];
+    if (!cached && !knownThumb) {
+      invoke<string>("get_thumbnail_path", { filePath: path, maxSize: 300 })
+        .then((p) => {
+          if (!cancelled) {
+            setFallbackThumbs((prev) => ({ ...prev, [path]: convertFileSrc(p) }));
+          }
+        })
+        .catch(() => {});
+    }
+
     const handleReady = (ready: string) => {
       loadedSrcRef.current[path] = ready;
       if (cancelled) return;
@@ -196,8 +226,8 @@ export function PhotoViewer({ photos, index, ratings, onRate, onClose, originRec
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if (e.key === "Escape") { handleClose(); }
-      else if (e.key === "ArrowLeft") { setCur((c) => (c - 1 + photos.length) % photos.length); }
-      else if (e.key === "ArrowRight") { setCur((c) => (c + 1) % photos.length); }
+      else if (e.key === "ArrowLeft") { navigateTo((cur - 1 + photos.length) % photos.length); }
+      else if (e.key === "ArrowRight") { navigateTo((cur + 1) % photos.length); }
       else if (e.key === "=" || e.key === "+") { setScale((s) => Math.min(8, s * 1.25)); }
       else if (e.key === "-") { setScale((s) => Math.max(0.2, s / 1.25)); }
       else if (e.key === "0") { setScale(1); setOffset({ x: 0, y: 0 }); setRotation(0); }
@@ -208,7 +238,7 @@ export function PhotoViewer({ photos, index, ratings, onRate, onClose, originRec
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [photo, photos.length, onClose, onRate]);
+  }, [photo, cur, photos.length, navigateTo, onClose, onRate]);
 
   // Wheel zoom — 缩到<=1时居中(重置offset)
   const onWheel = useCallback((e: React.WheelEvent) => {
@@ -293,7 +323,9 @@ export function PhotoViewer({ photos, index, ratings, onRate, onClose, originRec
       <div className="flex-1 relative overflow-hidden flex items-center justify-center select-none">
         {/* 缩略图 (秒显) */}
         {(() => {
-          const thumb = thumbnails[photo.path];
+          const thumb = thumbnails[photo.path] && thumbnails[photo.path] !== "__err__"
+            ? thumbnails[photo.path]
+            : fallbackThumbs[photo.path];
           return thumb && thumb !== "__err__" ? (
             <img
               src={thumb}
@@ -325,12 +357,12 @@ export function PhotoViewer({ photos, index, ratings, onRate, onClose, originRec
 
         {/* 左右切换按钮 — 鼠标静止2秒淡出 */}
         <button
-          onClick={(e) => { e.stopPropagation(); setCur((c) => (c - 1 + photos.length) % photos.length); }}
+          onClick={(e) => { e.stopPropagation(); navigateTo((cur - 1 + photos.length) % photos.length); }}
           className={`absolute left-3 top-1/2 -translate-y-1/2 w-10 h-10 rounded-full bg-black/35 hover:bg-black/60 text-white/80 hover:text-white flex items-center justify-center transition-opacity duration-300 ${showNav ? "opacity-100" : "opacity-0"}`}
           title={t("viewer.prev")}
         ><Left theme="filled" size="18" strokeWidth={3} /></button>
         <button
-          onClick={(e) => { e.stopPropagation(); setCur((c) => (c + 1) % photos.length); }}
+          onClick={(e) => { e.stopPropagation(); navigateTo((cur + 1) % photos.length); }}
           className={`absolute right-3 top-1/2 -translate-y-1/2 w-10 h-10 rounded-full bg-black/35 hover:bg-black/60 text-white/80 hover:text-white flex items-center justify-center transition-opacity duration-300 ${showNav ? "opacity-100" : "opacity-0"}`}
           title={t("viewer.next")}
         ><Right theme="filled" size="18" strokeWidth={3} /></button>
