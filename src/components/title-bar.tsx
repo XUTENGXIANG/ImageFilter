@@ -33,6 +33,10 @@ export function TitleBar({
   const [lang, setLang] = useState<Lang>(() =>
     (localStorage.getItem("pixelflow-lang") as Lang) || "zh"
   );
+  const [glassOpacity, setGlassOpacity] = useState<number>(() => {
+    const v = Number(localStorage.getItem("pixelflow-glass-opacity"));
+    return Number.isFinite(v) ? Math.min(100, Math.max(0, v)) : 70;
+  });
   useEffect(() => {
     const root = document.documentElement;
     if (theme === "dark") {
@@ -46,13 +50,19 @@ export function TitleBar({
   }, [theme]);
 
   useEffect(() => {
+    document.documentElement.style.setProperty("--glass-opacity", `${glassOpacity}%`);
+    localStorage.setItem("pixelflow-glass-opacity", String(glassOpacity));
+  }, [glassOpacity]);
+
+  useEffect(() => {
     invoke("set_glass_bg", { enabled: transparentBg, dark: theme === "dark" }).catch(() => {});
   }, [transparentBg, theme]);
 
   return (
     <div
       data-tauri-drag-region
-      className={`h-9 flex items-center justify-between px-1 border-b border-zinc-800 select-none flex-shrink-0 transition-colors duration-200 ${transparentBg ? "bg-zinc-900/70" : "bg-zinc-900"}`}
+      className={`h-9 flex items-center justify-between px-1 border-b border-zinc-800 select-none flex-shrink-0 transition-colors duration-200 ${transparentBg ? "" : "bg-zinc-900"}`}
+      style={transparentBg ? { backgroundColor: "var(--glass-bg)" } : undefined}
     >
       <span className="text-[11px] text-zinc-500 ml-3">PixelFlow</span>
       <div className="flex items-center h-full">
@@ -149,6 +159,24 @@ export function TitleBar({
               >
                 <span className={`absolute top-0.5 w-5 h-5 rounded-full bg-white shadow transition-all ${transparentBg ? "left-[18px]" : "left-0.5"}`} />
               </button>
+            </div>
+            <div className={`flex items-start justify-between gap-3 ${transparentBg ? "" : "opacity-50"}`}>
+              <div className="flex-1 min-w-0">
+                <p className="text-sm text-foreground">{t("settings.transparentBgOpacity")}</p>
+                <p className="text-xs text-muted-foreground">{t("settings.transparentBgOpacityDesc")}</p>
+              </div>
+              <div className="w-40 flex items-center gap-2 shrink-0">
+                <input
+                  type="range"
+                  min={0}
+                  max={100}
+                  value={glassOpacity}
+                  disabled={!transparentBg}
+                  onChange={(e) => setGlassOpacity(Number(e.target.value))}
+                  className="flex-1 thumb-slider"
+                />
+                <span className="text-xs text-muted-foreground w-8 text-right">{glassOpacity}%</span>
+              </div>
             </div>
             <div className="border-t border-border pt-3">
               <p className="text-xs text-muted-foreground text-center py-4">

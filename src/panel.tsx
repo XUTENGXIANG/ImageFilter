@@ -28,7 +28,10 @@ export function FloatingPanel({ side, title, defaultOpen = true, autoOpenKey, gl
           inert={!open}
           aria-hidden={!open}
         >
-          <div className={`h-full flex flex-col border border-zinc-800 rounded-2xl overflow-hidden relative z-20 transition-colors duration-200 ${glass ? "bg-zinc-900/70" : "bg-zinc-900/95"}`}>
+          <div
+            className={`h-full flex flex-col border border-zinc-800 rounded-2xl overflow-hidden relative z-20 transition-colors duration-200 ${glass ? "" : "bg-zinc-900/95"}`}
+            style={glass ? { backgroundColor: "var(--glass-bg)" } : undefined}
+          >
             {/* Header with collapse button */}
             <div className="flex items-center justify-between px-3 py-2 border-b border-zinc-800/50 flex-shrink-0">
               <span className="text-xs font-semibold text-zinc-400 tracking-wider">{title}</span>
@@ -51,7 +54,8 @@ export function FloatingPanel({ side, title, defaultOpen = true, autoOpenKey, gl
           onClick={() => setOpen(true)}
           className={`absolute top-1/2 -translate-y-1/2 w-full h-10 border border-zinc-800 hover:bg-zinc-800 cursor-pointer flex items-center justify-center transition-colors duration-200 ${
             isLeft ? "right-0 rounded-r-lg border-l-0" : "left-0 rounded-l-lg border-r-0"
-          } ${glass ? "bg-zinc-900/70" : "bg-zinc-900"}`}
+          } ${glass ? "" : "bg-zinc-900"}`}
+          style={glass ? { backgroundColor: "var(--glass-bg)" } : undefined}
           title={isLeft ? t("panel.expandLeft") : t("panel.expandRight")}
         >
           <span className="text-[9px] text-zinc-500">{isLeft ? "▶" : "◀"}</span>

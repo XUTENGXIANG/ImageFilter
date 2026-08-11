@@ -24,6 +24,8 @@ export default {
     preloadDesc: "Preload full images of currently visible photos for faster viewer; takes effect immediately",
     transparentBg: "Transparent frosted background",
     transparentBgDesc: "Use Windows Mica glass that follows the dark/light theme; takes effect immediately",
+    transparentBgOpacity: "Glass opacity",
+    transparentBgOpacityDesc: "Adjust opacity of the title bar and floating glass surfaces; no effect when frosted background is off",
     more: "More settings coming soon...",
   },
 
