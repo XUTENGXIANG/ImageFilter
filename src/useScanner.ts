@@ -292,7 +292,7 @@ export function useScanner() {
     } finally {
       setImporting(false);
     }
-  }, [destDir, folderRule, fileRule]);
+  }, [destDir, folderRule, fileRule, customFolder, useCustomFolder]);
 
   /** Stop ongoing analysis */
   const stopAnalysis = useCallback(() => {

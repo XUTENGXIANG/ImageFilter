@@ -20,6 +20,16 @@ PixelFlow 是面向摄影师的 SD 卡照片智能导入工具：插卡 → 秒�
 
 ## 最近开发
 
+### 2026-08-11：修复导入到子文件夹不生效
+
+- 根因：`startImport` 的 useCallback 依赖数组缺少 `customFolder`/`useCustomFolder`，闭包使用首次渲染旧值
+- 依赖数组补全，勾选"导入到子文件夹"并输入名称后导入即时生效
+
+### 2026-08-11：MSI 安装包语言改 zh-CN
+
+- `tauri.conf.json` 增加 `wix.language: zh-CN`，MSI 产物名 `ImageFilter_1.0.0_x64_zh-CN.msi`，安装界面中文
+
+
 ### 2026-08-11：查看器勾选联动 + 软件更名 ImageFilter
 
 - 查看器新增勾选框与空格快捷键, 与缩略图多选(selectedPaths)联动, 查看器中勾选网格同步
