@@ -2,7 +2,7 @@
   "$schema": "./gen/schemas/desktop-schema.json",
   "identifier": "com.pixelflow.app",
   "productName": "PixelFlow",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "build": {
     "devUrl": "http://localhost:1420",
     "frontendDist": "../dist",

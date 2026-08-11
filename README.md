@@ -9,10 +9,10 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/XUTENGXIANG/PixelFlow/releases"><img src="https://img.shields.io/badge/release-v1.0--beta-1f883d" alt="Release"></a>
+  <a href="https://github.com/XUTENGXIANG/PixelFlow/releases"><img src="https://img.shields.io/badge/release-v1.0-1f883d" alt="Release"></a>
   <a href="#"><img src="https://img.shields.io/badge/platform-Windows%2010%2F11-lightgrey" alt="Platform"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="License"></a>
-  <a href="https://github.com/XUTENGXIANG/PixelFlow/releases/download/v1.0-beta/PixelFlow_0.1.0_x64-setup.exe"><img src="https://img.shields.io/badge/download-7.5MB-green" alt="Download"></a>
+  <a href="https://github.com/XUTENGXIANG/PixelFlow/releases/download/v1.0/PixelFlow_1.0.0_x64-setup.exe"><img src="https://img.shields.io/badge/download-7.5MB-green" alt="Download"></a>
 </p>
 
 ---
@@ -41,7 +41,7 @@
 └─────────────┴─────────────────────────────┴─────────────┘
 ```
 
-双击照片打开全屏查看器：滚轮缩放、拖动平移、旋转，查看器中直接评分。
+双击照片打开全屏查看器：滚轮缩放、拖动平移、旋转，查看器中直接评分。界面支持深色 / 浅色主题、中英文切换、Windows Mica 毛玻璃背景。
 
 ## 安装
 
@@ -58,7 +58,7 @@
 
 1. 将 SD 卡或相机连接到电脑，左侧自动识别设备
 2. 点击设备，浏览文件夹，点进目标文件夹查看照片
-3. 单击选中照片，`Ctrl` 加选 / `Shift` 连选
+3. 单击勾选照片（再点取消），`Shift` 点击范围连选
 4. 底部选择导入目标文件夹，点击"导入"
 
 ### 快捷键
@@ -69,7 +69,7 @@
 | `X` | 废弃（0 星） |
 | `1`–`5` | 星级评分 |
 | `←` / `→` | 查看器切换照片 |
-| `R` | 查看器旋转 |
+| `R` / `Shift+R` | 查看器旋转 |
 | `0` | 查看器重置视图 |
 
 ### 命名规则
@@ -90,6 +90,7 @@
 | 框架 | Tauri 2, React 19, TypeScript |
 | UI | Tailwind CSS 4, shadcn/ui, IconPark |
 | RAW 解码 | rawler, WIC, tinydng, zune-jpeg |
+| 缩略图 | Windows Shell（IShellItemImageFactory） |
 | 图像分析 | imgfprint, 纯算法（拉普拉斯/直方图） |
 | 存储 | SQLite |
 
@@ -118,14 +119,14 @@ npx tauri build
 
 ```
 src/                  # React 前端
-  App.tsx             # 主界面（三栏布局）
+  App.tsx             # 主界面（三栏布局 + 浮窗工具条）
   useScanner.ts       # 状态管理与业务逻辑
-  viewer.tsx          # 图片查看器
-  contextmenu.tsx     # 右键菜单
-  panel.tsx           # 浮窗面板
+  viewer.tsx          # 图片查看器（渐进加载）
+  i18n/               # 中英文翻译（zh / en）
+  components/         # 浮窗面板/工具条/照片卡片等组件
 src-tauri/            # Rust 后端
   src/
-    scanner.rs        # 扫描/EXIF/缩略图/弹出设备
+    scanner/          # 设备/浏览/EXIF/图片解码模块
     analyzer.rs       # 模糊/曝光/重复检测
     importer.rs       # 导入引擎
     win_wic.rs        # Windows WIC 解码
