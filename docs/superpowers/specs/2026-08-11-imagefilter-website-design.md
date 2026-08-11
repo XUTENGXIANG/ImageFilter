@@ -6,9 +6,9 @@
 
 ## 1. 背景与目标
 
-ImageFilter 是面向摄影师的 SD 卡照片智能导入工具（Tauri 2 + React 19，v1.0.0 已发布，支持 Windows/macOS）。现有宣传渠道只有 GitHub README，需要一个产品落地页来介绍产品并引导下载。
+ImageFilter 是围绕摄影师「拍摄 — 初筛 — 归档」核心工作流打造的 RAW 照片筛选与归档工具，让创作者从海量照片中快速完成选片，专注拍摄本身。产品以 Tauri 2 + React 19 构建，v1.0.0 已发布，支持 Windows 与 macOS。现有宣传渠道仅有 GitHub README，需要一个能完整呈现产品气质与核心体验的官方落地页。
 
-**目标**：一页式产品官网，参考 [ui.aceternity.com](https://ui.aceternity.com) 首页的视觉语言（深色 + 光晕 + 居中模拟应用窗口），核心亮点是一个**可交互的迷你程序演示**——网页里直接运行 ImageFilter 真实 UI 的缩小版。
+**目标**：一页式产品官网，以 [ui.aceternity.com](https://ui.aceternity.com) 首页的视觉语言（深色氛围光晕 + 居中应用窗口展示）确立产品调性，核心亮点是一个**可交互的迷你程序演示**——网页内直接运行 ImageFilter 真实 UI 的缩小版，访客未下载即可完整体验选片工作流。
 
 ## 2. 需求决策（已与用户确认）
 
@@ -102,7 +102,7 @@ mock 模块导出与软件代码相同的 API 形状：
 | 区块 | 内容 |
 |------|------|
 | Nav | Logo + 产品名 · 锚点（特性/工作流/下载）· 中/EN 切换 |
-| Hero | 大标题「ImageFilter」+ 一句话定位（SD 卡照片智能导入工具）+ Windows/macOS 双下载按钮 + 迷你演示窗口 |
+| Hero | 大标题「ImageFilter」+ 一句话定位（为创作者而生的 RAW 选片与归档工作流）+ Windows/macOS 双下载按钮 + 迷你演示窗口 |
 | Features | 6 卡片：RAW 原生解码 · LrC 同款星级筛选 · AI 废片检测 · 命名规则自动归档 · MD5 数据校验 · 全部本地处理 |
 | Workflow | 三步：插卡自动识别 → 秒级预览 + 星级筛选 → 一键导入归档 |
 | Download | v1.0.0 + 安装包卡片（setup.exe 推荐 / zh-CN.msi / macOS universal.dmg）+ GitHub Releases 链接 |
