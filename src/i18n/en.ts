@@ -13,7 +13,8 @@ export default {
 
   settings: {
     title: "Settings",
-    subtitle: "PixelFlow application settings",
+    subtitle: "ImageFilter application settings",
+    version: "Version {v}",
     theme: "Theme",
     themeDesc: "Dark / Light",
     dark: "Dark",
@@ -28,20 +29,19 @@ export default {
     transparentBgOpacityDesc: "Adjust opacity of the title bar glass background; floating panels are unaffected, no effect when frosted background is off",
     backgroundOpacity: "Background glass opacity",
     backgroundOpacityDesc: "Adjust opacity of the large frosted background behind floating panels; floating panels are unaffected, no effect when frosted background is off",
-    more: "More settings coming soon...",
   },
 
   help: {
     title: "Quick Guide",
-    subtitle: "PixelFlow — SD card photo importer",
+    subtitle: "ImageFilter — Photo Importer",
     step1Title: "Insert SD card",
-    step1Desc: "Insert your camera card; removable devices appear in the left panel",
+    step1Desc: "Insert your camera card; devices are detected automatically",
     step2Title: "Browse photos",
-    step2Desc: "Click a device → folder tree loads instantly → click a folder to view photos",
+    step2Desc: "Filter by format, view EXIF, preview thumbnails, view RAW originals...",
     step3Title: "Filter & rate",
-    step3Desc: "Run AI analysis to flag bad shots, hover thumbnails to rate by stars",
+    step3Desc: "Run AI analysis to check",
     step4Title: "Import",
-    step4Desc: "Select photos → pick destination → click Import (naming rules supported)",
+    step4Desc: "Select photos → pick destination → click Import",
     shortcuts: "Keyboard Shortcuts",
     keep: "Keep (3★)",
     trash: "Reject (0★)",
@@ -165,7 +165,7 @@ export default {
   },
 
   welcome: {
-    subtitle: "SD card photo importer",
+    subtitle: "Photo filter & import tool",
     keep: "Keep",
     trash: "Reject",
     star: "Rate",

@@ -183,21 +183,21 @@ function App() {
   const [viewerIndex, setViewerIndex] = useState<number | null>(null);
   const [viewerOrigin, setViewerOrigin] = useState<{ x: number; y: number; w: number; h: number } | undefined>(undefined);
   // 透明毛玻璃背景: 默认开启, 深色/浅色随主题切换
-  const [transparentBg, setTransparentBg] = useState<boolean>(() => localStorage.getItem("pixelflow-glass") !== "0");
+  const [transparentBg, setTransparentBg] = useState<boolean>(() => localStorage.getItem("imagefilter-glass") !== "0");
 
   useEffect(() => {
-    localStorage.setItem("pixelflow-glass", transparentBg ? "1" : "0");
+    localStorage.setItem("imagefilter-glass", transparentBg ? "1" : "0");
   }, [transparentBg]);
 
   // 浮窗后面整块背景毛玻璃的透明度: 默认 0% 完全透明
   const [backgroundOpacity, setBackgroundOpacity] = useState<number>(() => {
-    const v = Number(localStorage.getItem("pixelflow-background-opacity"));
+    const v = Number(localStorage.getItem("imagefilter-background-opacity"));
     return Number.isFinite(v) ? Math.min(100, Math.max(0, v)) : 0;
   });
 
   useEffect(() => {
     document.documentElement.style.setProperty("--background-opacity", `${backgroundOpacity}%`);
-    localStorage.setItem("pixelflow-background-opacity", String(backgroundOpacity));
+    localStorage.setItem("imagefilter-background-opacity", String(backgroundOpacity));
   }, [backgroundOpacity]);
 
   // 导入栏/工具栏默认收起: 照片或选中数从空变非空时自动展开, 清空后自动收起

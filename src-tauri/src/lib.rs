@@ -11,7 +11,7 @@ use tauri::window::{Effect, EffectsBuilder};
 
 #[tauri::command]
 fn greet(name: String) -> String {
-    format!("Hello, {}! PixelFlow is running.", name)
+    format!("Hello, {}! ImageFilter is running.", name)
 }
 
 #[tauri::command]
@@ -46,7 +46,7 @@ pub fn run() {
                 .path()
                 .app_data_dir()
                 .expect("failed to resolve app data dir")
-                .join("pixel-flow.db");
+                .join("image-filter.db");
 
             // Ensure parent directory exists
             if let Some(parent) = db_path.parent() {

@@ -1,10 +1,10 @@
 [package]
-name = "pixel-flow"
+name = "image-filter"
 version = "0.1.0"
 edition = "2021"
 
 [lib]
-name = "pixel_flow_lib"
+name = "image_filter_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]

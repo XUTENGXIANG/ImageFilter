@@ -1,6 +1,6 @@
 // ═══════════════════════════════════════════════════════
 // i18n 初始化 — 界面多语言 (zh / en)
-// 语言选择持久化在 localStorage "pixelflow-lang"
+// 语言选择持久化在 localStorage "imagefilter-lang"
 // 新增翻译: 在 zh.ts / en.ts 对应位置添加 key
 // ═══════════════════════════════════════════════════════
 import i18n from "i18next";
@@ -11,7 +11,7 @@ import en from "./en";
 export type Lang = "zh" | "en";
 
 const saved = (() => {
-  try { return localStorage.getItem("pixelflow-lang") as Lang | null; }
+  try { return localStorage.getItem("imagefilter-lang") as Lang | null; }
   catch { return null; }
 })();
 
@@ -29,7 +29,7 @@ i18n.use(initReactI18next).init({
 /** 切换界面语言并持久化 */
 export function setLanguage(lng: Lang) {
   i18n.changeLanguage(lng);
-  try { localStorage.setItem("pixelflow-lang", lng); } catch {}
+  try { localStorage.setItem("imagefilter-lang", lng); } catch {}
 }
 
 export default i18n;

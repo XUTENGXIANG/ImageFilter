@@ -134,7 +134,7 @@ export function useScanner() {
   const [analysis, setAnalysis] = useState<Record<string, AnalysisResult>>({});
   // Ratings & sort
   const [ratings, setRatings] = useState<Record<string, number>>(() => {
-    try { return JSON.parse(localStorage.getItem("pixelflow-ratings") || "{}"); }
+    try { return JSON.parse(localStorage.getItem("imagefilter-ratings") || "{}"); }
     catch { return {}; }
   });
   const [sortBy, setSortBy] = useState<"name" | "type" | "date">("name");
@@ -143,7 +143,7 @@ export function useScanner() {
   const setRating = useCallback((path: string, stars: number) => {
     setRatings((prev) => {
       const next = { ...prev, [path]: stars };
-      try { localStorage.setItem("pixelflow-ratings", JSON.stringify(next)); } catch {}
+      try { localStorage.setItem("imagefilter-ratings", JSON.stringify(next)); } catch {}
       return next;
     });
   }, []);
@@ -156,12 +156,12 @@ export function useScanner() {
 
   // 可见区域全图预加载开关（App 中由 IntersectionObserver 触发）
   const [preloadFull, setPreloadFull] = useState(() => {
-    try { return localStorage.getItem("pixelflow-preload-full") === "true"; } catch { return false; }
+    try { return localStorage.getItem("imagefilter-preload-full") === "true"; } catch { return false; }
   });
   const togglePreloadFull = useCallback(() => {
     setPreloadFull((prev) => {
       const next = !prev;
-      try { localStorage.setItem("pixelflow-preload-full", String(next)); } catch {}
+      try { localStorage.setItem("imagefilter-preload-full", String(next)); } catch {}
       return next;
     });
   }, []);

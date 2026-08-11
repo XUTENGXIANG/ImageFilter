@@ -33,13 +33,13 @@ export function TitleBar({
   const [showSettings, setShowSettings] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
   const [theme, setTheme] = useState<"dark" | "light">(() =>
-    (localStorage.getItem("pixelflow-theme") as "dark" | "light") || "light"
+    (localStorage.getItem("imagefilter-theme") as "dark" | "light") || "light"
   );
   const [lang, setLang] = useState<Lang>(() =>
-    (localStorage.getItem("pixelflow-lang") as Lang) || "zh"
+    (localStorage.getItem("imagefilter-lang") as Lang) || "zh"
   );
   const [glassOpacity, setGlassOpacity] = useState<number>(() => {
-    const v = Number(localStorage.getItem("pixelflow-glass-opacity"));
+    const v = Number(localStorage.getItem("imagefilter-glass-opacity"));
     return Number.isFinite(v) ? Math.min(100, Math.max(0, v)) : 70;
   });
   useEffect(() => {
@@ -51,12 +51,12 @@ export function TitleBar({
       root.classList.remove("dark");
       root.setAttribute("data-theme", "light");
     }
-    localStorage.setItem("pixelflow-theme", theme);
+    localStorage.setItem("imagefilter-theme", theme);
   }, [theme]);
 
   useEffect(() => {
     document.documentElement.style.setProperty("--glass-opacity", `${glassOpacity}%`);
-    localStorage.setItem("pixelflow-glass-opacity", String(glassOpacity));
+    localStorage.setItem("imagefilter-glass-opacity", String(glassOpacity));
   }, [glassOpacity]);
 
   // 一律使用 Mica(失焦时系统自动回退为纯色), 仅在开关/主题变化时应用
@@ -73,7 +73,7 @@ export function TitleBar({
       className={`h-9 flex items-center justify-between px-1 select-none flex-shrink-0 transition-colors duration-200 ${transparentBg ? "" : "bg-zinc-900"}`}
       style={transparentBg ? { backgroundColor: "var(--glass-bg)" } : undefined}
     >
-      <span className="text-[11px] text-zinc-500 ml-3">PixelFlow</span>
+      <span className="text-[11px] text-zinc-500 ml-3">ImageFilter</span>
       {/* ── 标题栏按钮组 ─────────────────────────────
           每个按钮的尺寸调整方法:
             - 宽度:  改 w-8(32px) / w-10(40px) → w-9(36px)、w-12(48px) 等任意值
@@ -222,9 +222,10 @@ export function TitleBar({
                 <span className="text-xs text-muted-foreground w-8 text-right">{backgroundOpacity}%</span>
               </div>
             </div>
+            {/* 版本信息 */}
             <div className="border-t border-border pt-3">
-              <p className="text-xs text-muted-foreground text-center py-4">
-                {t("settings.more")}
+              <p className="text-xs text-muted-foreground text-center pt-2">
+                {t("settings.version", { v: "1.0.0" })}
               </p>
             </div>
           </div>

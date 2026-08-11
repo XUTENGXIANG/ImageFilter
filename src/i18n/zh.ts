@@ -15,7 +15,8 @@ export default {
   // ── 设置面板 ──
   settings: {
     title: "设置",
-    subtitle: "PixelFlow 应用设置",
+    subtitle: "ImageFilter 应用设置",
+    version: "版本 {v}",
     theme: "主题",
     themeDesc: "深色 / 浅色",
     dark: "深色",
@@ -30,21 +31,20 @@ export default {
     transparentBgOpacityDesc: "调节标题栏玻璃背景的透明度；不影响浮窗，关闭毛玻璃时无效",
     backgroundOpacity: "背景玻璃透明度",
     backgroundOpacityDesc: "调节浮窗后面整块背景毛玻璃的透明度；不影响浮窗，关闭毛玻璃时无效",
-    more: "更多设置项即将上线...",
   },
 
   // ── 使用说明 ──
   help: {
     title: "使用说明",
-    subtitle: "PixelFlow — SD 卡照片智能导入工具",
+    subtitle: "ImageFilter — 照片导入工具",
     step1Title: "插入 SD 卡",
-    step1Desc: "插入相机存储卡，左栏自动检测设备（U盘图标=可移动设备）",
+    step1Desc: "插入相机存储卡，左栏自动检测设备",
     step2Title: "浏览照片",
-    step2Desc: "点设备 → 文件夹树秒出 → 点文件夹查看照片",
+    step2Desc: "可筛格式类型，查看 EXIF，略缩图预览，raw原图查看...",
     step3Title: "筛选/评分",
-    step3Desc: "点 AI 分析检查废片，hover 缩略图打星评分",
+    step3Desc: "点 AI 分析检查",
     step4Title: "导入电脑",
-    step4Desc: "勾选照片 → 选目标文件夹 → 点导入（支持命名规则）",
+    step4Desc: "勾选照片 → 选目标文件夹 → 点导入",
     shortcuts: "键盘快捷键",
     keep: "保留(3星)",
     trash: "废弃(0星)",
@@ -78,7 +78,7 @@ export default {
     selectDevice: "选择设备",
     browsing: "浏览中...",
     loading: "加载中...",
-    counting: "正在读取照片数...",
+    counting: "正在读取照片...",
     photos: "{n} 张",
     ready: "就绪",
   },
@@ -175,7 +175,7 @@ export default {
 
   // ── 欢迎页 ──
   welcome: {
-    subtitle: "SD 卡照片智能导入工具",
+    subtitle: "照片筛选导入工具",
     keep: "保留",
     trash: "废弃",
     star: "星级",

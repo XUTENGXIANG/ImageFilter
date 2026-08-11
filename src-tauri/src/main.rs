@@ -2,5 +2,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
-    pixel_flow_lib::run();
+    image_filter_lib::run();
 }

@@ -1,25 +1,25 @@
 <p align="center">
-  <img src="src-tauri/icons/128x128.png" alt="PixelFlow" width="96">
+  <img src="src-tauri/icons/128x128.png" alt="ImageFilter" width="96">
 </p>
 
-<h1 align="center">PixelFlow</h1>
+<h1 align="center">ImageFilter</h1>
 
 <p align="center">
   SD 卡照片智能导入工具 — 快速预览、筛选、导入，全程本地处理
 </p>
 
 <p align="center">
-  <a href="https://github.com/XUTENGXIANG/PixelFlow/releases"><img src="https://img.shields.io/badge/release-v1.0-1f883d" alt="Release"></a>
+  <a href="https://github.com/XUTENGXIANG/ImageFilter/releases"><img src="https://img.shields.io/badge/release-v1.0-1f883d" alt="Release"></a>
   <a href="#"><img src="https://img.shields.io/badge/platform-Windows%2010%2F11-lightgrey" alt="Platform"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="License"></a>
-  <a href="https://github.com/XUTENGXIANG/PixelFlow/releases/download/v1.0/PixelFlow_1.0.0_x64-setup.exe"><img src="https://img.shields.io/badge/download-7.5MB-green" alt="Download"></a>
+  <a href="https://github.com/XUTENGXIANG/ImageFilter/releases/download/v1.0/ImageFilter_1.0.0_x64-setup.exe"><img src="https://img.shields.io/badge/download-7.5MB-green" alt="Download"></a>
 </p>
 
 ---
 
 ## 简介
 
-摄影师的痛点是每次从 SD 卡倒照片都要经历漫长的等待和繁琐的手动整理。PixelFlow 把整个流程压缩为三步：**插入存储卡 → 快速筛选 → 一键导入**。
+摄影师的痛点是每次从 SD 卡倒照片都要经历漫长的等待和繁琐的手动整理。ImageFilter 把整个流程压缩为三步：**插入存储卡 → 快速筛选 → 一键导入**。
 
 - 文件夹结构即时加载，数千张照片流畅浏览
 - 主流 RAW 格式原生支持，DNG 内置专用解码器
@@ -45,12 +45,12 @@
 
 ## 安装
 
-从 [Releases](https://github.com/XUTENGXIANG/PixelFlow/releases) 页面下载对应安装包：
+从 [Releases](https://github.com/XUTENGXIANG/ImageFilter/releases) 页面下载对应安装包：
 
 | 文件 | 说明 |
 |------|------|
-| `PixelFlow_x64-setup.exe` | NSIS 安装包，推荐 |
-| `PixelFlow_x64_en-US.msi` | MSI 安装包 |
+| `ImageFilter_x64-setup.exe` | NSIS 安装包，推荐 |
+| `ImageFilter_x64_en-US.msi` | MSI 安装包 |
 
 双击运行，按提示完成安装。无需额外运行时（WebView2 系统自带）。
 
@@ -100,8 +100,8 @@
 
 ```bash
 # 克隆仓库
-git clone https://github.com/XUTENGXIANG/PixelFlow.git
-cd PixelFlow
+git clone https://github.com/XUTENGXIANG/ImageFilter.git
+cd ImageFilter
 
 # 安装依赖
 npm install

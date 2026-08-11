@@ -129,7 +129,7 @@ pub async fn get_preview_image(file_path: String) -> Result<String, String> {
         return Ok(file_path);
     }
 
-    let cache_dir = cache_dir().ok_or("No cache dir")?.join("pixel-flow").join("preview_v3");
+    let cache_dir = cache_dir().ok_or("No cache dir")?.join("image-filter").join("preview_v3");
     std::fs::create_dir_all(&cache_dir).map_err(|e| format!("Mkdir: {}", e))?;
 
     let mtime = std::fs::metadata(src)
@@ -177,7 +177,7 @@ pub async fn get_full_image(file_path: String) -> Result<String, String> {
         return Ok(file_path);
     }
 
-    let cache_dir = cache_dir().ok_or("No cache dir")?.join("pixel-flow").join("full_v3");
+    let cache_dir = cache_dir().ok_or("No cache dir")?.join("image-filter").join("full_v3");
     std::fs::create_dir_all(&cache_dir).map_err(|e| format!("Mkdir: {}", e))?;
 
     let mtime = std::fs::metadata(src)
@@ -414,7 +414,7 @@ fn thumb_single(file_path: &str, max_size: u32) -> Result<String, String> {
         return Err(format!("File not found: {}", file_path));
     }
 
-    let cache_dir = cache_dir().ok_or("No cache dir")?.join("pixel-flow").join("thumbnails_v2");
+    let cache_dir = cache_dir().ok_or("No cache dir")?.join("image-filter").join("thumbnails_v2");
     std::fs::create_dir_all(&cache_dir).map_err(|e| format!("Mkdir: {}", e))?;
 
     let mtime = std::fs::metadata(src)

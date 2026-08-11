@@ -2240,6 +2240,37 @@ dependencies = [
 ]
 
 [[package]]
+name = "image-filter"
+version = "0.1.0"
+dependencies = [
+ "cc",
+ "image",
+ "imgfprint",
+ "indicatif",
+ "inspect_path",
+ "kamadak-exif",
+ "md-5",
+ "memmap2",
+ "rawler",
+ "rayon",
+ "serde",
+ "serde_json",
+ "sha2",
+ "sqlx",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-dialog",
+ "tauri-plugin-fs",
+ "tauri-plugin-notification",
+ "tauri-plugin-opener",
+ "thiserror 2.0.19",
+ "tokio",
+ "walkdir",
+ "windows 0.62.2",
+ "zune-jpeg 0.4.21",
+]
+
+[[package]]
 name = "image-webp"
 version = "0.2.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3619,37 +3650,6 @@ dependencies = [
  "atomic-waker",
  "fastrand",
  "futures-io",
-]
-
-[[package]]
-name = "pixel-flow"
-version = "0.1.0"
-dependencies = [
- "cc",
- "image",
- "imgfprint",
- "indicatif",
- "inspect_path",
- "kamadak-exif",
- "md-5",
- "memmap2",
- "rawler",
- "rayon",
- "serde",
- "serde_json",
- "sha2",
- "sqlx",
- "tauri",
- "tauri-build",
- "tauri-plugin-dialog",
- "tauri-plugin-fs",
- "tauri-plugin-notification",
- "tauri-plugin-opener",
- "thiserror 2.0.19",
- "tokio",
- "walkdir",
- "windows 0.62.2",
- "zune-jpeg 0.4.21",
 ]
 
 [[package]]

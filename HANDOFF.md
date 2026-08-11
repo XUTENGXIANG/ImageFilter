@@ -1,10 +1,10 @@
-# PixelFlow 交接文档(给 Codex)
+# ImageFilter 交接文档(给 Codex)
 
 > 交接时间:2026-08-10。由 Claude Code 交接,当前 HEAD `d5338c1`。
 
 ## 1. 项目是什么
 
-**PixelFlow** — SD 卡照片智能导入工具(Tauri 2 桌面应用):
+**ImageFilter** — SD 卡照片智能导入工具(Tauri 2 桌面应用):
 插卡 → 秒级预览(RAW 原生支持)→ 星级评分/AI 废片检测 → 一键导入电脑。
 
 技术栈:
@@ -23,7 +23,7 @@ npx tauri dev
 **tauri dev 做的事**(按顺序):
 1. 先执行 `beforeDevCommand`(`npm run dev`)启动 Vite dev server,端口 **1420**
 2. 编译 Rust(`src-tauri/`,首次 2-5 分钟,之后增量秒级)
-3. 编译完成后自动启动 `pixel-flow.exe`,**桌面弹出应用窗口**
+3. 编译完成后自动启动 `image-filter.exe`,**桌面弹出应用窗口**
 
 窗口参数([tauri.conf.json](src-tauri/tauri.conf.json)):1200x800、最小 900x600、**decorations: false(无边框)**,标题栏是 React 自绘组件,靠 `data-tauri-drag-region` 属性实现拖拽移动窗口。
 
@@ -47,7 +47,7 @@ npx tauri dev                                 # 重启
 ### 确认窗口是否在运行
 
 ```bash
-tasklist | grep -i pixel-flow   # 看到 pixel-flow.exe 即窗口在跑
+tasklist | grep -i image-filter   # 看到 image-filter.exe 即窗口在跑
 ```
 
 ## 3. git 状态
@@ -92,7 +92,7 @@ src-tauri/
 
 1. **viewer.tsx 的加载状态机别乱简化** — 每个分支(首次260ms延迟/切换立即/快速切换120ms debounce/全解码300ms debounce)都是修"闪黑/卡顿"bug 得出来的,删任何分支都会回归视觉 bug
 2. **生产版图片显示依赖 CSP** — tauri.conf.json 的 csp 必须包含 `img-src ... http://asset.localhost`(Windows 生产构建 asset 协议默认 http 而非 https;`use_https_scheme` 默认 false)。删了安装版全部图片会黑
-3. **缩略图缓存目录**:`%LOCALAPPDATA%\pixel-flow\thumbnails_v2|preview_v3|full_v3`,缓存键 = path+mtime 哈希;`full_v3` 只接受长边 ≥1500px 的全图缓存,低分辨率缓存会自动作废重建
+3. **缩略图缓存目录**:`%LOCALAPPDATA%\image-filter\thumbnails_v2|preview_v3|full_v3`,缓存键 = path+mtime 哈希;`full_v3` 只接受长边 ≥1500px 的全图缓存,低分辨率缓存会自动作废重建
 4. **RAW 解码链路**:内嵌JPEG(mmap 零解码)→ WIC(300ms级)→ rawler 全解码(慢, 有 Semaphore 并发1 + AtomicU64 任务号防堆积)
 5. **DNG 独立路径**:rawler 完整显影(`raw_to_srgb`, 与 Windows Photos 同一档清晰度)→ tinydng → WIC,不与其他 RAW 混用;`win_wic.rs` 已补 `CoInitializeEx`,否则 WIC 直接失败
 6. **IOCTL 弹出设备**:CreateFileW 必须 GENERIC_READ|GENERIC_WRITE,序列 LOCK→DISMOUNT→MEDIA_REMOVAL→EJECT;CreateFileW 在 windows crate 需要 `Win32_Security` feature

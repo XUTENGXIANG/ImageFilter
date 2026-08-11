@@ -1,7 +1,7 @@
 {
   "$schema": "./gen/schemas/desktop-schema.json",
-  "identifier": "com.pixelflow.app",
-  "productName": "PixelFlow",
+  "identifier": "com.imagefilter.app",
+  "productName": "ImageFilter",
   "version": "1.0.0",
   "build": {
     "devUrl": "http://localhost:1420",
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "PixelFlow",
+        "title": "ImageFilter",
         "width": 1200,
         "height": 800,
         "minWidth": 900,
@@ -43,10 +43,10 @@
       "icons/icon.ico"
     ],
     "category": "Utility",
-    "copyright": "PixelFlow Contributors",
-    "publisher": "PixelFlow",
+    "copyright": "ImageFilter Contributors",
+    "publisher": "ImageFilter",
     "shortDescription": "SD 卡照片智能导入工具",
-    "longDescription": "PixelFlow — 插卡→秒级预览→AI筛废片→一键导入电脑。支持主流 RAW 格式、视频缩略图、星级评分、命名规则导入。",
+    "longDescription": "ImageFilter — 插卡→秒级预览→AI筛废片→一键导入电脑。支持主流 RAW 格式、视频缩略图、星级评分、命名规则导入。",
     "windows": {
       "nsis": {
         "installMode": "currentUser",

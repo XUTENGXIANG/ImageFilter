@@ -3,15 +3,15 @@ import { Tip } from "./tip";
 
 export function ThumbSizeSlider() {
   const [cols, setCols] = useState(() => {
-    try { return parseInt(localStorage.getItem("pixelflow-cols") || "4"); }
+    try { return parseInt(localStorage.getItem("imagefilter-cols") || "4"); }
     catch { return 4; }
   });
   useEffect(() => {
-    const id = "pixelflow-grid-cols";
+    const id = "imagefilter-grid-cols";
     let el = document.getElementById(id) as HTMLStyleElement | null;
     if (!el) { el = document.createElement("style"); el.id = id; document.head.appendChild(el); }
     el.textContent = `.photo-grid { grid-template-columns: repeat(${cols}, minmax(0, 1fr)); }`;
-    localStorage.setItem("pixelflow-cols", String(cols));
+    localStorage.setItem("imagefilter-cols", String(cols));
   }, [cols]);
   const pct = ((cols - 2) / (8 - 2)) * 100;
   return (
