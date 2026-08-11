@@ -527,6 +527,8 @@ function App() {
           onClose={() => setViewerIndex(null)}
           originRect={viewerOrigin}
           thumbnails={thumbnails}
+          selectedPaths={selectedPaths}
+          onToggleSelect={(path) => handlePhotoClick(path, { ctrlKey: false, shiftKey: false })}
         />
       )}
       {/* 弹出提示浮窗 — 渐变出现停留1秒后消失 */}

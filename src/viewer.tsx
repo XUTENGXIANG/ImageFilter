@@ -17,6 +17,8 @@ interface Props {
   onClose: () => void;
   originRect?: { x: number; y: number; w: number; h: number }; // 缩略图位置
   thumbnails: Record<string, string>; // 已有缩略图缓存 (秒显)
+  selectedPaths: Set<string>; // 多选状态(与缩略图联动)
+  onToggleSelect: (path: string) => void; // 切换勾选
 }
 
 function preloadImage(src: string): Promise<string> {
@@ -36,7 +38,7 @@ function preloadImage(src: string): Promise<string> {
   });
 }
 
-export function PhotoViewer({ photos, index, ratings, onRate, onClose, originRect, thumbnails }: Props) {
+export function PhotoViewer({ photos, index, ratings, onRate, onClose, originRect, thumbnails, selectedPaths, onToggleSelect }: Props) {
   const { t } = useTranslation();
   const [cur, setCur] = useState(index);
   // 缩放动画: entering=true 从缩略图位置放大; leaving=true 缩回后关闭
@@ -242,6 +244,7 @@ export function PhotoViewer({ photos, index, ratings, onRate, onClose, originRec
       else if (e.key.toLowerCase() === "j") { onRate(photo.path, 3); }
       else if (e.key.toLowerCase() === "x") { onRate(photo.path, 0); }
       else if (e.key >= "1" && e.key <= "5") { onRate(photo.path, Number(e.key)); }
+      else if (e.key === " ") { e.preventDefault(); onToggleSelect(photo.path); } // 空格: 切换勾选
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
@@ -304,6 +307,16 @@ export function PhotoViewer({ photos, index, ratings, onRate, onClose, originRec
           </span>
         </div>
         <div className="flex items-center gap-1">
+          {/* 勾选框 — 与缩略图多选联动, 空格键切换 */}
+          <Tip label={selectedPaths.has(photo.path) ? t("viewer.unselect") : t("viewer.select")}>
+          <button data-tauri-drag-region={false} onClick={() => onToggleSelect(photo.path)}
+            className={`w-5 h-5 rounded border-2 flex items-center justify-center transition-colors ${
+              selectedPaths.has(photo.path) ? "bg-emerald-500 border-emerald-500" : "border-zinc-500 hover:border-zinc-300"
+            }`}
+          >
+            {selectedPaths.has(photo.path) && <span className="text-white text-[10px] font-bold leading-none">✓</span>}
+          </button>
+          </Tip>
           {/* 旋转按钮 — 逆时针/顺时针 */}
           <Tip label={t("viewer.rotateCCW")}>
           <button data-tauri-drag-region={false} onClick={() => setRotation((r) => (r + 270) % 360)}

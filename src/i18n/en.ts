@@ -49,6 +49,7 @@ export default {
     rotate: "Rotate (viewer)",
     nav: "Navigate (viewer)",
     reset: "Reset (viewer)",
+    select: "Select (viewer)",
     multi: "Multi-select",
     range: "Range select",
     contextMenu: "Context Menu",
@@ -184,6 +185,8 @@ export default {
     reset: "0 reset",
     rotate: "R rotate",
     rate: "J keep / X reject / 1-5 rate",
+    select: "Select (Space)",
+    unselect: "Deselect (Space)",
   },
 
   // ── Collapsible bars ──

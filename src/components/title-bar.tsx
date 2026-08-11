@@ -254,6 +254,7 @@ export function TitleBar({
                 <span><kbd className="px-1 bg-muted rounded">R</kbd> {t("help.rotate")}</span>
                 <span><kbd className="px-1 bg-muted rounded">←→</kbd> {t("help.nav")}</span>
                 <span><kbd className="px-1 bg-muted rounded">0</kbd> {t("help.reset")}</span>
+                <span><kbd className="px-1 bg-muted rounded">空格</kbd> {t("help.select")}</span>
                 <span><kbd className="px-1 bg-muted rounded">Ctrl+点击</kbd> {t("help.multi")}</span>
                 <span><kbd className="px-1 bg-muted rounded">Shift+点击</kbd> {t("help.range")}</span>
               </div>

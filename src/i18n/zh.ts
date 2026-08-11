@@ -52,6 +52,7 @@ export default {
     rotate: "旋转(查看器)",
     nav: "切换(查看器)",
     reset: "重置(查看器)",
+    select: "勾选(查看器)",
     multi: "多选",
     range: "范围选择",
     contextMenu: "右键菜单",
@@ -195,6 +196,8 @@ export default {
     reset: "0 重置",
     rotate: "R 旋转",
     rate: "J 保留 / X 废弃 / 1-5 星级",
+    select: "勾选 (空格)",
+    unselect: "取消勾选 (空格)",
   },
 
   // ── 折叠工具条 ──
