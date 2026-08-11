@@ -14,6 +14,8 @@
   -moz-osx-font-smoothing: grayscale;
   --glass-opacity: 70%;
   --glass-bg: color-mix(in oklab, var(--color-zinc-900) var(--glass-opacity), transparent);
+  --background-opacity: 0%;
+  --background-bg: color-mix(in oklab, var(--color-zinc-950) var(--background-opacity), transparent);
   --glass-fade: color-mix(in oklab, var(--color-zinc-950) var(--glass-opacity), transparent);
   --background: oklch(1 0 0);
   --foreground: oklch(0.145 0 0);

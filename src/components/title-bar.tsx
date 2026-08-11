@@ -37,6 +37,10 @@ export function TitleBar({
     const v = Number(localStorage.getItem("pixelflow-glass-opacity"));
     return Number.isFinite(v) ? Math.min(100, Math.max(0, v)) : 70;
   });
+  const [backgroundOpacity, setBackgroundOpacity] = useState<number>(() => {
+    const v = Number(localStorage.getItem("pixelflow-background-opacity"));
+    return Number.isFinite(v) ? Math.min(100, Math.max(0, v)) : 0;
+  });
   useEffect(() => {
     const root = document.documentElement;
     if (theme === "dark") {
@@ -53,6 +57,11 @@ export function TitleBar({
     document.documentElement.style.setProperty("--glass-opacity", `${glassOpacity}%`);
     localStorage.setItem("pixelflow-glass-opacity", String(glassOpacity));
   }, [glassOpacity]);
+
+  useEffect(() => {
+    document.documentElement.style.setProperty("--background-opacity", `${backgroundOpacity}%`);
+    localStorage.setItem("pixelflow-background-opacity", String(backgroundOpacity));
+  }, [backgroundOpacity]);
 
   useEffect(() => {
     invoke("set_glass_bg", { enabled: transparentBg, dark: theme === "dark" }).catch(() => {});
@@ -176,6 +185,24 @@ export function TitleBar({
                   className="flex-1 thumb-slider"
                 />
                 <span className="text-xs text-muted-foreground w-8 text-right">{glassOpacity}%</span>
+              </div>
+            </div>
+            <div className={`flex items-start justify-between gap-3 ${transparentBg ? "" : "opacity-50"}`}>
+              <div className="flex-1 min-w-0">
+                <p className="text-sm text-foreground">{t("settings.backgroundOpacity")}</p>
+                <p className="text-xs text-muted-foreground">{t("settings.backgroundOpacityDesc")}</p>
+              </div>
+              <div className="w-40 flex items-center gap-2 shrink-0">
+                <input
+                  type="range"
+                  min={0}
+                  max={100}
+                  value={backgroundOpacity}
+                  disabled={!transparentBg}
+                  onChange={(e) => setBackgroundOpacity(Number(e.target.value))}
+                  className="flex-1 thumb-slider"
+                />
+                <span className="text-xs text-muted-foreground w-8 text-right">{backgroundOpacity}%</span>
               </div>
             </div>
             <div className="border-t border-border pt-3">

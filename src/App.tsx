@@ -284,7 +284,10 @@ function App() {
     : null;
 
   return (
-    <div className={`flex flex-col h-screen w-screen text-zinc-100 transition-colors duration-200 ${transparentBg ? "bg-transparent" : "bg-zinc-950"}`}>
+    <div
+      className={`flex flex-col h-screen w-screen text-zinc-100 transition-colors duration-200 ${transparentBg ? "" : "bg-zinc-950"}`}
+      style={transparentBg ? { backgroundColor: "var(--background-bg)" } : undefined}
+    >
       {/* Custom title bar */}
       <TitleBar
         preloadFull={preloadFull}

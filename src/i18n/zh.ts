@@ -26,8 +26,10 @@ export default {
     preloadDesc: "预载当前可见区域所有照片全图，打开查看器更快；开关立即生效，无需重启",
     transparentBg: "透明毛玻璃背景",
     transparentBgDesc: "启用后使用 Windows Mica 毛玻璃，随深色/浅色主题自动切换；立即生效",
-    transparentBgOpacity: "玻璃透明度",
+    transparentBgOpacity: "标题栏玻璃透明度",
     transparentBgOpacityDesc: "调节标题栏玻璃背景的透明度；不影响浮窗，关闭毛玻璃时无效",
+    backgroundOpacity: "背景玻璃透明度",
+    backgroundOpacityDesc: "调节浮窗后面整块背景毛玻璃的透明度；不影响浮窗，关闭毛玻璃时无效",
     more: "更多设置项即将上线...",
   },
 
