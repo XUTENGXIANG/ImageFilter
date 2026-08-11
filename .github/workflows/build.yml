@@ -5,6 +5,10 @@ on:
     tags: ["v*"]
   workflow_dispatch:
 
+# tauri-action 需要创建 release/上传资产
+permissions:
+  contents: write
+
 jobs:
   build:
     strategy:

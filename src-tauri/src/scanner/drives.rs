@@ -1,3 +1,4 @@
+#[cfg(target_os = "windows")]
 use inspect_path::inspect_path;
 use serde::Serialize;
 
