@@ -17,11 +17,15 @@ export function TitleBar({
   onTogglePreloadFull,
   transparentBg,
   onToggleTransparentBg,
+  backgroundOpacity,
+  onBackgroundOpacityChange,
 }: {
   preloadFull: boolean;
   onTogglePreloadFull: () => void;
   transparentBg: boolean;
   onToggleTransparentBg: () => void;
+  backgroundOpacity: number;
+  onBackgroundOpacityChange: (v: number) => void;
 }) {
   const { t } = useTranslation();
   const win = getCurrentWindow();
@@ -36,10 +40,6 @@ export function TitleBar({
   const [glassOpacity, setGlassOpacity] = useState<number>(() => {
     const v = Number(localStorage.getItem("pixelflow-glass-opacity"));
     return Number.isFinite(v) ? Math.min(100, Math.max(0, v)) : 70;
-  });
-  const [backgroundOpacity, setBackgroundOpacity] = useState<number>(() => {
-    const v = Number(localStorage.getItem("pixelflow-background-opacity"));
-    return Number.isFinite(v) ? Math.min(100, Math.max(0, v)) : 0;
   });
   useEffect(() => {
     const root = document.documentElement;
@@ -57,11 +57,6 @@ export function TitleBar({
     document.documentElement.style.setProperty("--glass-opacity", `${glassOpacity}%`);
     localStorage.setItem("pixelflow-glass-opacity", String(glassOpacity));
   }, [glassOpacity]);
-
-  useEffect(() => {
-    document.documentElement.style.setProperty("--background-opacity", `${backgroundOpacity}%`);
-    localStorage.setItem("pixelflow-background-opacity", String(backgroundOpacity));
-  }, [backgroundOpacity]);
 
   useEffect(() => {
     invoke("set_glass_bg", { enabled: transparentBg, dark: theme === "dark" }).catch(() => {});
@@ -199,7 +194,7 @@ export function TitleBar({
                   max={100}
                   value={backgroundOpacity}
                   disabled={!transparentBg}
-                  onChange={(e) => setBackgroundOpacity(Number(e.target.value))}
+                  onChange={(e) => onBackgroundOpacityChange(Number(e.target.value))}
                   className="flex-1 thumb-slider"
                 />
                 <span className="text-xs text-muted-foreground w-8 text-right">{backgroundOpacity}%</span>

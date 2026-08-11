@@ -23,7 +23,7 @@ PixelFlow 是面向摄影师的 SD 卡照片智能导入工具：插卡 → 秒�
 ### 2026-08-11：新增背景玻璃透明度滑块
 
 - 设置面板新增“背景玻璃透明度”滑块，调节浮窗后面整块背景毛玻璃的透明度
-- 背景透明度持久化到 `pixelflow-background-opacity`，默认 0%，保持当前透明效果
+- 背景透明度持久化到 `pixelflow-background-opacity`，默认 0%，且 0% 时根背景直接使用透明
 - 标题栏玻璃透明度滑块保持独立，两个滑块在关闭毛玻璃时都会禁用
 - 验证：`npx tsc --noEmit`、`cd src-tauri && cargo check` 通过
 

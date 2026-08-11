@@ -189,6 +189,17 @@ function App() {
     localStorage.setItem("pixelflow-glass", transparentBg ? "1" : "0");
   }, [transparentBg]);
 
+  // 浮窗后面整块背景毛玻璃的透明度: 默认 0% 完全透明
+  const [backgroundOpacity, setBackgroundOpacity] = useState<number>(() => {
+    const v = Number(localStorage.getItem("pixelflow-background-opacity"));
+    return Number.isFinite(v) ? Math.min(100, Math.max(0, v)) : 0;
+  });
+
+  useEffect(() => {
+    document.documentElement.style.setProperty("--background-opacity", `${backgroundOpacity}%`);
+    localStorage.setItem("pixelflow-background-opacity", String(backgroundOpacity));
+  }, [backgroundOpacity]);
+
   // 导入栏/工具栏默认收起: 照片或选中数从空变非空时自动展开, 清空后自动收起
   const [toolbarOpen, setToolbarOpen] = useState(false);
   const [importBarOpen, setImportBarOpen] = useState(false);
@@ -286,7 +297,7 @@ function App() {
   return (
     <div
       className={`flex flex-col h-screen w-screen text-zinc-100 transition-colors duration-200 ${transparentBg ? "" : "bg-zinc-950"}`}
-      style={transparentBg ? { backgroundColor: "var(--background-bg)" } : undefined}
+      style={transparentBg ? { backgroundColor: backgroundOpacity > 0 ? "var(--background-bg)" : "transparent" } : undefined}
     >
       {/* Custom title bar */}
       <TitleBar
@@ -294,6 +305,8 @@ function App() {
         onTogglePreloadFull={togglePreloadFull}
         transparentBg={transparentBg}
         onToggleTransparentBg={() => setTransparentBg((v) => !v)}
+        backgroundOpacity={backgroundOpacity}
+        onBackgroundOpacityChange={setBackgroundOpacity}
       />
       <div className="flex flex-1 min-h-0">
       {/* === Left Sidebar === */}
