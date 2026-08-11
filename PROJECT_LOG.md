@@ -1,7 +1,7 @@
 # PixelFlow 项目日志
 
 > 更新时间：2026-08-11
-> 当前 HEAD：`ab06c91`
+> 当前 HEAD：`f537a81`
 
 ## 项目概览
 
@@ -19,6 +19,11 @@ PixelFlow 是面向摄影师的 SD 卡照片智能导入工具：插卡 → 秒�
 - 开发版可热重载运行：`npm run dev` + `cargo run`，统一入口 `npx tauri dev`
 
 ## 最近开发
+
+### 2026-08-11：应用失焦时保持背景透明
+- Mica 失焦时会回退为中性灰，改为监听窗口 `blur`/`focus` 切换背景效果
+- 聚焦时保留 `MicaDark`/`MicaLight`，失焦时移除窗口效果，让透明背景直接透出桌面
+- 验证：`npx tsc --noEmit`、`cd src-tauri && cargo check` 通过，实机截图确认失焦不再变灰
 
 ### 2026-08-11：新增背景玻璃透明度滑块
 

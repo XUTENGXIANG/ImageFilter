@@ -15,11 +15,16 @@ fn greet(name: String) -> String {
 }
 
 #[tauri::command]
-fn set_glass_bg(app: tauri::AppHandle, enabled: bool, dark: bool) -> Result<(), String> {
+fn set_glass_bg(
+    app: tauri::AppHandle,
+    enabled: bool,
+    dark: bool,
+    focused: bool,
+) -> Result<(), String> {
     let Some(window) = app.get_webview_window("main") else {
         return Ok(());
     };
-    if enabled {
+    if enabled && focused {
         let effect = if dark { Effect::MicaDark } else { Effect::MicaLight };
         window
             .set_effects(EffectsBuilder::new().effect(effect).build())

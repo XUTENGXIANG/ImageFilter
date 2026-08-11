@@ -59,7 +59,20 @@ export function TitleBar({
   }, [glassOpacity]);
 
   useEffect(() => {
-    invoke("set_glass_bg", { enabled: transparentBg, dark: theme === "dark" }).catch(() => {});
+    const applyGlass = () => {
+      invoke("set_glass_bg", {
+        enabled: transparentBg,
+        dark: theme === "dark",
+        focused: document.hasFocus(),
+      }).catch(() => {});
+    };
+    applyGlass();
+    window.addEventListener("focus", applyGlass);
+    window.addEventListener("blur", applyGlass);
+    return () => {
+      window.removeEventListener("focus", applyGlass);
+      window.removeEventListener("blur", applyGlass);
+    };
   }, [transparentBg, theme]);
 
   return (
