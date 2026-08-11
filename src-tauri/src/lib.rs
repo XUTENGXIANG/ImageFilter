@@ -16,19 +16,27 @@ fn greet(name: String) -> String {
 
 #[tauri::command]
 fn set_glass_bg(app: tauri::AppHandle, enabled: bool, dark: bool) -> Result<(), String> {
-    let Some(window) = app.get_webview_window("main") else {
-        return Ok(());
-    };
-    if enabled {
-        // 一律使用 Mica(失焦时系统自动回退为纯色, 不再额外处理)
-        let effect = if dark { Effect::MicaDark } else { Effect::MicaLight };
-        window
-            .set_effects(EffectsBuilder::new().effect(effect).build())
-            .map_err(|e| e.to_string())?;
-    } else {
-        window
-            .set_effects(None::<tauri::utils::config::WindowEffectsConfig>)
-            .map_err(|e| e.to_string())?;
+    #[cfg(target_os = "windows")]
+    {
+        let Some(window) = app.get_webview_window("main") else {
+            return Ok(());
+        };
+        if enabled {
+            // 一律使用 Mica(失焦时系统自动回退为纯色, 不再额外处理)
+            let effect = if dark { Effect::MicaDark } else { Effect::MicaLight };
+            window
+                .set_effects(EffectsBuilder::new().effect(effect).build())
+                .map_err(|e| e.to_string())?;
+        } else {
+            window
+                .set_effects(None::<tauri::utils::config::WindowEffectsConfig>)
+                .map_err(|e| e.to_string())?;
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        // macOS/Linux: Mica 不可用, 前端自动降级为不透明背景
+        let _ = (app, enabled, dark);
     }
     Ok(())
 }

@@ -1,0 +1,52 @@
+name: Build Installers
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [windows-latest, macos-latest]
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install frontend dependencies
+        run: npm install
+
+      # macOS 需要 ffmpeg 生成视频缩略图
+      - name: Install ffmpeg (macOS)
+        if: matrix.platform == 'macos-latest'
+        run: brew install ffmpeg
+
+      - name: Build & upload installers
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: "ImageFilter ${{ github.ref_name }}"
+          releaseBody: |
+            ImageFilter — SD 卡照片智能导入工具
+            - Windows: NSIS (setup.exe) + MSI
+            - macOS: DMG / APP
+          releaseDraft: true
+          prerelease: false

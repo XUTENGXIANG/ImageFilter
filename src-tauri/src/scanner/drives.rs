@@ -11,36 +11,37 @@ pub struct DriveInfo {
 }
 
 /// Get Windows volume label for a drive (e.g., "CANON_DC" for D:\)
+#[cfg(target_os = "windows")]
 fn volume_label(mount: &str) -> String {
-    #[cfg(target_os = "windows")]
-    {
-        use std::ffi::OsString;
-        use std::os::windows::ffi::OsStringExt;
-        let path_str = format!("{}\\\\", mount);
-        let path: Vec<u16> = path_str.encode_utf16().chain(std::iter::once(0)).collect();
-        let mut buf = vec![0u16; 128];
-        #[link(name = "kernel32")]
-        extern "system" {
-            fn GetVolumeInformationW(
-                root: *const u16,
-                name: *mut u16, name_len: u32,
-                serial: *mut u32, max_len: *mut u32, flags: *mut u32,
-                fs_name: *mut u16, fs_len: u32,
-            ) -> i32;
-        }
-        unsafe {
-            if GetVolumeInformationW(path.as_ptr(), buf.as_mut_ptr(), buf.len() as u32,
-                std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut(),
-                std::ptr::null_mut(), 0) != 0
-            {
-                let len = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
-                return OsString::from_wide(&buf[..len]).to_string_lossy().to_string();
-            }
+    use std::ffi::OsString;
+    use std::os::windows::ffi::OsStringExt;
+    let path_str = format!("{}\\\\", mount);
+    let path: Vec<u16> = path_str.encode_utf16().chain(std::iter::once(0)).collect();
+    let mut buf = vec![0u16; 128];
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetVolumeInformationW(
+            root: *const u16,
+            name: *mut u16, name_len: u32,
+            serial: *mut u32, max_len: *mut u32, flags: *mut u32,
+            fs_name: *mut u16, fs_len: u32,
+        ) -> i32;
+    }
+    unsafe {
+        if GetVolumeInformationW(path.as_ptr(), buf.as_mut_ptr(), buf.len() as u32,
+            std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut(),
+            std::ptr::null_mut(), 0) != 0
+        {
+            let len = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+            return OsString::from_wide(&buf[..len]).to_string_lossy().to_string();
         }
     }
-    #[cfg(not(target_os = "windows"))]
-    { String::new() }
     String::new()
+}
+
+#[cfg(target_os = "macos")]
+fn volume_label(_mount: &str) -> String {
+    String::new() // 卷名在 detect_drives_macos 中用目录名
 }
 
 /// Open folder in OS file manager
@@ -116,16 +117,39 @@ pub fn eject_drive(mount_point: String) -> Result<(), String> {
         }
     }
 
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(target_os = "macos")]
+    {
+        // macOS: diskutil eject <卷名>
+        let vol = mount_point.trim_end_matches('/');
+        let name = vol.rsplit('/').next().unwrap_or("");
+        match std::process::Command::new("diskutil").args(["eject", name]).status() {
+            Ok(s) if s.success() => Ok(()),
+            _ => Err("弹出失败".into()),
+        }
+    }
+
+    #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
     {
         let _ = mount_point;
-        Err("仅支持 Windows".into())
+        Err("该平台暂不支持弹出设备".into())
     }
 }
 
 /// Detect all drives, removable drives first
 #[tauri::command]
 pub fn detect_drives() -> Vec<DriveInfo> {
+    #[cfg(target_os = "windows")]
+    { detect_drives_windows() }
+
+    #[cfg(target_os = "macos")]
+    { detect_drives_macos() }
+
+    #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
+    { Vec::new() }
+}
+
+#[cfg(target_os = "windows")]
+fn detect_drives_windows() -> Vec<DriveInfo> {
     let mut drives = Vec::new();
 
     for letter in 'A'..='Z' {
@@ -173,5 +197,25 @@ pub fn detect_drives() -> Vec<DriveInfo> {
         b_rem.cmp(&a_rem).then_with(|| a.mount_point.cmp(&b.mount_point))
     });
 
+    drives
+}
+
+/// macOS: 枚举 /Volumes 下的已挂载卷
+#[cfg(target_os = "macos")]
+fn detect_drives_macos() -> Vec<DriveInfo> {
+    let mut drives = Vec::new();
+    if let Ok(entries) = std::fs::read_dir("/Volumes") {
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            // 跳过隐藏卷(如 .timemachine)
+            if name.starts_with('.') { continue; }
+            drives.push(DriveInfo {
+                mount_point: entry.path().to_string_lossy().to_string(),
+                drive_type: "removable".into(), // macOS 挂载卷按可移动处理
+                label: name.clone(),
+                available: true,
+            });
+        }
+    }
     drives
 }
