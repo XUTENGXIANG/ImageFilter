@@ -28,7 +28,6 @@ zune-jpeg = "0.4"
 imgfprint = "0.4"
 
 # File system
-inspect_path = "0.3"
 walkdir = "2"
 
 # Checksum & progress
@@ -40,9 +39,13 @@ indicatif = "0.17"
 sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite"] }
 tokio = { version = "1", features = ["full"] }
 thiserror = "2"
-windows = { version = "0.62.2", features = ["Win32_UI_Shell", "Win32_Graphics_Gdi", "Win32_System_Com", "Win32_System_Com_StructuredStorage", "Win32_System_Ole", "Win32_Storage_FileSystem", "Win32_Foundation", "Win32_Graphics_Imaging", "Win32_System_IO", "Win32_Security"] }
 rayon = "1.12.0"
 memmap2 = "0.9.11"
+
+# Windows 专属依赖 — 非 Windows 平台不编译(避免 macOS/Linux 拉取 windows-future 等失败)
+[target.'cfg(target_os = "windows")'.dependencies]
+inspect_path = "0.3"
+windows = { version = "0.62.2", features = ["Win32_UI_Shell", "Win32_Graphics_Gdi", "Win32_System_Com", "Win32_System_Com_StructuredStorage", "Win32_System_Ole", "Win32_Storage_FileSystem", "Win32_Foundation", "Win32_Graphics_Imaging", "Win32_System_IO", "Win32_Security"] }
 
 # zune-jpeg SIMD is slow in debug builds
 [profile.dev.package.zune-jpeg]
