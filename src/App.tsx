@@ -296,7 +296,7 @@ function App() {
 
   return (
     <div
-      className={`flex flex-col h-screen w-screen text-zinc-100 transition-colors duration-200 ${transparentBg ? "" : "bg-zinc-950"}`}
+      className={`flex flex-col h-screen w-screen overflow-hidden text-zinc-100 transition-colors duration-200 ${transparentBg ? "" : "bg-zinc-950"}`}
       style={transparentBg ? { backgroundColor: backgroundOpacity > 0 ? "var(--background-bg)" : "transparent" } : undefined}
     >
       {/* Custom title bar */}

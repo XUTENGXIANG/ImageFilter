@@ -107,8 +107,12 @@ export function useScanner() {
         setSelectedPaths(range);
       }
     } else {
-      // Regular click: select single, clear others
-      setSelectedPaths(new Set([path]));
+      // 单击: 切换勾选(累积) — 连续点击多张照片保持已勾选的
+      setSelectedPaths((prev) => {
+        const next = new Set(prev);
+        if (next.has(path)) next.delete(path); else next.add(path);
+        return next;
+      });
       setLastClicked(path);
     }
   }, [photos, lastClicked]);

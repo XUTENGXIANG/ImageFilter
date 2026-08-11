@@ -22,7 +22,8 @@ i18n.use(initReactI18next).init({
   },
   lng: saved === "en" ? "en" : "zh", // 默认中文
   fallbackLng: "zh",
-  interpolation: { escapeValue: false }, // React 自带 XSS 保护
+  // 翻译文件统一用单括号插值 {n}, 故自定义 prefix/suffix(i18next 默认为 {{}})
+  interpolation: { escapeValue: false, prefix: "{", suffix: "}" }, // React 自带 XSS 保护
 });
 
 /** 切换界面语言并持久化 */

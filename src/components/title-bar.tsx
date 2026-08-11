@@ -8,6 +8,7 @@ import {
 } from "@/components/ui/dialog";
 import { Setting, Sun, Moon, Close, Help } from "@icon-park/react";
 import { Step } from "./step";
+import { Tip } from "./tip";
 
 // ── 标题栏 ──────────────────────────────────
 // 高度: h-9 (36px)  背景: bg-zinc-900  底部边框: border-zinc-800
@@ -58,63 +59,71 @@ export function TitleBar({
     localStorage.setItem("pixelflow-glass-opacity", String(glassOpacity));
   }, [glassOpacity]);
 
+  // 一律使用 Mica(失焦时系统自动回退为纯色), 仅在开关/主题变化时应用
   useEffect(() => {
-    const applyGlass = () => {
-      invoke("set_glass_bg", {
-        enabled: transparentBg,
-        dark: theme === "dark",
-        focused: document.hasFocus(),
-      }).catch(() => {});
-    };
-    applyGlass();
-    window.addEventListener("focus", applyGlass);
-    window.addEventListener("blur", applyGlass);
-    return () => {
-      window.removeEventListener("focus", applyGlass);
-      window.removeEventListener("blur", applyGlass);
-    };
+    invoke("set_glass_bg", {
+      enabled: transparentBg,
+      dark: theme === "dark",
+    }).catch(() => {});
   }, [transparentBg, theme]);
 
   return (
     <div
       data-tauri-drag-region
-      className={`h-9 flex items-center justify-between px-1 border-b border-zinc-800 select-none flex-shrink-0 transition-colors duration-200 ${transparentBg ? "" : "bg-zinc-900"}`}
+      className={`h-9 flex items-center justify-between px-1 select-none flex-shrink-0 transition-colors duration-200 ${transparentBg ? "" : "bg-zinc-900"}`}
       style={transparentBg ? { backgroundColor: "var(--glass-bg)" } : undefined}
     >
       <span className="text-[11px] text-zinc-500 ml-3">PixelFlow</span>
-      <div className="flex items-center h-full">
+      {/* ── 标题栏按钮组 ─────────────────────────────
+          每个按钮的尺寸调整方法:
+            - 宽度:  改 w-8(32px) / w-10(40px) → w-9(36px)、w-12(48px) 等任意值
+            - 高度:  按钮 h-full 自动跟随标题栏; 改容器 h-9(36px) → h-10(40px) 整体变高
+            - 圆角:  rounded(4px) → rounded-md(6px) / rounded-lg(8px) / rounded-full(胶囊/圆形)
+            - 悬停背景: hover:bg-zinc-800(灰色) → hover:bg-red-400/10(红, 关闭按钮示例)
+          每个按钮外层由 <Tip> 包裹提供圆角提示框, 提示文字 = label 属性
+      ───────────────────────────────────────────── */}
+      <div className="flex items-center h-7.5">
+        <Tip label={t("titlebar.help")} className="h-full flex items-center">
         <button onClick={() => setShowHelp(true)}
-          className="w-8 h-full flex items-center justify-center text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800"
-          title={t("titlebar.help")}
+          className="w-8 h-full flex items-center justify-center text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800 rounded-md"
         >
           <Help theme="filled" size="15" strokeWidth={3} />
         </button>
+        </Tip>
+        <Tip label={t("titlebar.settings")} className="h-full flex items-center">
         <button onClick={() => setShowSettings(true)}
-          className="w-8 h-full flex items-center justify-center text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800"
-          title={t("titlebar.settings")}
+          className="w-8 h-full flex items-center justify-center text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800 rounded-md"
         >
           <Setting theme="filled" size="15" strokeWidth={3} />
         </button>
+        </Tip>
+        <Tip label={theme === "dark" ? t("titlebar.themeLight") : t("titlebar.themeDark")} className="h-full flex items-center">
         <button onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
-          className="w-8 h-full flex items-center justify-center text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800"
-          title={theme === "dark" ? t("titlebar.themeLight") : t("titlebar.themeDark")}
+          className="w-8 h-full flex items-center justify-center text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800 rounded-md"
         >
           {theme === "dark" ? <Sun theme="filled" size="15" strokeWidth={3} /> : <Moon theme="filled" size="15" strokeWidth={3} />}
         </button>
+        </Tip>
+        <Tip label={t("titlebar.min")} className="h-full flex items-center">
         <button onClick={() => win.minimize()}
-          className="w-10 h-full flex items-center justify-center text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800">
+          className="w-10 h-full flex items-center justify-center text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800 rounded-md">
           <svg width="10" height="1"><rect width="10" height="1" fill="currentColor"/></svg>
         </button>
+        </Tip>
+        <Tip label={t("titlebar.max")} className="h-full flex items-center">
         <button onClick={() => win.toggleMaximize()}
-          className="w-10 h-full flex items-center justify-center text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800">
+          className="w-10 h-full flex items-center justify-center text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800 rounded-md">
           <svg width="10" height="10" viewBox="0 0 10 10">
             <rect x="0.5" y="0.5" width="9" height="9" fill="none" stroke="currentColor" strokeWidth="1"/>
           </svg>
         </button>
+        </Tip>
+        <Tip label={t("titlebar.close")} className="h-full flex items-center">
         <button onClick={() => win.close()}
-          className="w-10 h-full flex items-center justify-center text-zinc-500 hover:text-red-400 hover:bg-red-400/10">
+          className="w-10 h-full flex items-center justify-center text-zinc-500 hover:text-red-400 hover:bg-red-400/10 rounded-md">
           <Close theme="filled" size="14" strokeWidth={4} />
         </button>
+        </Tip>
       </div>
 
       <Dialog open={showSettings} onOpenChange={setShowSettings}>

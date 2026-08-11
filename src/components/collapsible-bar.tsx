@@ -1,5 +1,6 @@
 import { useTranslation } from "react-i18next";
 import { DownOne, UpOne } from "@icon-park/react";
+import { Tip } from "./tip";
 
 interface Props {
   align: "top" | "bottom";
@@ -33,14 +34,15 @@ export function CollapsibleBar({ align, expanded, onToggle, collapseInside = fal
       </div>
       {/* 独立按钮: 折叠态总显示(展开用); collapseInside 展开态隐藏(收起按钮在主体内) */}
       {(!collapseInside || !expanded) && (
-        <button
-          onClick={onToggle}
-          aria-expanded={expanded}
-          title={expanded ? t("bars.collapse") : t("bars.expand")}
-          className="w-7 h-7 flex-shrink-0 flex items-center justify-center rounded-full border border-zinc-800 bg-zinc-900/80 text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800 shadow-lg shadow-black/30 transition-colors"
-        >
-          {expanded ? collapseIcon : expandIcon}
-        </button>
+        <Tip label={expanded ? t("bars.collapse") : t("bars.expand")} className="flex-shrink-0 flex items-center">
+          <button
+            onClick={onToggle}
+            aria-expanded={expanded}
+            className="w-7 h-7 flex items-center justify-center rounded-full border border-zinc-800 bg-zinc-900/80 text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800 shadow-lg shadow-black/30 transition-colors"
+          >
+            {expanded ? collapseIcon : expandIcon}
+          </button>
+        </Tip>
       )}
     </div>
   );

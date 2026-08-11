@@ -40,7 +40,7 @@ indicatif = "0.17"
 sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite"] }
 tokio = { version = "1", features = ["full"] }
 thiserror = "2"
-windows = { version = "0.62.2", features = ["Win32_UI_Shell", "Win32_Graphics_Gdi", "Win32_System_Com", "Win32_System_Com_StructuredStorage", "Win32_System_LibraryLoader", "Win32_System_Ole", "Win32_Storage_FileSystem", "Win32_Foundation", "Win32_Graphics_Imaging", "Win32_System_IO", "Win32_Security"] }
+windows = { version = "0.62.2", features = ["Win32_UI_Shell", "Win32_Graphics_Gdi", "Win32_System_Com", "Win32_System_Com_StructuredStorage", "Win32_System_Ole", "Win32_Storage_FileSystem", "Win32_Foundation", "Win32_Graphics_Imaging", "Win32_System_IO", "Win32_Security"] }
 rayon = "1.12.0"
 memmap2 = "0.9.11"
 

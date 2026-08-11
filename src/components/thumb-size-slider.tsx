@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { Tip } from "./tip";
 
 export function ThumbSizeSlider() {
   const [cols, setCols] = useState(() => {
@@ -14,16 +15,17 @@ export function ThumbSizeSlider() {
   }, [cols]);
   const pct = ((cols - 2) / (8 - 2)) * 100;
   return (
+    <Tip label={`${cols} cols`} className="flex items-center">
     <input
       type="range" min={2} max={8} value={cols}
       onChange={(e) => setCols(Number(e.target.value))}
       className="thumb-slider w-16 h-4 cursor-pointer"
-      title={`${cols} cols`}
       style={{
         background: `linear-gradient(to right,
           var(--thumb-left) 0%, var(--thumb-left) ${pct}%,
           var(--thumb-right) ${pct}%, var(--thumb-right) 100%)`,
       }}
     />
+    </Tip>
   );
 }

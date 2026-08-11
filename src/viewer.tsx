@@ -7,6 +7,7 @@ import { useTranslation } from "react-i18next";
 // ═══════════════════════════════════════════════════════
 import { Close, Left, Right, RotateOne, Rotate } from "@icon-park/react";
 import type { ScannedPhoto } from "./types";
+import { Tip } from "./components/tip";
 
 interface Props {
   photos: ScannedPhoto[];
@@ -304,14 +305,16 @@ export function PhotoViewer({ photos, index, ratings, onRate, onClose, originRec
         </div>
         <div className="flex items-center gap-1">
           {/* 旋转按钮 — 逆时针/顺时针 */}
+          <Tip label={t("viewer.rotateCCW")}>
           <button data-tauri-drag-region={false} onClick={() => setRotation((r) => (r + 270) % 360)}
             className="w-8 h-8 flex items-center justify-center rounded hover:bg-zinc-800 text-zinc-400"
-            title={t("viewer.rotateCCW")}
           ><Rotate theme="filled" size="15" strokeWidth={3} style={{ transform: "scaleX(-1)" }} /></button>
+          </Tip>
+          <Tip label={t("viewer.rotateCW")}>
           <button data-tauri-drag-region={false} onClick={() => setRotation((r) => (r + 90) % 360)}
             className="w-8 h-8 flex items-center justify-center rounded hover:bg-zinc-800 text-zinc-400"
-            title={t("viewer.rotateCW")}
           ><RotateOne theme="filled" size="15" strokeWidth={3} /></button>
+          </Tip>
           {/* 星级 */}
           {[1, 2, 3, 4, 5].map((s) => (
             <button key={s} data-tauri-drag-region={false} onClick={() => onRate(photo.path, rating === s ? 0 : s)}
@@ -361,16 +364,18 @@ export function PhotoViewer({ photos, index, ratings, onRate, onClose, originRec
         ) : null}
 
         {/* 左右切换按钮 — 鼠标静止2秒淡出 */}
+        <Tip label={t("viewer.prev")} className={`absolute left-3 top-1/2 -translate-y-1/2 ${showNav ? "opacity-100" : "opacity-0"}`}>
         <button
           onClick={(e) => { e.stopPropagation(); navigateTo((cur - 1 + photos.length) % photos.length); }}
-          className={`absolute left-3 top-1/2 -translate-y-1/2 w-10 h-10 rounded-full bg-black/35 hover:bg-black/60 text-white/80 hover:text-white flex items-center justify-center transition-opacity duration-300 ${showNav ? "opacity-100" : "opacity-0"}`}
-          title={t("viewer.prev")}
+          className={`w-10 h-10 rounded-full bg-black/35 hover:bg-black/60 text-white/80 hover:text-white flex items-center justify-center transition-opacity duration-300`}
         ><Left theme="filled" size="18" strokeWidth={3} /></button>
+        </Tip>
+        <Tip label={t("viewer.next")} className={`absolute right-3 top-1/2 -translate-y-1/2 ${showNav ? "opacity-100" : "opacity-0"}`}>
         <button
           onClick={(e) => { e.stopPropagation(); navigateTo((cur + 1) % photos.length); }}
-          className={`absolute right-3 top-1/2 -translate-y-1/2 w-10 h-10 rounded-full bg-black/35 hover:bg-black/60 text-white/80 hover:text-white flex items-center justify-center transition-opacity duration-300 ${showNav ? "opacity-100" : "opacity-0"}`}
-          title={t("viewer.next")}
+          className={`w-10 h-10 rounded-full bg-black/35 hover:bg-black/60 text-white/80 hover:text-white flex items-center justify-center transition-opacity duration-300`}
         ><Right theme="filled" size="18" strokeWidth={3} /></button>
+        </Tip>
       </div>
 
       {/* 底部提示 */}

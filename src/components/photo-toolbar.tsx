@@ -2,6 +2,7 @@ import { useTranslation } from "react-i18next";
 import { UpOne } from "@icon-park/react";
 import { CollapsibleBar } from "./collapsible-bar";
 import { ThumbSizeSlider } from "./thumb-size-slider";
+import { Tip } from "./tip";
 
 interface Props {
   selectedDrive: string | null;
@@ -76,24 +77,26 @@ export function PhotoToolbar({
             {analyzing ? t("toolbar.stop") : t("toolbar.ai")}
           </button>
           {/* 收起按钮 — 集成在主体内 */}
+          <Tip label={t("bars.collapse")} className="flex items-center">
           <button
             onClick={onToggle}
-            title={t("bars.collapse")}
             className="w-6 h-6 flex items-center justify-center rounded hover:bg-zinc-800 text-zinc-500 hover:text-zinc-300 transition-colors"
           >
             <UpOne theme="filled" size="13" strokeWidth={3} />
           </button>
+          </Tip>
         </div>
       ) : (
         <div className="flex items-center px-4 h-9 gap-2 text-[10px] text-zinc-600">
           <span className="flex-1">{t("toolbar.empty")}</span>
+          <Tip label={t("bars.collapse")} className="flex items-center">
           <button
             onClick={onToggle}
-            title={t("bars.collapse")}
             className="w-6 h-6 flex items-center justify-center rounded hover:bg-zinc-800 text-zinc-500 hover:text-zinc-300 transition-colors"
           >
             <UpOne theme="filled" size="13" strokeWidth={3} />
           </button>
+          </Tip>
         </div>
       )}
     </CollapsibleBar>

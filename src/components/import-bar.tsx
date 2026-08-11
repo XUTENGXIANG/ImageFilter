@@ -2,6 +2,7 @@ import { useTranslation } from "react-i18next";
 import { Check, Close, FolderOpen, More, Right } from "@icon-park/react";
 import { AdvancedOptions } from "./advanced-options";
 import { CollapsibleBar } from "./collapsible-bar";
+import { Tip } from "./tip";
 
 interface Props {
   destDir: string | null;
@@ -58,13 +59,14 @@ export function ImportBar({
           {destDir ? `...${destDir.slice(-25)}` : t("import.pickDest")}
         </button>
         {destDir && (
+          <Tip label={t("import.openFolder")}>
           <button
             onClick={() => onOpenFolder(destDir)}
             className="text-[10px] px-1.5 py-1 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-500"
-            title={t("import.openFolder")}
           >
             <FolderOpen theme="filled" size="12" strokeWidth={3} />
           </button>
+          </Tip>
         )}
         <div className="flex-1" />
         <span className="text-[10px] text-zinc-600">

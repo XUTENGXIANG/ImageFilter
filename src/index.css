@@ -105,6 +105,34 @@ img {
   background: linear-gradient(to top, rgba(0, 0, 0, 0.8), transparent);
 }
 
+/* 自定义圆角 tooltip — 替代浏览器默认方形提示
+   position 在 @layer components 内(允许 Tailwind absolute 类覆盖, 用于 absolute 定位的按钮);
+   显示样式在文件末尾无层(优先级最高) */
+@layer components {
+  .tooltip-wrap { position: relative; }
+}
+.tooltip-wrap .tooltip {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(0, 0, 0, 0.85);
+  color: #e4e4e7;
+  border-radius: 8px;
+  padding: 4px 10px;
+  font-size: 11px;
+  white-space: nowrap;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.15s ease;
+  pointer-events: none;
+  z-index: 60;
+}
+.tooltip-wrap:hover .tooltip {
+  opacity: 1;
+  visibility: visible;
+}
+
 @theme inline {
   --font-heading: var(--font-sans);
   --font-sans: 'Geist Variable', sans-serif;

@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { Tip } from "./components/tip";
 
 interface Props {
   side: "left" | "right";
@@ -46,15 +47,16 @@ export function FloatingPanel({ side, title, defaultOpen = true, autoOpenKey, ch
         </div>
       </div>
       {!open && (
+        <Tip label={isLeft ? t("panel.expandLeft") : t("panel.expandRight")} className="absolute top-1/2 -translate-y-1/2 w-full h-10 flex items-center justify-center">
         <button
           onClick={() => setOpen(true)}
-          className={`absolute top-1/2 -translate-y-1/2 w-full h-10 border border-zinc-800 hover:bg-zinc-800 cursor-pointer flex items-center justify-center transition-colors duration-200 ${
+          className={`w-full h-10 border border-zinc-800 hover:bg-zinc-800 cursor-pointer flex items-center justify-center transition-colors duration-200 ${
             isLeft ? "right-0 rounded-r-lg border-l-0" : "left-0 rounded-l-lg border-r-0"
           } bg-zinc-900`}
-          title={isLeft ? t("panel.expandLeft") : t("panel.expandRight")}
         >
           <span className="text-[9px] text-zinc-500">{isLeft ? "▶" : "◀"}</span>
         </button>
+        </Tip>
       )}
     </div>
   );
