@@ -52,6 +52,9 @@
         "installMode": "currentUser",
         "languages": ["SimpChinese", "English"],
         "displayLanguageSelector": true
+      },
+      "wix": {
+        "language": "zh-CN"
       }
     }
   }
