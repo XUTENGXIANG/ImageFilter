@@ -20,7 +20,7 @@ ImageFilter 是围绕摄影师「拍摄 — 初筛 — 归档」核心工作流�
 | 演示交互 | 设备点选、照片网格勾选、查看器（缩放/旋转/星级）、筛选排序、深浅主题、中英切换、导入流程动画（不真实落盘） |
 | 语言 | 中英双语切换（复用软件 i18next 翻译文件） |
 | 素材 | 现有 assets/screenshot.png + src-tauri/icons/128x128.png；demo 照片用 CSS 渐变占位图（data URL，离线可用） |
-| 技术栈 | Vite + React + Tailwind CSS 4 + motion（与软件一致） |
+| 技术栈 | Vite + React + Tailwind CSS 4 + motion + **GSAP**（与软件一致 + fold-text 标题动画） |
 | 部署 | 独立 GitHub 仓库 → Vercel（root directory = 仓库根） |
 | 不模拟 | 真实文件系统访问、Mica 毛玻璃、窗口最小化/最大化/关闭 |
 
@@ -115,7 +115,9 @@ mock 模块导出与软件代码相同的 API 形状：
 - 背景：近黑 `#050505`；装饰 = 紫/蓝/青 radial 光晕（绝对定位模糊层）+ 1px 网格线底纹 + 鼠标 spotlight
 - 玻璃卡片：`bg-white/5` + `backdrop-blur` + `border-white/10`，hover 光晕
 - 字体：Inter（system-ui 回退），标题大字号响应式 `clamp()`
-- 动效：motion 滚动显现（fade-up + stagger），spotlight 跟随鼠标
+- 动效：
+  - **Hero 标题：fold-text 逐字 3D 折叠动画**（GSAP，参考 reactbits.dev/text-animations/fold-text——逐字拆分 `rotateX` 折叠 + 弹性缓动 + 滚动进入视口触发）
+  - motion 滚动显现（fade-up + stagger），spotlight 跟随鼠标
 - 下载按钮：主按钮渐变高亮 + hover scale
 
 ## 7. 执行方式
