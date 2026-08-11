@@ -101,9 +101,10 @@ mock 模块导出与软件代码相同的 API 形状：
 
 | 区块 | 内容 |
 |------|------|
-| Nav | Logo + 产品名 · 锚点（特性/工作流/下载）· 中/EN 切换 |
+| Nav | Logo + 产品名 · 锚点（特性/工作流/下载）· 中/EN 切换；**Card Nav 风格**（React Bits——卡片背景块随 hover/active 在菜单项间平滑滑动） |
 | Hero | 大标题「ImageFilter」+ 一句话定位（为创作者而生的 RAW 选片与归档工作流）+ Windows/macOS 双下载按钮 + 迷你演示窗口 |
-| Features | 6 卡片：RAW 原生解码 · LrC 同款星级筛选 · AI 废片检测 · 命名规则自动归档 · MD5 数据校验 · 全部本地处理 |
+| Features | 6 卡片（**Card Swap 效果**，React Bits——hover 3D 翻转显示详情）：RAW 原生解码 · LrC 同款星级筛选 · AI 废片检测 · 命名规则自动归档 · MD5 数据校验 · 全部本地处理 |
+| Screenshots | **3D Carousel 界面轮播**（React Bits——倾斜卡片排列、hover 展开、自动播放），展示软件界面截图（主界面/查看器/筛选；现有 screenshot.png 起步，后续补图） |
 | Workflow | 三步：插卡自动识别 → 秒级预览 + 星级筛选 → 一键导入归档 |
 | Download | v1.0.0 + 安装包卡片（setup.exe 推荐 / zh-CN.msi / macOS universal.dmg）+ GitHub Releases 链接 |
 | Footer | GitHub 仓库 · MIT · 版权 |
@@ -112,13 +113,13 @@ mock 模块导出与软件代码相同的 API 形状：
 
 ## 6. 视觉规范
 
-- 背景：近黑 `#050505`；装饰 = 紫/蓝/青 radial 光晕（绝对定位模糊层）+ 1px 网格线底纹 + 鼠标 spotlight
-- 玻璃卡片：`bg-white/5` + `backdrop-blur` + `border-white/10`，hover 光晕
+- 背景：近黑 `#050505`；装饰 = 紫/蓝/青 radial 光晕（绝对定位模糊层）+ **Dot Field 交互点阵底纹**（React Bits——随机圆点阵列，鼠标靠近时点放大/变色）+ 鼠标 spotlight
+- 玻璃卡片：`bg-white/5` + `backdrop-blur` + `border-white/10`，hover 时 **Border Glow 边框流光**（React Bits——渐变光晕沿边框流动，用于特性卡片与迷你演示窗口）
 - 字体：Inter（system-ui 回退），标题大字号响应式 `clamp()`
 - 动效：
   - **Hero 标题：fold-text 逐字 3D 折叠动画**（GSAP，参考 reactbits.dev/text-animations/fold-text——逐字拆分 `rotateX` 折叠 + 弹性缓动 + 滚动进入视口触发）
+  - **主按钮：Specular Button 镜面光泽效果**（React Bits——按钮表面移动高光，hover 光泽跟随/扫过，用于 Hero 下载按钮与安装包卡片按钮）
   - motion 滚动显现（fade-up + stagger），spotlight 跟随鼠标
-- 下载按钮：主按钮渐变高亮 + hover scale
 
 ## 7. 执行方式
 
