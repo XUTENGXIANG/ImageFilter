@@ -27,7 +27,7 @@ export default {
     transparentBg: "透明毛玻璃背景",
     transparentBgDesc: "启用后使用 Windows Mica 毛玻璃，随深色/浅色主题自动切换；立即生效",
     transparentBgOpacity: "玻璃透明度",
-    transparentBgOpacityDesc: "调节标题栏与浮窗玻璃背景的透明度；关闭毛玻璃时无效",
+    transparentBgOpacityDesc: "调节标题栏玻璃背景的透明度；不影响浮窗，关闭毛玻璃时无效",
     more: "更多设置项即将上线...",
   },
 

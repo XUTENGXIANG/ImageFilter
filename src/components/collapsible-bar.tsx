@@ -5,13 +5,12 @@ interface Props {
   align: "top" | "bottom";
   expanded: boolean;
   onToggle: () => void;
-  glass: boolean;
   /** 展开时收起按钮集成在主体内(由调用方渲染), 独立按钮仅折叠态显示展开 */
   collapseInside?: boolean;
   children: React.ReactNode;
 }
 
-export function CollapsibleBar({ align, expanded, onToggle, glass, collapseInside = false, children }: Props) {
+export function CollapsibleBar({ align, expanded, onToggle, collapseInside = false, children }: Props) {
   const { t } = useTranslation();
   const collapseIcon = align === "top" ? <UpOne theme="filled" size="14" strokeWidth={3} /> : <DownOne theme="filled" size="14" strokeWidth={3} />;
   const expandIcon = align === "top" ? <DownOne theme="filled" size="14" strokeWidth={3} /> : <UpOne theme="filled" size="14" strokeWidth={3} />;
@@ -26,10 +25,7 @@ export function CollapsibleBar({ align, expanded, onToggle, glass, collapseInsid
           aria-hidden={!expanded}
         >
           <div className={`${expanded ? "p-3" : "p-0"} transition-[padding] duration-200`}>
-            <div
-              className={`rounded-2xl border border-zinc-800 overflow-hidden transition-colors duration-200 ${glass ? "" : "bg-zinc-900/95"}`}
-              style={glass ? { backgroundColor: "var(--glass-bg)" } : undefined}
-            >
+            <div className="rounded-2xl border border-zinc-800 overflow-hidden transition-colors duration-200 bg-zinc-900">
               {children}
             </div>
           </div>

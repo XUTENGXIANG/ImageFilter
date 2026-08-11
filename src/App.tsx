@@ -294,7 +294,7 @@ function App() {
       />
       <div className="flex flex-1 min-h-0">
       {/* === Left Sidebar === */}
-      <FloatingPanel side="left" title={t("devices.panel")} glass={transparentBg}>
+      <FloatingPanel side="left" title={t("devices.panel")}>
         {/* 面板级右键菜单 (空白区域/刷新按钮区域) */}
         <PixelMenu items={[
           { label: t("devices.refresh"), action: () => selectedDrive && browseDrive(selectedDrive!) },
@@ -399,7 +399,6 @@ function App() {
           onStopAnalysis={stopAnalysis}
           expanded={toolbarOpen}
           onToggle={() => setToolbarOpen((v) => !v)}
-          glass={transparentBg}
         />
 
         <PixelMenu items={emptyMenuItems}>
@@ -488,12 +487,11 @@ function App() {
           onImport={() => startImport([...selectedPaths])}
           expanded={importBarOpen}
           onToggle={() => setImportBarOpen((v) => !v)}
-          glass={transparentBg}
         />
       </main>
 
       {/* ═══ 右侧面板 — EXIF详细信息浮窗 ═══ */}
-      <FloatingPanel side="right" title={t("exif.panel")} glass={transparentBg} defaultOpen={false} autoOpenKey={selectedPhoto?.path}>
+      <FloatingPanel side="right" title={t("exif.panel")} defaultOpen={false} autoOpenKey={selectedPhoto?.path}>
         <div className="flex-1 overflow-auto p-3 no-scrollbar">
           {selectedPhoto ? (
             <ExifPanel photo={selectedPhoto} previewSrc={previewSrc} />

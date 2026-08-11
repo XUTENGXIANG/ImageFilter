@@ -18,7 +18,6 @@ interface Props {
   onStopAnalysis: () => void;
   expanded: boolean;
   onToggle: () => void;
-  glass: boolean;
 }
 
 export function PhotoToolbar({
@@ -36,12 +35,11 @@ export function PhotoToolbar({
   onStopAnalysis,
   expanded,
   onToggle,
-  glass,
 }: Props) {
   const { t } = useTranslation();
 
   return (
-    <CollapsibleBar align="top" expanded={expanded} onToggle={onToggle} glass={glass} collapseInside>
+    <CollapsibleBar align="top" expanded={expanded} onToggle={onToggle} collapseInside>
       {selectedDrive && photosCount > 0 ? (
         <div className="flex items-center px-4 h-9 gap-2">
           <button onClick={onSelectAll} className="text-[10px] text-zinc-500 hover:text-zinc-300">{t("toolbar.selectAll")}</button>

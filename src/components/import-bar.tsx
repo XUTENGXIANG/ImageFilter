@@ -23,7 +23,6 @@ interface Props {
   onImport: () => void;
   expanded: boolean;
   onToggle: () => void;
-  glass: boolean;
 }
 
 export function ImportBar({
@@ -46,12 +45,11 @@ export function ImportBar({
   onImport,
   expanded,
   onToggle,
-  glass,
 }: Props) {
   const { t } = useTranslation();
 
   return (
-    <CollapsibleBar align="bottom" expanded={expanded} onToggle={onToggle} glass={glass}>
+    <CollapsibleBar align="bottom" expanded={expanded} onToggle={onToggle}>
       <div className="flex items-center gap-2 px-3 py-1.5">
         <button
           onClick={onPickDestDir}
