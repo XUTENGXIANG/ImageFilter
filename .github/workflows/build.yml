@@ -28,6 +28,11 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
 
+      # macOS: 添加两种架构 target, 构建 universal 包(Intel + Apple Silicon 通用)
+      - name: Add macOS targets
+        if: matrix.platform == 'macos-latest'
+        run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
+
       - name: Rust cache
         uses: swatinem/rust-cache@v2
         with:
@@ -51,6 +56,7 @@ jobs:
           releaseBody: |
             ImageFilter — SD 卡照片智能导入工具
             - Windows: NSIS (setup.exe) + MSI
-            - macOS: DMG / APP
+            - macOS: Universal (Intel + Apple Silicon)
+          args: ${{ matrix.platform == 'macos-latest' && '--target universal-apple-darwin' || '' }}
           releaseDraft: true
           prerelease: false
