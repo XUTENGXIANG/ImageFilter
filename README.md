@@ -27,6 +27,14 @@ ImageFilter UI界面美化，提供完整的Raw初筛选工作流
 - 命名规则自动归档，MD5 校验保证数据完整
 - 所有处理在本地完成
 
+---
+
+-尚处于待完善阶段，欢迎想法建议！
+-由于缺乏构建环境MacOS版可能存在显著问题请谅解提交lssues！
+-感谢原始股东们！
+
+---
+
 ## 界面
 
 ![ImageFilter 界面](assets/screenshot.png)
@@ -42,7 +50,7 @@ ImageFilter UI界面美化，提供完整的Raw初筛选工作流
 |------|------|
 | `ImageFilter_x64-setup.exe` | NSIS 安装包，推荐 |
 | `ImageFilter_x64_zh-CN.msi` | MSI 安装包 |
-
+下载慢可用在[官网](https://tensyn.online/#download)和[Releases](https://github.com/XUTENGXIANG/ImageFilter/releases)说明处下载
 双击运行，按提示完成安装。
 
 ## 快速上手
