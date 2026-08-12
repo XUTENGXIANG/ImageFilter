@@ -10,18 +10,24 @@
 
 <p align="center">
   <a href="https://github.com/XUTENGXIANG/ImageFilter/releases"><img src="https://img.shields.io/badge/release-v1.0-1f883d" alt="Release"></a>
-  <a href="#"><img src="https://img.shields.io/badge/platform-Windows%2010%2F11-lightgrey" alt="Platform"></a>
+  <a href="#"><img src="https://img.shields.io/badge/platform-Windows%2010%2F11%20%7C%20macOS-lightgrey" alt="Platform"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="License"></a>
   <a href="https://github.com/XUTENGXIANG/ImageFilter/releases/download/v1.0/ImageFilter_1.0.0_x64-setup.exe"><img src="https://img.shields.io/badge/download-7.5MB-green" alt="Download"></a>
+</p>
+
+<p align="center">
+  <a href="https://tensyn.online/#download"><img src="https://img.shields.io/badge/%E5%AE%98%E7%BD%91-tensyn.online-8b5cf6" alt="官网"></a>
+  &nbsp;·&nbsp;
+  <a href="README.en.md"><img src="https://img.shields.io/badge/English-Read%20in%20English-3b82f6" alt="English"></a>
 </p>
 
 ---
 
 ## 简介
 
-ImageFilter UI界面美化，提供完整的Raw初筛选工作流
+为摄影师打造的 RAW 初筛工作流 —— 插卡识别、秒级预览、星级筛选、AI 辅助、一键归档
 
-- 略缩图网格预览，快速初筛，LrC同款星级筛选
+- 缩略图网格预览，快速初筛，LrC 同款星级筛选
 - 主流 RAW 格式原生支持，DNG 内置专用解码器
 - 模糊 / 过曝 / 连拍重复自动检测，星级评分辅助筛选
 - 命名规则自动归档，MD5 校验保证数据完整
@@ -29,9 +35,10 @@ ImageFilter UI界面美化，提供完整的Raw初筛选工作流
 
 ---
 
--尚处于待完善阶段，欢迎想法建议！
--由于缺乏构建环境MacOS版可能存在显著问题请谅解提交lssues！
--感谢原始股东们！
+> **开发状态**
+> - 尚处于待完善阶段，欢迎提出想法与建议！
+> - 由于缺乏构建环境，macOS 版可能存在显著问题，请谅解，欢迎提交 issues。
+> - 感谢所有贡献者！
 
 ---
 
@@ -50,8 +57,8 @@ ImageFilter UI界面美化，提供完整的Raw初筛选工作流
 |------|------|
 | `ImageFilter_x64-setup.exe` | NSIS 安装包，推荐 |
 | `ImageFilter_x64_zh-CN.msi` | MSI 安装包 |
-下载慢可用在[官网](https://tensyn.online/#download)和[Releases](https://github.com/XUTENGXIANG/ImageFilter/releases)说明处下载
-双击运行，按提示完成安装。
+
+双击运行，按提示完成安装。下载慢可用[官网](https://tensyn.online/#download)直链或 [Releases](https://github.com/XUTENGXIANG/ImageFilter/releases) 说明处下载；macOS 版请见 [Releases](https://github.com/XUTENGXIANG/ImageFilter/releases)。
 
 ## 快速上手
 
