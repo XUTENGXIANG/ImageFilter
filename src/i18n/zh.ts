@@ -53,6 +53,9 @@ export default {
     nav: "切换(查看器)",
     reset: "重置(查看器)",
     select: "勾选(查看器)",
+    space: "空格",
+    ctrlClick: "Ctrl+点击",
+    shiftClick: "Shift+点击",
     multi: "多选",
     range: "范围选择",
     contextMenu: "右键菜单",
@@ -95,6 +98,7 @@ export default {
     all: "全部",
     stop: "停止",
     ai: "AI 分析",
+    cols: "{n} 列",
     empty: "打开照片文件夹后显示工具栏",
   },
 
@@ -177,17 +181,12 @@ export default {
   // ── 欢迎页 ──
   welcome: {
     subtitle: "照片筛选导入工具",
-    keep: "保留",
-    trash: "废弃",
-    star: "星级",
   },
 
   // ── 图片查看器 ──
   viewer: {
     rotateCCW: "逆时针旋转 (Shift+R)",
     rotateCW: "顺时针旋转 (R)",
-    star: "{n} 星",
-    close: "关闭 (Esc)",
     prev: "上一张 (←)",
     next: "下一张 (→)",
     nav: "← → 切换",

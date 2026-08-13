@@ -13,8 +13,29 @@ export function AdvancedOptions({
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
 
-  const toggleDate = () => setFolderRule(folderRule.includes("{date}") ? "" : "{date}");
-  const toggleCamera = () => setFolderRule(folderRule.includes("{camera}") ? folderRule.replace("/{camera}","").replace("{camera}/","").replace("{camera}","") : (folderRule ? folderRule + "/{camera}" : "{camera}"));
+  /** 从规则字符串中移除指定 token（含其前面的 "/" 分隔符），其他 token 保留 */
+  const removeToken = (rule: string, token: string) =>
+    rule
+      .replace(`/${token}`, "")
+      .replace(`${token}/`, "")
+      .replace(token, "");
+
+  const toggleDate = () =>
+    setFolderRule(
+      folderRule.includes("{date}")
+        ? removeToken(folderRule, "{date}")
+        : folderRule
+          ? `${folderRule}/{date}`
+          : "{date}"
+    );
+  const toggleCamera = () =>
+    setFolderRule(
+      folderRule.includes("{camera}")
+        ? removeToken(folderRule, "{camera}")
+        : folderRule
+          ? `${folderRule}/{camera}`
+          : "{camera}"
+    );
   const toggleSeq = () => setFileRule(fileRule === "{seq}.{ext}" ? "" : "{seq}.{ext}");
 
   return (

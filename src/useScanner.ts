@@ -2,32 +2,7 @@ import { useState, useCallback } from "react";
 import { invoke, convertFileSrc, Channel } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import i18n from "./i18n";
-import type { DriveInfo, ScannedPhoto, FolderEntry } from "./types";
-
-export interface ImportProgress {
-  fileName: string;
-  status: string;
-  message: string;
-  percent: number;
-}
-
-export interface AnalysisResult {
-  path: string;
-  blurScore: number;
-  isBlurry: boolean;
-  isOverexposed: boolean;
-  isUnderexposed: boolean;
-  duplicateGroup?: number;
-  isBestInGroup: boolean;
-}
-
-export interface FolderNode {
-  name: string;
-  path: string;
-  children: FolderNode[];
-  photoCount: number;
-  hasSubdirs: boolean;
-}
+import type { DriveInfo, ScannedPhoto, FolderEntry, FolderNode, ImportProgress, AnalysisResult } from "./types";
 
 function entryToNode(entry: FolderEntry): FolderNode {
   return {
@@ -37,6 +12,11 @@ function entryToNode(entry: FolderEntry): FolderNode {
     hasSubdirs: entry.hasSubdirs,
     children: entry.subfolders.map(entryToNode),
   };
+}
+
+/** 扩展 asset 协议访问范围（assetProtocol.scope 已收紧为空, 浏览时按需放行） */
+function allowAssetDir(dir: string) {
+  invoke("allow_asset_dir", { dirPath: dir }).catch(() => {});
 }
 
 function updateHasSubdirs(root: FolderNode | null, path: string, val: boolean): FolderNode | null {
@@ -127,7 +107,8 @@ export function useScanner() {
 
   // Import state
   const [importing, setImporting] = useState(false);
-  const [importProgress, setImportProgress] = useState<{ fileName: string; status: string; message: string }[]>([]);
+  const [importProgress, setImportProgress] = useState<ImportProgress[]>([]);
+  const [importDone, setImportDone] = useState(0);
   const [importError, setImportError] = useState<string | null>(null);
   // AI analysis
   const [analyzing, setAnalyzing] = useState(false);
@@ -178,6 +159,7 @@ export function useScanner() {
   const browseDrive = useCallback(async (mountPoint: string) => {
     setBrowsing(true);
     setSelectedDrive(mountPoint);
+    allowAssetDir(mountPoint); // asset 协议按需放行该设备
     setPhotos([]);
     setThumbnails({});
     setSelectedPhoto(null);
@@ -216,6 +198,7 @@ export function useScanner() {
   const loadFolder = useCallback(async (folderPath: string) => {
     setLoadingFolder(true);
     setActiveFolder(folderPath);
+    allowAssetDir(folderPath); // asset 协议按需放行该文件夹
     setPhotos([]);
     setThumbnails({});
     setSelectedPhoto(null);
@@ -258,7 +241,10 @@ export function useScanner() {
   /** Pick destination folder */
   const pickDestDir = useCallback(async () => {
     const dir = await open({ directory: true, title: i18n.t("import.pickDestTitle") });
-    if (dir) setDestDir(dir as string);
+    if (dir) {
+      setDestDir(dir as string);
+      allowAssetDir(dir as string); // asset 协议按需放行目标目录
+    }
     return dir;
   }, []);
 
@@ -267,10 +253,16 @@ export function useScanner() {
     if (!destDir || paths.length === 0) return;
     setImporting(true);
     setImportProgress([]);
+    setImportDone(0);
 
     const onProgress = new Channel<ImportProgress>();
     onProgress.onmessage = (p: ImportProgress) => {
-      setImportProgress((prev) => [...prev, p]);
+      if (p.status === "done") setImportDone((n) => n + 1);
+      // 只保留最近 100 条, 避免大导入时数组/重渲染无限增长
+      setImportProgress((prev) => {
+        const next = prev.length >= 100 ? prev.slice(prev.length - 99) : prev;
+        return [...next, p];
+      });
     };
 
     try {
@@ -343,27 +335,28 @@ export function useScanner() {
     }
   }, []);
 
+  // 稳定版本(无 thumbnails 依赖): 每次调用都会查后端, 但后端有磁盘缓存,
+  // 命中时立即返回, 不会重复解码; setThumbnails 幂等更新避免多余重渲染
   const loadThumbnail = useCallback(
     async (filePath: string, size = 300) => {
-      if (thumbnails[filePath]) return thumbnails[filePath];
       try {
         const diskPath = await invoke<string>("get_thumbnail_path", { filePath, maxSize: size });
         const assetUrl = convertFileSrc(diskPath);
-        setThumbnails((prev) => ({ ...prev, [filePath]: assetUrl }));
+        setThumbnails((prev) => (prev[filePath] ? prev : { ...prev, [filePath]: assetUrl }));
         return assetUrl;
       } catch {
-        setThumbnails((prev) => ({ ...prev, [filePath]: "__err__" }));
+        setThumbnails((prev) => (prev[filePath] ? prev : { ...prev, [filePath]: "__err__" }));
         return null;
       }
     },
-    [thumbnails]
+    []
   );
 
   return {
     drives, selectedDrive, folderTree, activeFolder, photos,
     selectedPhoto, thumbnails, browsing, loadingFolder, counting,
     detectDrives, browseDrive, loadFolder, loadThumbnail, loadExif, setSelectedPhoto,
-    importing, importProgress, importError, importResult, destDir,
+    importing, importProgress, importDone, importError, importResult, destDir,
     selectedPaths, handlePhotoClick, selectAll, clearSelection,
     folderRule, fileRule, setFolderRule, setFileRule,
     customFolder, setCustomFolder, useCustomFolder, setUseCustomFolder,

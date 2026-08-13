@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo, useRef } from "react";
+import { useEffect, useState, useMemo, useRef, useCallback, memo } from "react";
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { useTranslation } from "react-i18next";
 import { PixelMenu, SEPARATOR, type MenuItem } from "./contextmenu";
@@ -21,7 +21,69 @@ import { ImportBar } from "./components/import-bar";
 //    请不要混用 emoji/文字符号 等其他图标方案
 // ═══════════════════════════════════════════════════════════════════
 import { Disk, DiskOne } from "@icon-park/react";
-import type { ScannedPhoto } from "./types";
+import type { ScannedPhoto, AnalysisResult } from "./types";
+
+/**
+ * 照片网格项 — memoized 组件:
+ * 所有事件处理器收进 useCallback, 配合 App 传入的稳定回调,
+ * 使缩略图/评分/勾选变化时只重渲染受影响的卡片, 而非整表重渲染
+ */
+const PhotoGridItem = memo(function PhotoGridItem({
+  photo, thumbnail, isSelected, isChecked, analysis, rating, menuItems,
+  onToggle, onRate, onOpenViewer, onSelect, onCtx, loadThumb,
+}: {
+  photo: ScannedPhoto;
+  thumbnail?: string;
+  isSelected: boolean;
+  isChecked: boolean;
+  analysis?: AnalysisResult;
+  rating?: number;
+  menuItems: MenuItem[];
+  onToggle: (path: string, e: { ctrlKey: boolean; shiftKey: boolean }) => void;
+  onRate: (path: string, stars: number) => void;
+  onOpenViewer: (photo: ScannedPhoto, rect: { x: number; y: number; w: number; h: number }) => void;
+  onSelect: (photo: ScannedPhoto) => void;
+  onCtx: (photo: ScannedPhoto) => void;
+  loadThumb: (path: string) => void;
+}) {
+  const thumbLoaded = useRef(false);
+
+  const handleClick = useCallback((e: React.MouseEvent) => {
+    onToggle(photo.path, { ctrlKey: e.ctrlKey, shiftKey: e.shiftKey });
+    onSelect(photo);
+    if (!thumbLoaded.current) {
+      thumbLoaded.current = true;
+      loadThumb(photo.path);
+    }
+  }, [photo, onToggle, onSelect, loadThumb]);
+
+  const handleDoubleClick = useCallback((e: React.MouseEvent) => {
+    const r = e.currentTarget.getBoundingClientRect();
+    onOpenViewer(photo, { x: r.x, y: r.y, w: r.width, h: r.height });
+  }, [photo, onOpenViewer]);
+
+  const handleRate = useCallback((s: number) => onRate(photo.path, s), [photo, onRate]);
+  const handleCtx = useCallback(() => onCtx(photo), [photo, onCtx]);
+  const handleMenuOpen = useCallback((open: boolean) => { if (open) onCtx(photo); }, [photo, onCtx]);
+
+  return (
+    <PixelMenu items={menuItems} onOpenChange={handleMenuOpen}>
+      <PhotoCard
+        photo={photo}
+        thumbnail={thumbnail}
+        isSelected={isSelected}
+        isChecked={isChecked}
+        onToggle={handleClick}
+        analysis={analysis}
+        rating={rating}
+        onRate={handleRate}
+        onDoubleClick={handleDoubleClick}
+        onContextMenu={handleCtx}
+        onClick={handleClick}
+      />
+    </PixelMenu>
+  );
+});
 
 function App() {
   const { t } = useTranslation();
@@ -54,6 +116,7 @@ function App() {
     setStarFilter,
     importing,
     importProgress,
+    importDone,
     importError,
     importResult,
     customFolder,
@@ -169,6 +232,25 @@ function App() {
     { label: t("menu.selectAll"), action: selectAll },
     { label: t("menu.ai"), action: () => runAnalysis(photos.map((p) => p.path)) },
   ], [photos, selectedDrive, startImport, selectAll, browseDrive, runAnalysis, t]);
+
+  // 照片网格 — 稳定回调(配合 PhotoGridItem memo, 避免整表重渲染)
+  const openViewer = useCallback((photo: ScannedPhoto, rect: { x: number; y: number; w: number; h: number }) => {
+    if (photo.isVideo) return; // 视频暂不支持预览
+    setViewerOrigin(rect);
+    setViewerIndex(sortedPhotos.indexOf(photo));
+  }, [sortedPhotos]);
+
+  const selectPhoto = useCallback((photo: ScannedPhoto) => {
+    setSelectedPhoto(photo);
+    loadExif(photo);
+  }, [loadExif]);
+
+  const ctxPhoto = useCallback((photo: ScannedPhoto) => setCtxTarget(photo), []);
+
+  const toggleSelect = useCallback(
+    (path: string) => handlePhotoClick(path, { ctrlKey: false, shiftKey: false }),
+    [handlePhotoClick]
+  );
 
   // 弹出提示浮窗
   const [toast, setToast] = useState<string | null>(null);
@@ -444,8 +526,7 @@ function App() {
             <PixelMenu items={emptyMenuItems}>
             <div className="grid photo-grid gap-2 content-start">
               {sortedPhotos.map((photo) => (
-                <PixelMenu key={photo.path} items={photoMenuItems} onOpenChange={(open) => { if (open) setCtxTarget(photo); }}>
-                <PhotoCard
+                <PhotoGridItem
                   key={photo.path}
                   photo={photo}
                   thumbnail={
@@ -455,25 +536,16 @@ function App() {
                   }
                   isSelected={selectedPhoto?.path === photo.path}
                   isChecked={selectedPaths.has(photo.path)}
-                  onToggle={(e: React.MouseEvent) => handlePhotoClick(photo.path, { ctrlKey: e.ctrlKey, shiftKey: e.shiftKey })}
                   analysis={analysis[photo.path]}
                   rating={ratings[photo.path]}
-                  onRate={(s: number) => setRating(photo.path, s)}
-                  onDoubleClick={(e: React.MouseEvent) => {
-                    if (photo.isVideo) return; // 视频暂不支持预览
-                    const r = e.currentTarget.getBoundingClientRect();
-                    setViewerOrigin({ x: r.x, y: r.y, w: r.width, h: r.height });
-                    setViewerIndex(sortedPhotos.indexOf(photo));
-                  }}
-                  onContextMenu={() => setCtxTarget(photo)}
-                  onClick={(e: React.MouseEvent) => {
-                    handlePhotoClick(photo.path, { ctrlKey: e.ctrlKey, shiftKey: e.shiftKey });
-                    setSelectedPhoto(photo);
-                    if (!thumbnails[photo.path]) loadThumbnail(photo.path, 300);
-                    loadExif(photo);
-                  }}
+                  menuItems={photoMenuItems}
+                  onToggle={handlePhotoClick}
+                  onRate={setRating}
+                  onOpenViewer={openViewer}
+                  onSelect={selectPhoto}
+                  onCtx={ctxPhoto}
+                  loadThumb={loadThumbnail}
                 />
-                </PixelMenu>
               ))}
             </div>
             </PixelMenu>
@@ -495,6 +567,7 @@ function App() {
           setUseCustomFolder={setUseCustomFolder}
           importing={importing}
           importProgress={importProgress}
+          importDone={importDone}
           importError={importError}
           importResult={importResult}
           selectedCount={selectedPaths.size}
@@ -528,7 +601,7 @@ function App() {
           originRect={viewerOrigin}
           thumbnails={thumbnails}
           selectedPaths={selectedPaths}
-          onToggleSelect={(path) => handlePhotoClick(path, { ctrlKey: false, shiftKey: false })}
+          onToggleSelect={toggleSelect}
         />
       )}
       {/* 弹出提示浮窗 — 渐变出现停留1秒后消失 */}

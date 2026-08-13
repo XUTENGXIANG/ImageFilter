@@ -73,19 +73,45 @@ fn has_subdirectories(path: &std::path::Path) -> bool {
     false
 }
 
-/// Count ALL photos in directory tree (avoid file_type() syscalls — use extension heuristic)
+/// Count ALL photos in directory tree.
+/// 环检测: 目录 canonicalize 后入 visited 集合, 符号链接指向已访问目录时停止递归,
+/// 避免 junction/symlink 循环导致无限递归栈溢出; 另有深度上限兜底。
 fn count_photos_recursive(path: &std::path::Path) -> u32 {
+    let mut visited = std::collections::HashSet::new();
+    count_photos_recursive_inner(path, &mut visited, 0)
+}
+
+fn count_photos_recursive_inner(
+    path: &std::path::Path,
+    visited: &mut std::collections::HashSet<std::path::PathBuf>,
+    depth: u32,
+) -> u32 {
+    if depth > 64 {
+        return 0;
+    }
+    if let Ok(canon) = std::fs::canonicalize(path) {
+        if !visited.insert(canon) {
+            return 0; // 已访问过（符号链接环或重复引用）→ 停止
+        }
+    }
+
     let mut count: u32 = 0;
     if let Ok(entries) = std::fs::read_dir(path) {
         for entry in entries.flatten() {
+            let ft = match entry.file_type() {
+                Ok(t) => t,
+                Err(_) => continue,
+            };
             let file_path = entry.path();
-            if let Some(ext) = file_path.extension().and_then(|e| e.to_str()) {
-                if SUPPORTED_EXTENSIONS.contains(&ext.to_lowercase().as_str()) {
-                    count += 1;
-                    continue;
+            if ft.is_dir() || ft.is_symlink() {
+                count += count_photos_recursive_inner(&file_path, visited, depth + 1);
+            } else if ft.is_file() {
+                if let Some(ext) = file_path.extension().and_then(|e| e.to_str()) {
+                    if SUPPORTED_EXTENSIONS.contains(&ext.to_lowercase().as_str()) {
+                        count += 1;
+                    }
                 }
             }
-            count += count_photos_recursive(&file_path);
         }
     }
     count

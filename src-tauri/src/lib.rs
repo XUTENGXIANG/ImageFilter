@@ -9,9 +9,14 @@ mod win_wic;
 use tauri::Manager;
 use tauri::window::{Effect, EffectsBuilder};
 
+/// 扩展 asset 协议访问范围 — 浏览设备/文件夹/选择目标目录时由前端调用,
+/// 只允许用户实际浏览的路径, 代替 tauri.conf.json 中的全盘通配 scope
 #[tauri::command]
-fn greet(name: String) -> String {
-    format!("Hello, {}! ImageFilter is running.", name)
+fn allow_asset_dir(app: tauri::AppHandle, dir_path: String) -> Result<(), String> {
+    use tauri::Manager;
+    app.asset_protocol_scope()
+        .allow_directory(dir_path, true)
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -50,6 +55,29 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             let app_handle = app.handle().clone();
+
+            // asset 协议默认 scope 为空([]), 启动时只放行缩略图/预览/全图缓存目录
+            // (images.rs 的缓存目录: %LOCALAPPDATA%\image-filter 或 ~/.cache/image-filter)
+            {
+                use tauri::Manager;
+                let cache_root = std::env::var("LOCALAPPDATA")
+                    .map(std::path::PathBuf::from)
+                    .ok()
+                    .or_else(|| {
+                        std::env::var("XDG_CACHE_HOME")
+                            .ok()
+                            .map(std::path::PathBuf::from)
+                            .or_else(|| {
+                                std::env::var("HOME").ok().map(|h| {
+                                    std::path::PathBuf::from(h).join(".cache")
+                                })
+                            })
+                    })
+                    .unwrap_or_else(std::env::temp_dir)
+                    .join("image-filter");
+                let _ = app.asset_protocol_scope().allow_directory(cache_root, true);
+            }
+
             let db_path = app
                 .path()
                 .app_data_dir()
@@ -70,7 +98,7 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            greet,
+            allow_asset_dir,
             set_glass_bg,
             db::get_import_history,
             db::get_rules,

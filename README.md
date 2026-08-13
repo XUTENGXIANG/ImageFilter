@@ -121,6 +121,35 @@ npx tauri build
 
 构建产物输出到 `src-tauri/target/release/bundle/`。
 
+### dev 启动说明（给开发者）
+
+`npx tauri dev` 按顺序做三件事：
+
+1. 执行 `beforeDevCommand`（`npm run dev`）启动 Vite dev server，端口 **1420**
+2. 编译 Rust（`src-tauri/`，首次 2-5 分钟，之后增量秒级）
+3. 编译完成后自动启动 `image-filter.exe`，弹出应用窗口
+
+窗口参数（`tauri.conf.json`）：1200×800、最小 900×600、**无边框**（标题栏为 React 自绘，靠 `data-tauri-drag-region` 拖拽）。
+
+**端口 1420 被占用（常见坑）**：旧 vite 进程不会随窗口关闭退出，表现为 `beforeDevCommand terminated with non-zero status`。
+
+```bash
+netstat -ano | findstr ":1420" | findstr LISTEN   # 找到 PID
+taskkill /PID <PID> /F                            # 杀掉后重启
+npx tauri dev
+```
+
+**后台运行（终端被阻塞时）**：
+
+```bash
+npx tauri dev 2>&1 | tee dev.log   # 或重定向到文件后另开终端查看
+tasklist | findstr image-filter    # 确认窗口进程是否在跑
+```
+
+**热重载**：前端改动走 Vite HMR 即时生效；Rust 改动保存后自动增量重编译并重启窗口。改 `viewer.tsx` 的加载状态机时请先读 `HANDOFF.md` 第 5 节（每个分支都是修视觉 bug 换来的，不要"顺手简化"）。
+
+**版本发布**：修改版本号需同步 `package.json`、`tauri.conf.json`、`src-tauri/Cargo.toml` 三处；标记待发布版本用 `git tag vX.Y.Z` 并推送 tag，安装包由 GitHub Actions 构建产出。
+
 ## 项目结构
 
 ```

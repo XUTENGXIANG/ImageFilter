@@ -64,16 +64,6 @@ fn save_jpeg_quality(
         .map_err(|e| format!("Encode: {}", e))
 }
 
-fn read_exif_orientation(path: &std::path::Path) -> Option<u16> {
-    let exif_reader = crate::exif_common::open_exif(path)?;
-    for field in exif_reader.fields() {
-        if field.tag == exif::Tag::Orientation {
-            return field.value.get_uint(0).map(|v| v as u16);
-        }
-    }
-    None
-}
-
 fn transpose_image(img: &image::DynamicImage) -> image::DynamicImage {
     let (w, h) = (img.width(), img.height());
     let rgb = img.to_rgb8();
@@ -90,7 +80,7 @@ fn apply_exif_orientation(
     path: &std::path::Path,
     img: image::DynamicImage,
 ) -> image::DynamicImage {
-    let Some(orientation) = read_exif_orientation(path) else {
+    let Some(orientation) = crate::exif_common::orientation(path) else {
         return img;
     };
     let (swap, flip_x, flip_y) = rawler::decoders::Orientation::from_u16(orientation).to_flips();
@@ -143,7 +133,7 @@ pub async fn get_preview_image(file_path: String) -> Result<String, String> {
     }
 
     if let Some(bytes) = extract_largest_preview_bytes(src) {
-        let orientation = read_exif_orientation(src);
+        let orientation = crate::exif_common::orientation(src);
         if orientation.is_none() || orientation == Some(1) {
             if std::fs::write(&cache_path, &bytes).is_ok() {
                 return Ok(cache_path.to_string_lossy().to_string());
@@ -318,6 +308,8 @@ pub async fn get_full_image(file_path: String) -> Result<String, String> {
 }
 
 /// 提取RAW中分辨率最大的内嵌JPEG（返回尺寸+原始字节, mmap零解码）
+/// 内层 EOI 扫描有 16MB 上限, 无 EOI 时跳过该 SOI 签名, 避免坏文件 O(n²)
+const MAX_JPEG_LOOKAHEAD: usize = 16 * 1024 * 1024;
 fn extract_largest_preview_full(path: &std::path::Path) -> Option<(u32, u32, Vec<u8>)> {
     let file = std::fs::File::open(path).ok()?;
     let map = unsafe { memmap2::Mmap::map(&file).ok()? };
@@ -327,9 +319,10 @@ fn extract_largest_preview_full(path: &std::path::Path) -> Option<(u32, u32, Vec
     let mut i = 0;
     while i + 3 < data.len() {
         if data[i] == 0xFF && data[i + 1] == 0xD8 && data[i + 2] == 0xFF {
+            let limit = (i + MAX_JPEG_LOOKAHEAD).min(data.len());
             let mut j = i + 2;
             let mut eoi = None;
-            while j + 1 < data.len() {
+            while j + 1 < limit {
                 if data[j] == 0xFF && data[j + 1] == 0xD9 { eoi = Some(j + 2); break; }
                 j += 1;
             }
@@ -342,6 +335,9 @@ fn extract_largest_preview_full(path: &std::path::Path) -> Option<(u32, u32, Vec
                 i = end;
                 continue;
             }
+            // 无 EOI（坏文件）→ 跳过该签名避免反复扫描
+            i += 3;
+            continue;
         }
         i += 1;
     }
@@ -355,6 +351,25 @@ fn extract_largest_preview_bytes(path: &std::path::Path) -> Option<Vec<u8>> {
     let (w, h, bytes) = extract_largest_preview_full(path)?;
     if w.max(h) < 600 { return None; }
     Some(bytes)
+}
+
+/// 分析用图片加载（analyzer.rs 复用）: RAW 走内嵌 JPEG 提取(秒级), 其他格式直接解码
+pub(crate) fn load_analysis_image(path: &std::path::Path) -> Option<image::DynamicImage> {
+    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+    if RAW_EXTENSIONS.contains(&ext.as_str()) {
+        let bytes = extract_largest_preview_bytes(path)?;
+        return image::load_from_memory(&bytes).ok();
+    }
+    image::open(path).ok()
+}
+
+/// 分析用原始字节（analyzer.rs 复用）: RAW 返回内嵌 JPEG 字节, 其他返回原文件字节
+pub(crate) fn load_analysis_bytes(path: &std::path::Path) -> Option<Vec<u8>> {
+    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+    if RAW_EXTENSIONS.contains(&ext.as_str()) {
+        return extract_largest_preview_bytes(path);
+    }
+    std::fs::read(path).ok()
 }
 
 /// 从 JPEG 字节解析宽高（找 SOF0/SOF2 段）
@@ -473,14 +488,19 @@ fn decode_jpeg_fast(path: &std::path::Path) -> Result<image::DynamicImage, Strin
 }
 
 /// Extract embedded JPEG preview from RAW file — near-instant vs full sensor decode
+/// 只保留最后 64 个候选(内嵌图通常靠后, 且可防止恶意文件的假 SOI 撑爆 Vec)
 fn extract_raw_preview(path: &std::path::Path) -> Result<image::DynamicImage, String> {
     let data = std::fs::read(path).map_err(|e| format!("Read RAW: {}", e))?;
 
+    const MAX_CANDIDATES: usize = 64;
     let mut jpeg_candidates: Vec<usize> = Vec::new();
     let mut i = 0;
     while i < data.len().saturating_sub(3) {
         if data[i] == 0xFF && data[i + 1] == 0xD8 && data[i + 2] == 0xFF {
             jpeg_candidates.push(i);
+            if jpeg_candidates.len() > MAX_CANDIDATES {
+                jpeg_candidates.remove(0); // 只保留靠后的候选
+            }
         }
         i += 1;
     }
@@ -509,12 +529,14 @@ fn decode_raw_slow(path: &std::path::Path) -> Result<image::DynamicImage, String
     let raw = rawler::decode_file(path).map_err(|e| format!("RAW: {}", e))?;
     let (w, h) = (raw.width as u32, raw.height as u32);
     if let rawler::RawImageData::Integer(data) = raw.data {
-        let max = 65535u16;
+        // 位深自适应: 取数据实际最大值归一化(8-bit → 255, 12/14-bit → 4095/16383, 16-bit → 65535)
+        // 固定 65535 会让 8-bit 数据全黑、12/14-bit 整体偏暗
+        let max = data.iter().copied().max().unwrap_or(0).max(1) as f32;
         let expected = (w as usize) * (h as usize);
         let n = expected.min(data.len());
         let mut rgb = vec![0u8; n * 3];
         for (i, &pix) in data[..n].iter().enumerate() {
-            let v = ((pix as f32 / max as f32) * 255.0).clamp(0.0, 255.0) as u8;
+            let v = ((pix as f32 / max) * 255.0).clamp(0.0, 255.0) as u8;
             rgb[i * 3] = v;
             rgb[i * 3 + 1] = v;
             rgb[i * 3 + 2] = v;

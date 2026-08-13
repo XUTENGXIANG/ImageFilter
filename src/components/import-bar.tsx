@@ -3,6 +3,7 @@ import { Check, Close, FolderOpen, More, Right } from "@icon-park/react";
 import { AdvancedOptions } from "./advanced-options";
 import { CollapsibleBar } from "./collapsible-bar";
 import { Tip } from "./tip";
+import type { ImportProgress } from "../types";
 
 interface Props {
   destDir: string | null;
@@ -15,7 +16,8 @@ interface Props {
   useCustomFolder: boolean;
   setUseCustomFolder: (v: boolean) => void;
   importing: boolean;
-  importProgress: { fileName: string; status: string; message: string }[];
+  importProgress: ImportProgress[];
+  importDone: number;
   importError: string | null;
   importResult: { ok: number; fail: number } | null;
   selectedCount: number;
@@ -38,6 +40,7 @@ export function ImportBar({
   setUseCustomFolder,
   importing,
   importProgress,
+  importDone,
   importError,
   importResult,
   selectedCount,
@@ -80,7 +83,7 @@ export function ImportBar({
           className="text-[10px] px-3 py-1 rounded bg-emerald-600 hover:bg-emerald-500 disabled:bg-zinc-700 disabled:text-zinc-500 text-white font-medium"
         >
           {importing
-            ? t("import.importingCount", { done: importProgress.filter((p) => p.status === "done").length, total: selectedCount })
+            ? t("import.importingCount", { done: importDone, total: selectedCount })
             : t("import.importCount", { n: selectedCount })}
         </button>
       </div>
@@ -105,7 +108,7 @@ export function ImportBar({
       {importing && importProgress.length > 0 && (
         <div className="px-3 pb-1.5 max-h-16 overflow-auto no-scrollbar">
           {importProgress.slice(-4).map((p, i) => (
-            <div key={i} className="text-[9px] text-zinc-500 flex gap-1.5">
+            <div key={`${i}-${p.fileName}`} className="text-[9px] text-zinc-500 flex gap-1.5">
               <span className={
                 p.status === "error" ? "text-red-400" :
                 p.status === "done" ? "text-emerald-400" :

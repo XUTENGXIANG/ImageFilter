@@ -36,3 +36,31 @@ export interface FolderEntry {
   hasSubdirs: boolean;
   subfolders: FolderEntry[];
 }
+
+/** 导入进度事件（Rust import_photos 经 Channel 推送） */
+export interface ImportProgress {
+  fileName: string;
+  status: string; // "checking" | "copying" | "verifying" | "done" | "skipped" | "error"
+  message: string;
+  percent: number;
+}
+
+/** AI 分析结果（模糊/曝光/重复） */
+export interface AnalysisResult {
+  path: string;
+  blurScore: number;
+  isBlurry: boolean;
+  isOverexposed: boolean;
+  isUnderexposed: boolean;
+  duplicateGroup?: number;
+  isBestInGroup: boolean;
+}
+
+/** 左侧设备文件夹树节点 */
+export interface FolderNode {
+  name: string;
+  path: string;
+  children: FolderNode[];
+  photoCount: number;
+  hasSubdirs: boolean;
+}

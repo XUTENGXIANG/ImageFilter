@@ -3,17 +3,18 @@
   <head>
     <script>
       // 页面加载前同步主题，避免深/浅色闪烁穿帮
+      // key 必须与 TitleBar 持久化用的 imagefilter-theme 一致
       (function () {
-        var t = localStorage.getItem("pixelflow-theme") || "dark";
+        var t = localStorage.getItem("imagefilter-theme") || "dark";
         var root = document.documentElement;
         if (t === "dark") { root.classList.add("dark"); root.setAttribute("data-theme", "dark"); }
         else { root.classList.remove("dark"); root.setAttribute("data-theme", "light"); }
       })();
     </script>
     <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="/pixel-flow.svg" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>PixelFlow</title>
+    <title>ImageFilter</title>
   </head>
   <body>
     <div id="root"></div>

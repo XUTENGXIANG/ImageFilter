@@ -2,7 +2,7 @@
   "$schema": "./gen/schemas/desktop-schema.json",
   "identifier": "com.imagefilter.app",
   "productName": "ImageFilter",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "build": {
     "devUrl": "http://localhost:1420",
     "frontendDist": "../dist",
@@ -28,7 +28,7 @@
       "dangerousDisableAssetCspModification": false,
       "assetProtocol": {
         "enable": true,
-        "scope": ["**"]
+        "scope": []
       }
     }
   },

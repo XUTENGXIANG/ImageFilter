@@ -210,6 +210,8 @@ fn detect_drives_macos() -> Vec<DriveInfo> {
             let name = entry.file_name().to_string_lossy().to_string();
             // 跳过隐藏卷(如 .timemachine)
             if name.starts_with('.') { continue; }
+            // 系统启动盘默认名为 "Macintosh HD", 排除以免误弹系统盘
+            if name == "Macintosh HD" { continue; }
             drives.push(DriveInfo {
                 mount_point: entry.path().to_string_lossy().to_string(),
                 drive_type: "removable".into(), // macOS 挂载卷按可移动处理

@@ -29,7 +29,25 @@ pub fn decode_dng_tinydng(path: &str) -> Option<DynamicImage> {
         return None;
     }
 
-    let buf_len = (w as usize) * (h as usize) * 3;
+    // ── 边界校验: w/h 由 C 侧返回, 来自不可信 DNG 头 — 与 C 侧同样的上限 ──
+    const MAX_DIM: i32 = 20000;
+    const MAX_BUFFER: usize = 512 * 1024 * 1024; // w*h*3 上限 512MB
+    let buf_len = if w <= MAX_DIM && h <= MAX_DIM {
+        (w as usize)
+            .checked_mul(h as usize)
+            .and_then(|v| v.checked_mul(3))
+    } else {
+        None
+    };
+    let Some(buf_len) = buf_len else {
+        unsafe { tinydng_free(rgb) };
+        return None;
+    };
+    if buf_len > MAX_BUFFER {
+        unsafe { tinydng_free(rgb) };
+        return None;
+    }
+
     let buf = unsafe { std::slice::from_raw_parts(rgb, buf_len) }.to_vec();
 
     // 释放 C 端内存

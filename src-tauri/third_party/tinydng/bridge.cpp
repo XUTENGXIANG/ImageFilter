@@ -25,15 +25,26 @@ int tinydng_decode(const char* filename, unsigned char** rgb_out, int* w_out, in
     tinydng::DNGImage& img = images[0];
     int w = static_cast<int>(img.width);
     int h = static_cast<int>(img.height);
-    if (w <= 0 || h <= 0) return 0;
+
+    // ── 边界校验: w/h/spp/bits 全部来自不可信的 DNG 文件头, 使用前必须验证 ──
+    const int kMaxDim = 20000;
+    const size_t kMaxBuffer = 512u * 1024u * 1024u; // w*h*3 上限 512MB
+    if (w <= 0 || h <= 0 || w > kMaxDim || h > kMaxDim) return 0;
+
+    int bits = img.bits_per_sample > 0 ? img.bits_per_sample : 16;
+    int spp = img.samples_per_pixel;
+    if (spp <= 0) spp = 1;
+    if (spp > 8) return 0; // 相机 RAW 的 spp 只可能是 1-4, 拒绝异常值
+
+    const size_t bytes_per_sample = (bits >= 16) ? 2 : 1;
+    const size_t expected = (size_t)w * h * spp * bytes_per_sample;
+    if ((size_t)w * h * 3 > kMaxBuffer) return 0; // 防止超大尺寸分配
+    if (img.data.size() < expected) return 0;     // 截断/伪造 DNG → 数据不足, 拒绝
 
     // Get decoded pixel data (len = spp * w * h * bps / 8)
     if (img.data.empty()) return 0;
     const unsigned char* src = img.data.data();
-    int bits = img.bits_per_sample > 0 ? img.bits_per_sample : 16;
-    int spp = img.samples_per_pixel;
-    if (spp <= 0) spp = 1;
-    size_t src_pitch = (size_t)w * spp * (bits >= 16 ? 2 : 1);
+    size_t src_pitch = (size_t)w * spp * bytes_per_sample;
 
     // If already RGB (spp>=3), copy directly
     if (spp >= 3) {

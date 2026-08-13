@@ -50,6 +50,9 @@ export default {
     nav: "Navigate (viewer)",
     reset: "Reset (viewer)",
     select: "Select (viewer)",
+    space: "Space",
+    ctrlClick: "Ctrl+Click",
+    shiftClick: "Shift+Click",
     multi: "Multi-select",
     range: "Range select",
     contextMenu: "Context Menu",
@@ -90,6 +93,7 @@ export default {
     all: "All",
     stop: "Stop",
     ai: "AI Analyze",
+    cols: "{n} cols",
     empty: "Open a photo folder to show toolbar",
   },
 
@@ -167,16 +171,11 @@ export default {
 
   welcome: {
     subtitle: "Photo filter & import tool",
-    keep: "Keep",
-    trash: "Reject",
-    star: "Rate",
   },
 
   viewer: {
     rotateCCW: "Rotate counter-clockwise (Shift+R)",
     rotateCW: "Rotate clockwise (R)",
-    star: "{n}★",
-    close: "Close (Esc)",
     prev: "Previous (←)",
     next: "Next (→)",
     nav: "← → navigate",

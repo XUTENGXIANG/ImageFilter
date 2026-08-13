@@ -76,6 +76,10 @@ fn thumbnail_from_shell_inner(path: &str, max_size: u32) -> Option<DynamicImage>
     if w == 0 || h == 0 {
         return None;
     }
+    // 防护异常尺寸: w*h*4 超过 1GB 或 u32 乘法回绕时拒绝
+    if (w as u64) * (h as u64) * 4 > 1024 * 1024 * 1024 {
+        return None;
+    }
 
     let converted = unsafe { WICConvertBitmapSource(&GUID_WICPixelFormat32bppBGRA, &bitmap) }.ok()?;
     let stride = w * 4;
@@ -139,6 +143,10 @@ fn decode_raw_wic_inner(path: &str) -> Option<DynamicImage> {
     let mut h: u32 = 0;
     unsafe { frame.GetSize(&mut w, &mut h) }.ok()?;
     if w == 0 || h == 0 { return None; }
+    // 防护异常尺寸: w*h*4 超过 1GB 或 u32 乘法回绕时拒绝
+    if (w as u64) * (h as u64) * 4 > 1024 * 1024 * 1024 {
+        return None;
+    }
 
     // 转换到 32bpp BGRA
     let converted = unsafe { WICConvertBitmapSource(&GUID_WICPixelFormat32bppBGRA, &frame) }.ok()?;

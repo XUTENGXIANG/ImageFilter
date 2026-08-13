@@ -113,11 +113,11 @@ export function PhotoViewer({ photos, index, ratings, onRate, onClose, originRec
   }, []);
 
   // 关闭: 先缩回缩略图位置再真正关闭
-  const handleClose = () => {
+  const handleClose = useCallback(() => {
     if (leaving) return;
     setLeaving(true);
     window.setTimeout(onClose, 250);
-  };
+  }, [leaving, onClose]);
 
   // 渐进加载: 先内嵌JPEG秒开, 后台全解码后无感替换
   useEffect(() => {
@@ -248,7 +248,7 @@ export function PhotoViewer({ photos, index, ratings, onRate, onClose, originRec
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [photo, cur, photos.length, navigateTo, onClose, onRate]);
+  }, [photo, cur, photos.length, navigateTo, handleClose, onRate, onToggleSelect]);
 
   // Wheel zoom — 缩到<=1时居中(重置offset)
   const onWheel = useCallback((e: React.WheelEvent) => {

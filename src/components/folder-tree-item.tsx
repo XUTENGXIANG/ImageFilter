@@ -1,5 +1,6 @@
 import { useState } from "react";
-import type { FolderNode } from "../useScanner";
+import { Folder } from "@icon-park/react";
+import type { FolderNode } from "../types";
 
 export function FolderTreeItem({
   node, activeFolder, onSelect, depth, counting,
@@ -26,7 +27,7 @@ export function FolderTreeItem({
         style={{ paddingLeft: `${depth * 12 + 8}px`, paddingRight: "4px", paddingTop: "2px", paddingBottom: "2px" }}
       >
         <span className="text-[10px] w-3 flex-shrink-0">
-          {canExpand ? (open ? "▼" : "▶") : "📂"}
+          {canExpand ? (open ? "▼" : "▶") : <Folder theme="filled" size="12" />}
         </span>
         <span className="truncate">{node.name}</span>
         {!(counting && node.photoCount === 0) && (

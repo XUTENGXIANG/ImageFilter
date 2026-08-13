@@ -1,4 +1,6 @@
+import { memo } from "react";
 import { useTranslation } from "react-i18next";
+import { Movie, PictureOne } from "@icon-park/react";
 import { formatBytes } from "../lib/format";
 import type { ScannedPhoto } from "../types";
 
@@ -12,7 +14,19 @@ function Badge({ color, label }: { color: string; label: string }) {
   return <span className={`text-[9px] px-1.5 py-0.5 rounded ${color} text-white font-medium`}>{label}</span>;
 }
 
-export function PhotoCard({
+/** 照片类型徽标 — 三种互斥状态折叠为单一逻辑 */
+function TypeBadge({ photo }: { photo: ScannedPhoto }) {
+  const { t } = useTranslation();
+  if (photo.isVideo) return <Badge color="bg-blue-600/80" label={t("grid.video")} />;
+  return (
+    <Badge
+      color={photo.isRaw ? "bg-amber-600/80" : "bg-zinc-600/80"}
+      label={formatBadge(photo.fileName)}
+    />
+  );
+}
+
+export const PhotoCard = memo(function PhotoCard({
   photo, thumbnail, isSelected, isChecked, onClick, onToggle, analysis, rating, onRate, onContextMenu, onDoubleClick,
 }: {
   photo: ScannedPhoto; thumbnail?: string; isSelected: boolean; isChecked: boolean;
@@ -37,7 +51,9 @@ export function PhotoCard({
         <img src={thumbnail} alt={photo.fileName} className="w-full h-full object-cover" loading="lazy" />
       ) : (
         <div className="w-full h-full bg-zinc-800/50 flex items-center justify-center">
-          <span className="text-2xl opacity-40">{photo.isVideo ? "🎬" : "📷"}</span>
+          {photo.isVideo
+            ? <Movie theme="filled" size="20" className="opacity-40" />
+            : <PictureOne theme="filled" size="20" className="opacity-40" />}
         </div>
       )}
       <button
@@ -51,9 +67,7 @@ export function PhotoCard({
         {isChecked && <span className="text-white text-[10px] font-bold">✓</span>}
       </button>
       <div className="absolute top-1.5 left-1.5 flex gap-1">
-        {photo.isRaw && <Badge color="bg-amber-600/80" label={formatBadge(photo.fileName)} />}
-        {!photo.isRaw && !photo.isVideo && <Badge color="bg-zinc-600/80" label={formatBadge(photo.fileName)} />}
-        {photo.isVideo && <Badge color="bg-blue-600/80" label={t("grid.video")} />}
+        <TypeBadge photo={photo} />
         {analysis?.isBlurry && <Badge color="bg-red-600/80" label={t("grid.blurry")} />}
         {analysis?.isOverexposed && <Badge color="bg-yellow-600/80" label={t("grid.overexposed")} />}
         {analysis?.isUnderexposed && <Badge color="bg-indigo-600/80" label={t("grid.underexposed")} />}
@@ -80,4 +94,4 @@ export function PhotoCard({
       </div>
     </div>
   );
-}
+});

@@ -120,6 +120,35 @@ npx tauri build
 
 Build output goes to `src-tauri/target/release/bundle/`.
 
+### Dev-mode notes (for developers)
+
+`npx tauri dev` does three things in order:
+
+1. Runs `beforeDevCommand` (`npm run dev`) to start the Vite dev server on port **1420**
+2. Compiles the Rust backend (`src-tauri/`; 2–5 min on first run, incremental afterwards)
+3. Launches `image-filter.exe` with the app window
+
+Window config (`tauri.conf.json`): 1200×800, min 900×600, **borderless** (the title bar is a React component; drag via `data-tauri-drag-region`).
+
+**Port 1420 occupied (common gotcha)**: stale vite processes survive window close and cause `beforeDevCommand terminated with non-zero status`.
+
+```bash
+netstat -ano | findstr ":1420" | findstr LISTEN   # find the PID
+taskkill /PID <PID> /F                            # kill it, then restart
+npx tauri dev
+```
+
+**Running in the background** (when the terminal is blocked):
+
+```bash
+npx tauri dev 2>&1 | tee dev.log
+tasklist | findstr image-filter    # confirm the window process is up
+```
+
+**Hot reload**: frontend changes apply instantly via Vite HMR; Rust changes trigger an incremental rebuild and window restart. Before touching `viewer.tsx`'s loading state machine, read section 5 of `HANDOFF.md` (every branch exists to fix a visual bug — don't "simplify" them).
+
+**Versioning**: bump the version in `package.json`, `tauri.conf.json` and `src-tauri/Cargo.toml` together; mark a pending release with `git tag vX.Y.Z` and push the tag. Installers are produced by the GitHub Actions workflow.
+
 ## Project Structure
 
 ```

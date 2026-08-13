@@ -22,6 +22,10 @@ pub struct AnalysisResult {
 fn laplacian_variance(gray: &[u8], w: u32, h: u32) -> f64 {
     let w = w as usize;
     let h = h as usize;
+    // 过小图像没有完整的 3x3 邻域, 直接返回 0(不可判定), 避免 1..h-1 下溢/除零
+    if w < 3 || h < 3 {
+        return 0.0;
+    }
     let mut sum = 0.0;
     let mut count = 0u64;
 
@@ -83,8 +87,9 @@ fn exposure_check(img: &image::DynamicImage) -> (bool, bool) {
 }
 
 /// Analyze single photo: blur + exposure
+/// RAW 文件走内嵌 JPEG 提取（image::open 不支持 RAW, 直接解码会静默失败）
 fn analyze_single(path: &Path) -> Option<(f64, bool, bool, bool)> {
-    let img = image::open(path).ok()?;
+    let img = crate::scanner::images::load_analysis_image(path)?;
     let gray = img.to_luma8();
     let (w, h) = gray.dimensions();
     let score = laplacian_variance(gray.as_raw(), w, h);
@@ -98,7 +103,8 @@ pub fn stop_analysis() {
     ABORT.store(true, Ordering::SeqCst);
 }
 
-/// Batch analyze photos — ray parallel, abortable (check flag per item)
+/// Batch analyze photos — 串行 + 可中止（每项检查 ABORT 标志）;
+/// 注意: 此处为串行循环（rayon 仅用于 find_duplicates 的并行指纹计算）
 #[tauri::command]
 pub async fn analyze_photos(
     file_paths: Vec<String>,
@@ -136,30 +142,53 @@ pub async fn find_duplicates(
         return Ok(vec![]);
     }
 
-    // Compute perceptual hash for each photo (parallel)
-    let entries: Vec<(String, imgfprint::MultiHashFingerprint, f64)> = file_paths
+    // 计算每张照片的感知哈希（并行）+ 文件大小（用于分桶裁剪比较集）
+    // RAW 走内嵌 JPEG 字节, 避免 imgfprint 无法解码 RAW 而静默丢失
+    let entries: Vec<(String, imgfprint::MultiHashFingerprint, f64, u64)> = file_paths
         .par_iter()
         .filter_map(|path_str| {
-            let data = std::fs::read(path_str).ok()?;
-            let fp = imgfprint::ImageFingerprinter::fingerprint(&data).ok()?;
             let path = Path::new(path_str);
-            let blur = if let Ok(img) = image::open(path) {
+            let size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+            let data = crate::scanner::images::load_analysis_bytes(path)?;
+            let fp = imgfprint::ImageFingerprinter::fingerprint(&data).ok()?;
+            let blur = if let Some(img) = crate::scanner::images::load_analysis_image(path) {
                 let gray = img.to_luma8();
                 let (w, h) = gray.dimensions();
                 laplacian_variance(gray.as_raw(), w, h)
             } else { 0.0 };
-            Some((path_str.clone(), fp, blur))
+            Some((path_str.clone(), fp, blur, size))
         })
         .collect();
 
-    // Group by hash similarity (Hamming distance < 15)
+    // 按文件大小分桶(±16KB 容差), 只比较同桶/相邻桶 → 数千张时从 O(n²) 降为近线性
+    const BUCKET: u64 = 16384;
+    let mut buckets: std::collections::BTreeMap<u64, Vec<usize>> = Default::default();
+    for (i, e) in entries.iter().enumerate() {
+        buckets.entry(e.3 / BUCKET).or_default().push(i);
+    }
+    let mut compare_set: Vec<Vec<usize>> = vec![Vec::new(); entries.len()];
+    for (&k, v) in &buckets {
+        let mut cands: Vec<usize> = Vec::new();
+        for kk in [k.saturating_sub(1), k, k + 1] {
+            if let Some(x) = buckets.get(&kk) {
+                cands.extend(x.iter().copied());
+            }
+        }
+        cands.sort_unstable();
+        cands.dedup();
+        for &i in v {
+            compare_set[i] = cands.iter().copied().filter(|&j| j > i).collect();
+        }
+    }
+
+    // 组内两两比较: 相似度 > 0.85 视为同组（连拍/重复）
     let mut groups: Vec<Vec<usize>> = Vec::new();
     let mut assigned = vec![false; entries.len()];
 
     for i in 0..entries.len() {
         if assigned[i] { continue; }
         let mut group = vec![i];
-        for j in (i + 1)..entries.len() {
+        for &j in &compare_set[i] {
             if assigned[j] { continue; }
             let sim = entries[i].1.compare(&entries[j].1);
             if sim.score > 0.85 {
