@@ -15,7 +15,7 @@
 | **1** | 评分后自动前进 | `viewer.tsx`、`App.tsx`、`i18n/{zh,en}.ts` | 0 | 半天 |
 | **2** | 撤销 / 重做（`Ctrl+Z` / `Ctrl+Shift+Z`） | `useScanner.ts`、`App.tsx`、`viewer.tsx`、`i18n` | 0 | 1 天 |
 | **3** | 1:1 像素查看（`Z`） | `viewer.tsx`、`i18n` | 0 | 半天 |
-| **4** | 颜色标签 + 可叠加筛选 | `useScanner.ts`、`App.tsx`、`photo-toolbar.tsx`、`photo-card.tsx`、`viewer.tsx`、`contextmenu` 用法、`i18n` | 0 | 1.5 天 |
+| **4** | 颜色标签 + 可叠加筛选 | `useScanner.ts`、`App.tsx`、`viewer.tsx`、`photo-card.tsx`、`photo-toolbar.tsx`、`undo.ts`、新增 `labels.ts`、`title-bar.tsx`+`settings-dialog.tsx`（修饰键设置）、`help-content.tsx`、`i18n` | 0 | 2 天 |
 | **5** | 评分/色标写 XMP 边车（可选开关） | 新增 `src-tauri/src/xmp.rs`、`lib.rs`、`useScanner.ts`、`settings-dialog.tsx`、`i18n` | 2 | 2 天 |
 | **6** | 接上"后端已有但没界面"的三件事 | `useScanner.ts`、`import-bar.tsx`、`advanced-options.tsx`、`importer.rs`、`db.rs`、`i18n` | 0（复用 3 个） | 1.5 天 |
 
@@ -34,9 +34,13 @@
 **共同的前置约束（每个 Phase 都要守）**：
 
 1. **不许简化查看器的四条加载分支**（交接文档 §5-1）。所有改动是在这四条之上加分支，不是替换。
-2. **评分目前是"单一事实源"**：`useScanner.setRating` 是唯一写入点（[useScanner.ts:127](../src/useScanner.ts:127)），任何新写入路径（撤销、XMP、标签）都必须汇流到这里或与它并列并被同一处序列化，否则会出现"查看器与网格不一致"这类回归（交接文档 §7 修过）。
-3. **i18n 双写**：zh 与 en 各 169 个 key 目前完全对齐（会话 ① 时是 163，会话 ② 加了 6 个），**新增 key 必须两边同时加**，否则会踩 fallback。
+2. **评分目前是"单一事实源"**：`useScanner.setRating` 是唯一写入点（[useScanner.ts:179](../src/useScanner.ts:179)），任何新写入路径（撤销、XMP、标签）都必须汇流到这里或与它并列并被同一处序列化，否则会出现"查看器与网格不一致"这类回归（交接文档 §7 修过）。
+3. **i18n 双写**：zh 与 en 各 **191** 个 key 目前完全对齐（会话 ① 163 → 会话 ② +6 → 会话 ③ +22），**新增 key 必须两边同时加**，否则会踩 fallback。另注意插值写法见第 5 条。
 4. **落地页 demo 的 mock 层**（另一仓库，见 [superpowers/specs](superpowers/specs/2026-08-11-imagefilter-website-design.md)）会 mock Tauri API：**Phase 5/6 一旦改命令签名，需要同步那份 mock**，否则官网迷你演示会白屏。
+5. **i18n 插值只能用单括号 `{n}`，不是 i18next 默认的双括号**（会话 ② 踩过、已修，见提交 `07b543a`）：[i18n/index.ts:26](../src/i18n/index.ts:26) 把 `prefix`/`suffix` 改成了 `{` 和 `}`，所以写成 `{{n}}` **既不报错也不翻译，而是把 `{{n}}` 原样显示出来**（会话 ② 首轮实机的 toast 就是 `已撤销：{{prev}}★ → {{next}}★`）。**动手加任何带占位符的文案前，先照 `toast.ratingChange` / `toolbar.selected` 这类既有 key 抄写法**，别照 i18next 官方文档写。
+6. **任何"会改数据"的新入口都必须能被 `Ctrl+Z` 撤回**（会话 ② 建立的补丁栈纪律）。当前记录点：评分的唯一写入点 `useScanner.setRating`，勾选的三条路径 `commitSelection` / `selectAll` / `clearSelection`（选择集的唯一写入口是 `selectPaths`），纯逻辑与三条不变式在 [undo.ts](../src/undo.ts) 文件头。新增写入路径（颜色标签、日后的 XMP 回填、**任何新勾选按钮**）**要么汇流到既有记录点，要么与它们并列并走同一个补丁栈**；直接调 `setXxx` 而不 `recordPatch` = 这一步撤销不到，用户按 `Ctrl+Z` 会**跳过它去撤更早的操作**。给 `Patch` 加新 `kind` 时，`tsc` 会把 `undo()` / `redo()` / `patchToast()` / `samePatch()` / `patchPath()` 这几个派发点全报出来 —— **逐个补齐，不许用 `any` / `as` 兜底**（"漏点由编译器发现"就是这条纪律的收益）。
+7. **提交卫生（会话 ② 起适用，任何会话都不许省）**：**禁止 `git add -A` / `git commit -a`**，只 `git add` 明确列出的路径；`src-tauri/Cargo.toml` 有**非本会话的行尾符噪音**（内容无实质变化），不要提交；仓库根的 `task-7-review-package.decoded.txt` **不属于本项目**，不要提交；`vite.config.ts` 可能正被**另一个并发会话**修改，不要动、也不要把它未完成的改动捎带提交。**提交前先 `git status --porcelain` 核对暂存清单里只有预期文件。**
+8. **依赖面与 Rust 边界**：除 Phase 5 / Phase 6 按本文设计改 `src-tauri` 外，其余 Phase **一律不动 Rust**；**任何 Phase 都不新增第三方依赖**（Phase 5 刻意不用 XML 解析库，会话 ② 刻意不引入 vitest）。要验证纯逻辑时，用"临时脚本 + 仓库自带 esbuild 转译后跑 Node，用完即删"的办法（会话 ② 用它给 `src/undo.ts` 跑了 27 条断言）。
 
 ---
 
@@ -274,8 +278,16 @@ const [labels, setLabels] = useState<Record<string, Label>>(() => {
 const setLabel = useCallback((path: string, label: Label | null) => { /* 同 setRating，含 Phase 2 的补丁记录 */ }, []);
 ```
 
-- **快捷键**：`6`–`9` + `0` 被占用，`0` 是查看器重置。建议用 **`F1`–`F5`**？会撞系统。**用 `Ctrl+1`–`Ctrl+5`**（正好与"`1`–`5` 是星级"形成记忆对照），`Ctrl+0` 清除标签。备选：不加全局快捷键，只走右键菜单（[App.tsx:226-233](../src/App.tsx:226) 的评分菜单下面加一个"颜色标签"子菜单）+ 卡片角落一个小三角。
+- **快捷键（会话 ③ 定稿）**：`Ctrl+1`–`Ctrl+5` 打标、`Ctrl+0` 清除（正好与"`1`–`5` 是星级"形成记忆对照）；**同一组键的修饰键由用户在设置里选：Ctrl 或 Alt**（新增设置项：state 放 `useScanner`，key `imagefilter-label-modifier`，只有显式 `"alt"` 才算 Alt，缺省/损坏一律当 Ctrl；链路 `useScanner` → `App` → [title-bar.tsx](../src/components/title-bar.tsx) → [settings-dialog.tsx](../src/components/settings-dialog.tsx)，与 `autoAdvance` 同路，控件复用语言那对分段按钮）。
+  - **为什么可配**：Tauri 的 WebView2 有可能把 `Ctrl+数字` / `Ctrl+0` 当成浏览器加速键吃掉（切标签页 / 重置缩放）。实机第一条就要验 `Ctrl+2` 有没有反应；没反应就在设置里切到 Alt，**不用改代码、不用重启**（`AreBrowserAcceleratorKeysEnabled` 属 Rust 红线，不碰）。
+  - 键盘只做"赋值"，不做"再按一次取消"（与键盘 `1`–`5` 一致）。取消的三个入口：查看器点亮的色点再点一次、右键菜单"清除颜色标签"、`Ctrl+0` / `Alt+0`。
+  - **易写错的一处**：查看器里的分支顺序 —— 新的组合键分支必须放在 plain `0` 与 `1`-`5` 分支**之前**（[viewer.tsx:389-400](../src/viewer.tsx:389)），否则 `Ctrl+2` 会先被星级分支吃掉、变成打星。
+  - **打标不触发自动前进**（`autoNext()` 只跟评分走：打标是二次分拣，一前进就看不见刚打的标了）。
+  - 帮助对话框那一行写 `Ctrl/Alt+1-5`（两种都列出来），避免为了显示"当前是哪个"把 `labelModifier` 一路透传到 `help-content.tsx`。
+  - 纠正文中旧说法：**"`6`–`9` 被占用"不成立** —— 全仓库只有查看器用了 `0`（重置视图），6–9 无任何绑定（已 grep 确认）。
+  - 已否决：`F1`–`F5`（F1 帮助 / **F5 会刷新 WebView 页面**）、`Shift+1`–`5`（`e.key` 变成 `!@#$%`，受键盘布局影响）、`Alt` 写死（就是本条要解决的问题）、只走右键菜单不加键（culling 的键盘流会断）。
 - **展示**：卡片左上角徽标行末尾加一个色点（[photo-card.tsx:69-76](../src/components/photo-card.tsx:69)）；查看器顶部工具栏加一排色点按钮（[viewer.tsx:355-360](../src/viewer.tsx:355) 星条旁边）。
+- **存放位置**：类型与五色常量（`Label`、`LABEL_ORDER`、`LABEL_BG` 色类）放新增的 `src/labels.ts`，`useScanner.ts` 只 `export type { Label }` 转发 —— **展示组件不许 import `useScanner`**，那会把 `@tauri-apps/api` 拖进纯展示组件。
 - **不做**：标签改名/自定义、标签自动推断（AI 猜场景）。
 
 ### 4.2 筛选拆成"星级 + 标签 + 分析结果"三个维度叠加
@@ -292,21 +304,56 @@ const [sortDir, setSortDir] = useState<"asc"|"desc">("asc");     // 顺手补上
 `sortedPhotos`（[App.tsx:196-215](../src/App.tsx:196)）里串起来：星级 → 标签 → 分析 → 排序 → 方向。
 
 **关键点：分析筛选是"有分析结果的才命中"还是"没分析的也算"？**
-必须选前者并**在 UI 上显式提示**：如果用户还没点过"AI 分析"，选了"只看模糊"会得到空网格，看起来像 bug。做法：当 `flagFilter !== "all"` 且 `analysis` 为空（或覆盖率 < 100%）时，在网格顶部显示一条提示："还有 N 张未分析，[立即分析]"。这条提示直接把 Phase 4 和"分析只作用于选区"的需求串起来了。
+必须选前者并**在 UI 上显式提示**。会话 ③ 把触发条件钉成四条，**同时成立才显示**：
+1. `flagFilter !== "all"`（不看分析就不提示）；
+2. `photos.length > 0`（文件夹里有照片）；
+3. `!analyzing`（分析进行中 N 会乱跳，且此时工具栏按钮已经是"停止"）；
+4. `pendingCount > 0`（`pendingCount` = scope 内还没分析过的张数）。
+
+**`scope` 一份定义、三处共用**：`selectedPaths ∩ photos` 非空 → 用它；否则 → `photos` 全部。工具栏按钮的 `(N)`、提示里的 N、提示按钮要分析的对象**全部用这一份**，数字才会永远对得上；顺带挡住"`selectedPaths` 里可能留着上一个设备的残留路径"（`browseDrive` 不清选择集是既有行为，本 Phase 不改它，只在 scope 里做一次交集过滤）。
+
+提示挂在滚动容器内、网格**上方**（非 sticky，避免遮挡第一行），按钮在 `analyzing` 时置灰。这条提示直接把 Phase 4 和"分析只作用于选区"的需求串起来了。
 
 **Chips 布局**：工具栏 [photo-toolbar.tsx:58-66](../src/components/photo-toolbar.tsx:58) 那一行已经比较满（全选/取消/已选/排序/6 个星级/列数/分析/收起）。建议把"标签 + 分析筛选"收进一个**筛选下拉面板**（`CollapsibleBar` 已有折叠能力，可直接复用其模式），而不是硬塞进这一行。
 
 ### 4.3 顺带修的两个相关小问题
-- **分析只作用于选区**：工具栏按钮现在是 `photos.map(...)`（[App.tsx:506](../src/App.tsx:506)）。改成：`selectedPaths.size > 0 ? [...selectedPaths] : photos.map(...)`，并在按钮文案上体现（`AI 分析 (N)`）。这一条让"选 10 张只分析 10 张"成为可能，是 Phase 4 的主要收益之一。
-- **`handlePhotoClick` 的 `lastClicked` 改 `useRef`**（[useScanner.ts:68,101](../src/useScanner.ts:68)）：这是交接文档 §6 P2-6 的老问题——`lastClicked` 在依赖数组里让所有卡片 `onToggle` 每次点击都换引用，双层 memo 失效。既然 Phase 4 要动筛选与卡片，顺手改成 `lastClickedRef`（Shift 范围选只用 `photoPaths` 和 ref，不依赖 state），**注意改完要专门验收 Shift 范围选**。
+- **分析只作用于选区**：工具栏按钮现在是 `photos.map(...)`（[App.tsx:506](../src/App.tsx:506)）。改成：`selectedPaths.size > 0 ? [...selectedPaths] : photos.map(...)`，并在按钮文案上体现（`AI 分析 (N)`）。这一条让"选 10 张只分析 10 张"成为可能，是 Phase 4 的主要收益之一。⚠️ **必须同时修 4.4-B**：`runAnalysis` 现在一进门就清空全部分析结果，不动它就变成"只分析这 3 张 + 把其余几百张的结果抹掉"。
+- **`handlePhotoClick` 的 `lastClicked` 改 `useRef`**（[useScanner.ts:68,101](../src/useScanner.ts:68)）：这是交接文档 §6 P2-6 的老问题——`lastClicked` 在依赖数组里让所有卡片 `onToggle` 每次点击都换引用，双层 memo 失效。既然 Phase 4 要动筛选与卡片，顺手改成 `lastClickedRef`（Shift 范围选只用 `photoPaths` 和 ref，不依赖 state），**注意改完要专门验收 Shift 范围选**。⚠️ 但**只改它并不够**：验收第 6 条还有第二个、而且更大的原因（菜单 props），见 4.4-A —— 只改一半会让这条验收**假过**。
+
+### 4.4 落地时必须一起修的两处现状问题（会话 ③ 走查发现，已定为 Phase 4 内容）
+
+原文没写这两条，是读代码时发现的。不修的话，4.1–4.3 的验收会**看起来通过、其实没达成**。
+
+- **A. `menuItems` 让"点击不重渲染其它卡片"做不到（验收第 6 条假过的真正原因）**
+  现状：`photoMenuItems` 依赖 `selectedPaths`（[App.tsx:288](../src/App.tsx:288)），每次勾选都生成**新数组**，而它作为 `menuItems` prop 传给**每一张**卡片（[App.tsx:592](../src/App.tsx:592)）→ 一次点击让所有卡片重渲染。所以 `lastClicked` 改 ref 只解决了两个原因里的一个。
+  做法：把"每张卡片各包一个 `PixelMenu`"改成**整块网格共用一个**：
+  - `PhotoGridItem` 去掉 `menuItems` prop 与 `PixelMenu` 包裹；右键仍由 `PhotoCard.onContextMenu → onCtx(photo)` 设 `ctxTarget`（时间点从 `onOpenChange` 提前到 `contextmenu`，更稳）。
+  - 网格那层 `items={emptyMenuItems}`（[App.tsx:577](../src/App.tsx:577)）改成 `items={ctxTarget ? photoMenuItems : emptyMenuItems}`；空白处右键用 `(e.target).closest("[data-photo-path]") === null` 判定后清 `ctxTarget`（卡片自己的 handler 先跑、只置不清，靠 DOM 判定保证不会误清）。
+  - **新鲜度不变式（要写进代码注释）**：菜单项只依赖"会触发 App 重渲染的状态"（`ctxTarget` / `selectedPaths` / `labels` / 当前照片），所以"同一个 `ctxTarget` 再右键一次"也不会显示旧菜单。
+  - 静态收益：2000 张卡片从 2000 个 Radix `ContextMenu.Root` 降到 1 个。
+  - 已否决备选：保留每卡片菜单、把 `menuItems` 换成"打开时求值"的稳定 getter —— 要改 [contextmenu.tsx](../src/contextmenu.tsx) 的 API 并从 `useScanner` 暴露 ref/getter，改动面更大，且一旦"求值时机"写错就会出现**菜单文案/动作用的是过期选择集**（点"导入 3 张"却导入别的集合）这种静默 bug。
+- **B. `runAnalysis` 开头的 `setAnalysis({})` 会把"只分析选区"变成破坏性操作**
+  现状 [useScanner.ts:447](../src/useScanner.ts:447) 一进门就清空全部分析结果：勾 3 张点 `AI 分析 (3)` → 其余几百张的徽标全部消失、"还有 N 张未分析"的 N 直接跳到总数 —— 这不是"只分析这 3 张"，是"把其余的抹了"。
+  做法：改成**增量合并** —— 开始时只删掉本次要分析的那些 path 的旧结果，完成时把新结果并进旧 map；用 `analysisRef` 镜像同步（与 `ratingsRef` / `selectedPathsRef` 同款纪律，因为要读"当前"map）。
+  - 已知语义（写进「遗留」）：`find_duplicates` 只在**本次传入的集合内**判重，所以选区分析时"重复"只在选区内成立、"最佳"也可能与全量结果不同。这是后端命令的既有语义，**不改 Rust**。
+
+### 4.5 会话 ③ 的实现约定（细节，改这里就等于改实现）
+
+- **标签清除 = 删键**（不是留 `null`、更不是留 `0`）：`applyLabelPatch` 的幂等判据用 `(current[path] ?? null) === 目标值`（把 `undefined`/`null` 归一），目标为"无标签"时解构删除。读取时做**一层合法性校验**（非五种合法值丢弃）。理由：标签稀疏，且 Phase 5 要直接拿这份 map 写 `xmp:Label`，不能带脏值/半成品键过去。**与 `ratings` 保留 `path: 0` 的语义刻意不同**（那是既有行为，本 Phase 不改）。
+- **`sortDir` 的 `asc` 定义为"今天的观感"**：`name`/`type` = A→Z，`date` = **新→旧**（现行比较器 `b.modifiedAt - a.modifiedAt` 不动），`desc` = 反转。UI 只画 ↑/↓ + tip，**不写"升序/降序"**。理由：若把 asc 字面理解成"旧→新"，用户第一次切到日期排序就会觉得"排序反了"，那是自己造回归；用"相对自然序"换来零观感变化是有意的取舍（写进代码注释 + 决策日志）。
+- **筛选状态不落盘、不入撤销栈**：`labelFilter` / `flagFilter` / `sortDir` 与 `starFilter` 同待遇（纯视图状态，`Ctrl+Z` 不会去动筛选）。
+- **卡片色点只读**：它是展示，不新增"点了会不会勾选"的第五个交互面；鼠标入口 = 右键"颜色标签"子菜单 + 查看器色点按钮（点亮的再点一次 = 清除）。
 
 ### 验收
 1. `Ctrl+2` 给几张打红标 → 卡片显示色点 → 勾选"红"筛选 → 只剩红标。
 2. 星级 ≥3 + 红标 叠加 → 结果是交集。
-3. 未分析时选"只看模糊" → 出现"还有 N 张未分析"的提示而不是空白网格。
+3. 未分析时选"只看模糊" → 出现"还有 N 张未分析"的提示而不是空白网格；点提示里的按钮 → 恰好分析这 N 张。
 4. 分析完成后选"只看重复" → 只剩有 `duplicateGroup` 的；"只看最佳"只剩 `isBestInGroup`。
-5. 勾选 3 张 → 点"AI 分析" → **只分析这 3 张**（看进度条张数）。
-6. Shift 点击范围选仍正确；连续点击 10 张，React DevTools 里其它卡片**不重渲染**（memo 生效）。
+5. 勾选 3 张 → 点"AI 分析" → **只分析这 3 张**（看进度条张数），且**其余照片原有的分析徽标不消失**（4.4-B）。
+6. Shift 点击范围选仍正确（四种情形：前向范围 / 后向范围 / 先 Shift 再单击再 Shift / `Ctrl+点击` 之后 Shift）；连续点击 10 张，React DevTools 里其它卡片**不重渲染** —— ⚠️ 这一条同时依赖 `lastClickedRef`（4.3）与菜单单例化（4.4-A），**只做一半必定假过**。
+7. 设置里把修饰键从 Ctrl 切成 Alt → `Alt+2` 能打标、`Ctrl+2` 不再打标（也不产生副作用）；重开 App 后设置保持。
+8. 打标**不触发自动前进**；在查看器里打标后 `Ctrl+Z` → 画面跳回被撤的那张、色点回退、1:1/旋转不被重置。
+9. 撤销栈里能同时看到"打标 / 打星 / 勾选"三种补丁：连做三步再连按 `Ctrl+Z`，按 LIFO 依次回退。
 
 ---
 
@@ -588,6 +635,47 @@ cd src-tauri && cargo check --lib
 
 ---
 
+### 会话 ③ · Phase 4（2026-09-27）
+
+- **代码状态**：起点 HEAD `344cdb2` · 起点工作区干净（仅 `task-7-review-package.decoded.txt` 未跟踪，不属本项目；`src-tauri/Cargo.toml` 有非本会话的**行尾符噪音**，刻意不 add）· 提交 `7e9a959 feat(label): 颜色标签与星级/标签/分析三维叠加筛选`（13 文件 +647/−61）、`docs: 会话 ③ 手测清单 + 决策日志` · `npx tsc --noEmit` 改前/改后各一次均 exit 0 · `npx vite build` exit 0 · i18n 静态校验 exit 0（zh/en 各 **191** 个叶子 key 完全对齐；源码 186 个字面 `t("…")` 全部可解析，其余 5 个由 `label.` 动态前缀覆盖；无死 key、无双括号占位符）· `src/undo.ts` 纯函数冒烟 **27/27**
+- **已定决定**：
+  - 标签存独立 key `imagefilter-labels`，**清除 = 删键**（与 ratings 保留 `path: 0` 刻意不同），读取时丢非法值 —— Phase 5 要拿这份 map 直写 `xmp:Label`，不能带脏值/半成品键；
+  - 新增 `src/labels.ts` 承载 `Label` / `LABEL_ORDER` / `LABEL_BG` / `readLabels` / `isLabelChord`：**展示组件不许 import `useScanner`**（那会把 `@tauri-apps/api` 拖进纯展示组件），类型由 `useScanner` `export type` 转发；
+  - 标签写入点唯一 = `useScanner.setLabel`（无变化早退 → `recordPatch` → `labelsRef` 镜像 → 落盘）；补丁加第三种 kind `label`，`patchPath` 对 label 也返回路径（否则查看器里撤销标签不会跳回那张）。**tsc 的判别联合把 undo / redo / patchToast / samePatch / patchPath 五个派发点全报了出来** —— 一个没漏，也没用 `any` 兜底（docs 前置约束 6 的收益）；
+  - 快捷键 `Ctrl+1`–`Ctrl+5` 打标、`Ctrl+0` 清除，**修饰键可配**（设置里 Ctrl / Alt；key `imagefilter-label-modifier`，只有显式 `"alt"` 才算 Alt，缺省/损坏当 Ctrl）。判定收在 `isLabelChord` 一个纯函数里，App 与 viewer 共用；
+  - 查看器里标签分支**排在 plain `0` / `1-5` 之前**（否则 `Ctrl+2` 会先被星级分支吃掉、变成打星）—— 本项最容易写错的地方，代码里留了 ⚠️ 注释；
+  - 打标**不触发自动前进**（标签是二次分拣，一前进就看不见刚打的标）；键盘只赋值、**按钮**才 toggle（与星条按钮一致）；
+  - 卡片色点**只读**（不新增第五个"点了会不会勾选"的交互面）；鼠标入口 = 右键"颜色标签"子菜单 + 查看器色点按钮；
+  - 三维筛选在 `sortedPhotos` 里的顺序 = **星级 → 标签 → 分析 → 排序 → 方向**：三个维度都是 AND，顺序只按短路成本排（数值比较 → `Set.has` → 取对象+多字段）；排序必须在所有筛选之后；方向放最后，避免"3 键 × 2 方向 = 6 个比较器"；
+  - `sortDir` 的 `asc` **定义为"今天的观感"**（date = 新→旧），`desc` = 反转比较器；UI 只画 ↑/↓ 图标，不写"升序/降序" —— 否则第一次切到日期排序就会觉得"排序反了"，那是自己造回归；
+  - **4.4-A 菜单单例化**：整块网格共用 1 个 `PixelMenu`（原来每张卡片 1 个，2000 张就是 2000 个 Radix Root），右键由 `PhotoCard.onContextMenu → onCtx(photo)` 记目标、空白处用 `closest("[data-photo-path]")` 清目标。这是验收第 6 条（点击不重渲染其它卡片）真正成立的前提 —— **只改 `lastClickedRef` 会假过**；
+  - **4.4-B 分析增量合并**：`runAnalysis` 不再 `setAnalysis({})`，改成"只丢掉本次要分析的那些 path 的旧结果、其余原样保留"，用 `analysisRef` 读当前 map。否则"勾 3 张只分析这 3 张"实际会把其余几百张的结果抹掉；
+  - **分析范围 scope 一份定义、三处共用**（`selectedPaths ∩ photos` 非空则用它，否则整个文件夹）：工具栏按钮文案、提示里的 N、提示按钮分析的对象，数字永远对得上；顺带挡住"选择集里还留着上一台设备的残留路径"；
+  - "未分析"提示四个条件（只看分析结果 + 有照片 + 不在分析中 + scope 内有未分析）；与"0 命中"提示**互斥** —— 后者已经解释了为什么是空的，两条横幅一起弹只是噪音；
+  - `lastClicked` → `lastClickedRef`（依赖数组缩到 `[photos, commitSelection]`，卡片 `onToggle` 引用稳定）；并在 `loadFolder` / `browseDrive` **清空锚点**：改之前跨文件夹的 Shift 点击是"没反应的死点击"，属于顺手修掉的既有瑕疵；
+  - 纯逻辑验证沿用会话 ② 的办法（临时脚本 + 仓库自带 esbuild 转译 + Node 断言，用完即删），**不引入 vitest**（避免动 `vite.config.ts`，那个文件可能有并发会话在改）；
+  - i18n 净增 22 个 key（169 → 191）；`toolbar.aiSelected` 挂在按钮的 `title` 上而不是 `Tip` —— 工具栏那一层有 `overflow-hidden`，Tip 的绝对定位气泡会被裁掉。
+- **被否决方案**：
+  - 保留"每卡片一个右键菜单"、把 `menuItems` 换成"打开时求值"的稳定 getter → **否决**：要改 `contextmenu.tsx` 的 API 并从 `useScanner` 暴露 ref/getter，而且一旦求值时机写错就会出现"点导入 3 张却导入了别的集合"这种静默 bug（详见 4.4-A 的备选）；
+  - 标签沿用评分那套"保留 `path: 0`/`null` 键" → **否决**：Phase 5 会把这份 map 直写 XMP，半成品键就是脏数据；删除键还让 `JSON.stringify` 的体积只跟"打标数量"走；
+  - `F1`–`F5` / `Shift+1`–`5` / 只走右键菜单不加快捷键 → **否决**：理由见 4.1（F5 会刷新 WebView 页面、`Shift+数字` 的 `e.key` 受键盘布局影响、culling 的键盘流会断）；
+  - 键盘"再按同一键取消"（toggle）→ **否决**：既有键盘 `1-5` 是幂等赋值，保持一致；取消交给按钮 toggle 与 `+0`；
+  - 卡片色点做成按钮（点一下换下一个颜色）→ **否决**：新增一个"点了会不会勾选"的交互面，Phase 4 不值得为它扩大回归面；
+  - "0 命中"和"还有 N 张未分析"两条提示同时弹 → **否决**：信息重复且让网格顶部变吵；改为互斥（未分析提示优先，它解释了原因）；
+  - 收尾用 `git add -A` → **否决**：会把 `Cargo.toml` 行尾噪音、非本项目的 `task-7-review-package.decoded.txt`、以及可能被并发会话改动的 `vite.config.ts` 全捎带进去（docs 前置约束 7）。
+- **验收结果**：**静态验收 6 项全通过**：① `npx tsc --noEmit` 改前/改后均 exit 0；② `npx vite build` exit 0；③ i18n 叶子 key zh/en 各 191、零差异；④ 186 个字面 `t("…")` 全部可解析 + 5 个 `label.*` 由动态前缀覆盖、无死 key、带占位符的 key 无一双括号；⑤ `src/undo.ts` 冒烟 27/27（含三条最危险的失败方向："两次真实连续打标必须入栈两条""清除 = 真删键""键不存在时清标签仍幂等"）；⑥ 逐点 grep 核对：`setLabels` / `imagefilter-labels` 只出现在 `labels.ts` 与 `useScanner`，`setSelectedPaths` 只出现在 `selectPaths` 内，卡片上不再有 `menuItems` prop，工具栏分析按钮已改用 `analysisScope`。
+  **实机 GUI 0 项**：本会话没跑 `npx tauri dev`，下面清单 **24 项全部未实机验证**。首次实机优先做 **第 1、7、10、11、20 项**（Ctrl+数字是否被 WebView2 吞掉、未分析提示是否出现、选区分析是否真的只打 3 张、增量合并是否保住旧结果、点击是否真的只重渲染两张卡片），这五项失败概率最高。
+- **遗留 / 本次不做**：
+  - `find_duplicates` 只在**本次传入的集合内**判重：选区分析时"重复/最佳"只在选区内成立（后端既有语义，不改 Rust）；
+  - Shift 范围选的基准仍是 `photos`（扫描顺序）而不是 `sortedPhotos`（可见顺序）：开着筛选或按日期排序时范围"看起来不对"是**既有行为**，本次只在代码注释与清单里写明，没改（要改得把可见顺序从 App 透传进 hook，属另一次重构）；
+  - 筛选状态（星级/标签/分析/方向）**不落盘**，重开 App 回到默认（与既有 `starFilter` 同待遇）；
+  - 网格侧只有右键子菜单能清除标签：若 `Ctrl+0`/`Alt+0` 被 WebView2 吃掉，键盘路径就没了（查看器内还有色点按钮可点）；
+  - `browseDrive` 仍不清选择集（既有行为），只在分析 scope 里做了一次交集防御；
+  - 直接打标**不弹 toast**（与打分一致，靠色点反馈）；toast 只在撤销/重做时出现；
+  - 会话 ①/② 未实机验证的旧项本次也没补测（本次未碰查看器的四条加载分支，但改了 viewer 的 keydown 依赖，理论无关）。
+
+---
+
 ## 附 · 会话 ① GUI 手测清单（Phase 1 + 3）
 
 > 已实机通过：**第 1、4、5、8、9、10、16 项**（2026-09-27）。其余 13 项仍待执行——下次碰查看器/设置相关代码前，优先补第 2、6、11、13 项（末张关闭、≥2 星筛选下打 0 星、预览→全解码重锚、滚轮/`0` 退出 1:1），这四项失败概率最高。
@@ -667,6 +755,54 @@ cd src-tauri && cargo check --lib
 
 ---
 
+## 附 · 会话 ③ GUI 手测清单（Phase 4 · 颜色标签 + 可叠加筛选）
+
+> 状态：**全部未实机验证**（2026-09-27）。本会话只做了静态验收（`tsc` / `vite build` / i18n 静态校验 / `undo.ts` 冒烟 27 条），**没跑 `npx tauri dev`、没点过界面**。
+> 首次实机请优先做 **第 1、7、10、11、20 项** —— 这五项失败概率最高（Ctrl+数字是否被 WebView2 吞掉、未分析提示是否出现、选区分析是否真的只打 3 张、增量合并是否保住旧结果、memo 是否真生效）。
+> 执行前：`npm run tauri dev`，打开一个含 RAW 的文件夹；先按 `Z` / `R` / `1`-`5` 确认查看器老功能正常。
+> 每项后标注结果：✅ 通过 / ❌ 失败（附现象）/ ⏭ 跳过（附原因）。做完把结果回填进上面的决策日志"验收结果"，并同步本文档开头那段状态。
+
+**Phase 4 · 颜色标签**
+
+1. `Ctrl+2` → 网格里"单击选中的那张"出现红点；`Ctrl+0` → 消失。**若按了完全没反应**，说明 Ctrl+数字被 WebView2 当成浏览器加速键吃了 → 去设置把修饰键切成 Alt，再验 `Alt+2` / `Alt+0`（不用重启、不用改代码）。这条要**第一个做**，它决定后面用哪个键位。
+2. 查看器内 `Ctrl+3` → 顶部色点行第 3 个点亮；**点同一个色点** → 取消；`Ctrl+5` → 改紫。打标**不前进**（画面停在原图）。
+3. 星条旁的色点与网格卡片上的色点**同时**更新；`←/→` 换图后色点跟着换到新图。
+4. 右键卡片 → "颜色标签"子菜单 → 选"黄" → 卡片出黄点；再右键 → "清除颜色标签" → 消失。
+5. 连续给 3 张打不同颜色 → 连按 `Ctrl+Z` → **按 LIFO 依次回退**（第 4 次无反应、无报错）；`Ctrl+Shift+Z` → 颜色依次回来。
+6. **DevTools 里看 `localStorage["imagefilter-labels"]`**：打标后出现该路径；`Ctrl+Z` 或"清除颜色标签"之后**这个键真的没了**（不是留 `null`）；重开 App 后标签还在，且切文件夹不会清空它。
+
+**Phase 4 · 可叠加筛选**
+
+7. 展开工具栏"筛选" → 勾"红" → 只剩红标；再勾"蓝" → 红**或**蓝（并集）；点"全部" → 恢复。
+8. 星级 ≥3 + 红标 → 结果是**交集**（两个条件都满足才显示）。
+9. 分析筛选口径（全部已分析后）：选"只看重复" → 只剩有 `duplicateGroup` 的（**含卡片上显示"最佳"的那张**）；"只看最佳" → 只剩 `isBestInGroup`。
+10. 还没分析时选"只看模糊" → 网格上方出现"还有 N 张未分析 [分析这 N 张]"（**不是纯空白网格**）；点按钮 → 恰好分析这 N 张、提示消失。选"全部"（不筛分析结果）时这条提示**不出现**。
+11. 三维叠加到 0 命中 → 显示"没有照片符合当前筛选" + "清除筛选"；点它 → 三维复位、照片全回来，**排序方式与方向不变**。
+12. 排序方向：点 ↑/↓ → 顺序反转；默认（文件名 + ↑）与改动前一致；**切到"日期"时默认仍是"新的在前"**（不能出现"日期排序反了"）。
+
+**"分析只作用于选区"（本 Phase 硬指标）**
+
+13. 勾选 3 张 → 工具栏按钮显示 `AI 分析 (3)`（悬停有"只分析选中的 3 张"）→ 点击 → **只有这 3 张**被分析；点"取消"清空勾选 → 按钮回到 `AI 分析`。
+14. 紧接着上一条：**其它照片原有的分析徽标没有消失**（4.4-B 增量合并生效），"还有 N 张未分析"的 N 不会突然跳到总数。
+15. 选区里 1 张已分析、2 张未分析 → 提示里的 N 与"分析这 N 张"要分析的张数**一致**（scope 一份定义）。
+16. 切文件夹 / 切设备后（选择集被清）→ 按钮回到全量分析，且不会把上一个文件夹的残留路径带进来。
+
+**与撤销 / 自动前进的交互**
+
+17. 在查看器里打标 → `Ctrl+Z`：画面**跳回被撤的那张**、色点回退、**不自动前进**、1:1/旋转/偏移不被重置。
+18. 开着自动前进：查看器内连打 4 张分（每张都前进）→ 连按 `Ctrl+Z` → 逐张回跳；**撤销本身不触发前进**。
+19. 连做"打标 → 打星 → 勾选"三步 → 连按 3 次 `Ctrl+Z` → 三种补丁按 LIFO 依次回退（勾选 → 星级 → 标签），且撤销**不动**筛选 chips 的状态。
+20. **React DevTools 开 "Highlight updates"**：连点 10 张不同卡片 → 只有被点的那张（与上一次选中的那张）闪；若整屏都闪 → 4.4-A 的菜单单例化没生效（或 `lastClickedRef` 又被放回了依赖数组）。
+21. Shift 范围选四条：点第 3 张 → Shift+点第 7 张（前向）→ Shift+点第 2 张（回缩/反向）→ 单击第 5 张 → Shift+点第 8 张（锚点跟着单击走）；`Ctrl+点击` 之后再 Shift 应以 Ctrl 点的那张为起点。切文件夹后 Shift 点击应退化成普通点击（既不"没反应"，也不产生范围补丁）。
+
+**老回归 / i18n**
+
+22. 查看器内按 `1`-`5` 后，网格里"选中但没在看"的那张星级**不变**（§7 双写）；`Ctrl+1`-`5` 打标同理只改当前这张。
+23. 开着红标筛选，在查看器里把当前图改成别的颜色（或清除）→ 它掉出筛选 → 查看器**关闭**回网格（与星级筛选同语义），不跳到别的照片。
+24. 英文界面（设置里切语言）：筛选面板 / 提示条 / 右键菜单 / 撤销 toast **无中文残留、无裸露 key**；重点看带插值的"还有 N 张未分析"、`AI 分析 (N)`、撤销标签时的 `红 → 无标签`（必须单括号渲染，不能出现 `{{n}}`）。浅色主题下色点与"未分析"提示条不出现近白压近白；筛选行展开时工具栏不跳高。
+
+---
+
 ## 附 · 会话启动提示（复制粘贴即可开新会话）
 
 > **用法**：一次只粘一段。第一句必须要求"先只输出改动计划"，这样如果我理解偏了，你在 2000 token 内就能发现，而不是等我改完 5 个文件。
@@ -696,7 +832,7 @@ cd src-tauri && cargo check --lib
 先说明为何不补；不许改 Rust；i18n 双写。
 ```
 
-### 会话 ③（Phase 4）— 会话 ② 已完成，现在可用
+### 会话 ③（Phase 4）— ✅ 会话 ③ 已完成（见决策日志），下一会话请用会话 ④
 
 ```text
 接着做 docs/ImageFilter-功能实施方案.md 的 Phase 4（颜色标签 + 可叠加筛选）。
@@ -709,7 +845,7 @@ cd src-tauri && cargo check --lib
 约束：不动 Rust、不加依赖；i18n 双写；必须包含"分析只作用于选区"这一项。
 ```
 
-### 会话 ④（Phase 5）— 会话 ③ 收尾后再用
+### 会话 ④（Phase 5）— ✅ 会话 ③ 已完成（见决策日志），现在可用
 
 ```text
 接着做 docs/ImageFilter-功能实施方案.md 的 Phase 5（评分/色标写 XMP 边车）。
