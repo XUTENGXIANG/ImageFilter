@@ -19,6 +19,7 @@ interface Props {
   thumbnails: Record<string, string>; // 已有缩略图缓存 (秒显)
   selectedPaths: Set<string>; // 多选状态(与缩略图联动)
   onToggleSelect: (path: string) => void; // 切换勾选
+  autoAdvance: boolean; // 评分后自动跳到下一张(设置项, 默认开)
 }
 
 function preloadImage(src: string): Promise<string> {
@@ -38,7 +39,12 @@ function preloadImage(src: string): Promise<string> {
   });
 }
 
-export function PhotoViewer({ photos, index, ratings, onRate, onClose, originRect, thumbnails, selectedPaths, onToggleSelect }: Props) {
+// 长按(键盘 auto-repeat)必须忽略的一次性按键。评分键在"自动前进"开启后尤其危险:
+// 长按 3 一秒会把后面几十张全部打上 3 星 —— 用户看不见的批量误写。
+// 不含 ←/→: 方向键长按连翻是既有手感, 不能改。
+const NON_REPEAT_KEYS = new Set(["j", "x", "1", "2", "3", "4", "5"]);
+
+export function PhotoViewer({ photos, index, ratings, onRate, onClose, originRect, thumbnails, selectedPaths, onToggleSelect, autoAdvance }: Props) {
   const { t } = useTranslation();
   const [cur, setCur] = useState(index);
   // 缩放动画: entering=true 从缩略图位置放大; leaving=true 缩回后关闭
@@ -122,6 +128,20 @@ export function PhotoViewer({ photos, index, ratings, onRate, onClose, originRec
     setLeaving(true);
     window.setTimeout(onClose, 250);
   }, [leaving, onClose]);
+
+  // 评分后自动前进: 最后一张直接关闭查看器回网格(不回卷到第一张, 否则 culling 永不结束)。
+  //
+  // ⚠️ 两条不许动的约束(重构前先读这里):
+  // 1. 不要在这里、也不要在 navigateTo 里写 lastSwitchRef。该 ref 由下面"渐进加载"effect 内
+  //    唯一写入, 语义是"距上次真正换图多久", 用于 <500ms 时把预览请求 debounce 120ms。
+  //    若在评分路径上再写一次, 自动前进会把时间戳刷成"刚刚" → rapid 恒真,
+  //    慢速逐张评分也会白等 120ms。
+  // 2. 不要 await 图片加载完成再前进: 等加载会把"评分"变成有延迟的动作, 只刷新键位流即可。
+  const autoNext = useCallback(() => {
+    if (!autoAdvance) return;
+    if (cur + 1 < photos.length) navigateTo(cur + 1);
+    else handleClose();
+  }, [autoAdvance, cur, photos.length, navigateTo, handleClose]);
 
   // 渐进加载: 先内嵌JPEG秒开, 后台全解码后无感替换
   useEffect(() => {
@@ -256,6 +276,9 @@ export function PhotoViewer({ photos, index, ratings, onRate, onClose, originRec
   // Keyboard: ←/→ navigate, Esc close, +/- zoom, J/X/1-5 rate
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
+      // 长按(auto-repeat)不重复触发一次性动作(评分): 自动前进开启时长按 3
+      // 会把后续几十张全打成 3 星。←/→ 不在名单内, 保留长按连翻。
+      if (e.repeat && NON_REPEAT_KEYS.has(e.key.toLowerCase())) return;
       // 列表收缩到当前索引之外时 photo 会是 undefined — 必须在访问 photo.path 之前挡住
       if (!photo) return;
       if (e.key === "Escape") { handleClose(); }
@@ -265,14 +288,14 @@ export function PhotoViewer({ photos, index, ratings, onRate, onClose, originRec
       else if (e.key === "-") { setScale((s) => Math.max(0.2, s / 1.25)); }
       else if (e.key === "0") { setScale(1); setOffset({ x: 0, y: 0 }); setRotation(0); }
       else if (e.key.toLowerCase() === "r") { setRotation((r) => (e.shiftKey ? (r + 270) % 360 : (r + 90) % 360)); }
-      else if (e.key.toLowerCase() === "j") { onRate(photo.path, 3); }
-      else if (e.key.toLowerCase() === "x") { onRate(photo.path, 0); }
-      else if (e.key >= "1" && e.key <= "5") { onRate(photo.path, Number(e.key)); }
+      else if (e.key.toLowerCase() === "j") { onRate(photo.path, 3); autoNext(); }
+      else if (e.key.toLowerCase() === "x") { onRate(photo.path, 0); autoNext(); }
+      else if (e.key >= "1" && e.key <= "5") { onRate(photo.path, Number(e.key)); autoNext(); }
       else if (e.key === " ") { e.preventDefault(); onToggleSelect(photo.path); } // 空格: 切换勾选
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [photo, cur, photos.length, navigateTo, handleClose, onRate, onToggleSelect]);
+  }, [photo, cur, photos.length, navigateTo, handleClose, onRate, onToggleSelect, autoNext]);
 
   // Wheel zoom — 缩到<=1时居中(重置offset)
   const onWheel = useCallback((e: React.WheelEvent) => {
@@ -354,7 +377,7 @@ export function PhotoViewer({ photos, index, ratings, onRate, onClose, originRec
           </Tip>
           {/* 星级 */}
           {[1, 2, 3, 4, 5].map((s) => (
-            <button key={s} data-tauri-drag-region={false} onClick={() => onRate(photo.path, rating === s ? 0 : s)}
+            <button key={s} data-tauri-drag-region={false} onClick={() => { onRate(photo.path, rating === s ? 0 : s); autoNext(); }}
               className={`text-sm px-0.5 ${rating >= s ? "text-amber-400" : "text-zinc-600 hover:text-zinc-400"}`}
             >★</button>
           ))}

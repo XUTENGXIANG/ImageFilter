@@ -150,6 +150,21 @@ export function useScanner() {
     });
   }, []);
 
+  // 评分后自动前进（默认开）。与 preloadFull 同款：父组件持有状态、立即写 localStorage。
+  // key 用 imagefilter-auto-advance：只有显式 "false" 才算关, 缺省/损坏一律当开。
+  // 注意不要改成 useLocalStorageSetting<boolean>: 那个 hook 用 String(v) 存、原样读回字符串,
+  // "false" 是真值 → 开关会永远关不掉。
+  const [autoAdvance, setAutoAdvance] = useState(() => {
+    try { return localStorage.getItem("imagefilter-auto-advance") !== "false"; } catch { return true; }
+  });
+  const toggleAutoAdvance = useCallback(() => {
+    setAutoAdvance((prev) => {
+      const next = !prev;
+      try { localStorage.setItem("imagefilter-auto-advance", String(next)); } catch {}
+      return next;
+    });
+  }, []);
+
   const detectDrives = useCallback(async () => {
     try {
       const list = await invoke<DriveInfo[]>("detect_drives");
@@ -371,5 +386,6 @@ export function useScanner() {
     analyzing, analysis, runAnalysis, stopAnalysis,
     ratings, setRating, sortBy, setSortBy, starFilter, setStarFilter,
     pickDestDir, startImport, preloadFull, togglePreloadFull,
+    autoAdvance, toggleAutoAdvance,
   };
 }

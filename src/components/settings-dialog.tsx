@@ -15,6 +15,8 @@ interface Props {
   onLangChange: (l: Lang) => void;
   preloadFull: boolean;
   onTogglePreloadFull: () => void;
+  autoAdvance: boolean;
+  onToggleAutoAdvance: () => void;
   transparentBg: boolean;
   onToggleTransparentBg: () => void;
   glassOpacity: number;
@@ -61,6 +63,7 @@ function OpacitySlider({
 export function SettingsDialog({
   open, onOpenChange, theme, onThemeChange, lang, onLangChange,
   preloadFull, onTogglePreloadFull, transparentBg, onToggleTransparentBg,
+  autoAdvance, onToggleAutoAdvance,
   glassOpacity, onGlassOpacityChange, backgroundOpacity, onBackgroundOpacityChange,
 }: Props) {
   const { t } = useTranslation();
@@ -102,6 +105,10 @@ export function SettingsDialog({
 
           <SettingRow title={t("settings.preload")} desc={t("settings.preloadDesc")}>
             <Toggle checked={preloadFull} onChange={onTogglePreloadFull} />
+          </SettingRow>
+
+          <SettingRow title={t("settings.autoAdvance")} desc={t("settings.autoAdvanceDesc")}>
+            <Toggle checked={autoAdvance} onChange={onToggleAutoAdvance} />
           </SettingRow>
 
           <SettingRow title={t("settings.transparentBg")} desc={t("settings.transparentBgDesc")}>

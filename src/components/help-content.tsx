@@ -22,6 +22,7 @@ export function ShortcutList({ compact = false }: { compact?: boolean }) {
     { kbd: "J", label: t("help.keep") },
     { kbd: "X", label: t("help.trash") },
     { kbd: "1-5", label: t("help.star") },
+    { kbd: "J/X/1-5", label: t("help.autoAdvance") },
     { kbd: "R", label: t("help.rotate") },
     { kbd: "←→", label: t("help.nav") },
     { kbd: "0", label: t("help.reset") },
@@ -36,6 +37,9 @@ export function ShortcutList({ compact = false }: { compact?: boolean }) {
           <kbd className={kbd}>J</kbd> {t("help.keep")}{" "}
           <kbd className={kbd}>X</kbd> {t("help.trash")}{" "}
           <kbd className={kbd}>1-5</kbd> {t("help.star")}
+        </p>
+        <p>
+          <kbd className={kbd}>J/X/1-5</kbd> {t("help.autoAdvance")}
         </p>
         <p>
           <kbd className={kbd}>{t("help.ctrlClick")}</kbd> {t("help.multi")}{" "}

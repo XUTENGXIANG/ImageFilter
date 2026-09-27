@@ -136,6 +136,8 @@ function App() {
     startImport,
     preloadFull,
     togglePreloadFull,
+    autoAdvance,
+    toggleAutoAdvance,
   } = useScanner();
 
   // 图片查看器: viewerIndex=null 关闭, 数字=打开第N张
@@ -395,6 +397,8 @@ function App() {
       <TitleBar
         preloadFull={preloadFull}
         onTogglePreloadFull={togglePreloadFull}
+        autoAdvance={autoAdvance}
+        onToggleAutoAdvance={toggleAutoAdvance}
         transparentBg={transparentBg}
         onToggleTransparentBg={() => setTransparentBg((v) => !v)}
         backgroundOpacity={backgroundOpacity}
@@ -612,6 +616,7 @@ function App() {
           thumbnails={thumbnails}
           selectedPaths={selectedPaths}
           onToggleSelect={toggleSelect}
+          autoAdvance={autoAdvance}
         />
       )}
       {/* 弹出提示浮窗 — 渐变出现停留1秒后消失 */}

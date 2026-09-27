@@ -15,6 +15,8 @@ import { Tip } from "./tip";
 export function TitleBar({
   preloadFull,
   onTogglePreloadFull,
+  autoAdvance,
+  onToggleAutoAdvance,
   transparentBg,
   onToggleTransparentBg,
   backgroundOpacity,
@@ -22,6 +24,8 @@ export function TitleBar({
 }: {
   preloadFull: boolean;
   onTogglePreloadFull: () => void;
+  autoAdvance: boolean;
+  onToggleAutoAdvance: () => void;
   transparentBg: boolean;
   onToggleTransparentBg: () => void;
   backgroundOpacity: number;
@@ -124,6 +128,8 @@ export function TitleBar({
         onLangChange={changeLang}
         preloadFull={preloadFull}
         onTogglePreloadFull={onTogglePreloadFull}
+        autoAdvance={autoAdvance}
+        onToggleAutoAdvance={onToggleAutoAdvance}
         transparentBg={transparentBg}
         onToggleTransparentBg={onToggleTransparentBg}
         glassOpacity={glassOpacity}
