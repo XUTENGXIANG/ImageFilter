@@ -244,11 +244,53 @@ cargo test --release --lib bench_analyze_cache -- --ignored --nocapture   # 生�
 
 ---
 
-## 9. 文档索引
+## 9. 发版计划（下次发布 v1.0.2）
+
+`v1.0.1` 的 tag 已存在，而这批修复（模糊误报、重复误报、两轮 CPU 问题、JPEG 预览缓存损坏）**用户可感知度很高**，建议作为 **v1.0.2** 发布。以下步骤照做即可，暂无排期。
+
+### 9.1 发布前检查
+- [ ] 在真实 SD 卡上跑一遍核心路径：浏览 → 缩略图 → 查看器（含**连续快速切换**）→ 星级筛选 → AI 分析（看 CPU 与模糊/重复标记是否符合预期）→ 导入（校验归档层级与"跳过/改名"行为）
+- [ ] 复核两个阈值（见 §6 "未验证的假设"）：`BLUR_THRESHOLD = 75`、`DUPLICATE_MAX_DISTANCE = 5` 在更大样本上是否仍合适
+- [ ] `cargo test --lib`（26 活跃）与 `npx tsc --noEmit` 全绿
+- [ ] macOS 未实机验证 —— README 里保留"缺乏构建环境"的提示，别在 Release notes 里声称已支持
+
+### 9.2 改版本号（**必须 4 处**，只改一处会导致界面/安装包/包管理器版本不一致）
+
+| 文件 | 字段 |
+|---|---|
+| `package.json` | `version` |
+| `src-tauri/tauri.conf.json` | `version` |
+| `src-tauri/Cargo.toml` | `[package] version`（`Cargo.lock` 随构建自动更新） |
+| `src/components/settings-dialog.tsx` | 关于对话框里**硬编码**的版本字符串 |
+
+### 9.3 打 tag 并推送
+
+```bash
+git tag v1.0.2
+git push origin master
+git push origin v1.0.2
+```
+
+### 9.4 产物与正式发布
+- 安装包由 `.github/workflows/build.yml` 在 tag 推送后构建（Windows：NSIS + MSI）
+- **必须人工到 GitHub 建 Release 并上传安装包**才算正式发布 —— 只推 tag 不算（这是本项目的既有约定）
+- Release notes 建议说明：`preview_v3 → v4` 的缓存升级会在**首次浏览 RAW 时重建预览缓存**，属预期行为
+
+### 9.5 本次发布应包含的用户可见变化
+- 大光圈虚化背景的照片**不再被误标"模糊"**
+- 连拍"最佳"改为兼顾曝光（不再选过曝/欠曝的那张）
+- 重复标记显著收敛（只归"几乎同一张"）
+- AI 分析 CPU 占用大幅下降（dev 下 29 张 **63s → 5.7s**）
+- 连续切换设备不再触发整盘遍历 / CPU 打满
+- 修复：查看器内评分会误改另一张照片、星级筛选下查看器崩溃或跳图、导入的文件夹层级被压平、浅色主题基础文字色、某类 RAW 预览空白且分析被静默跳过
+
+---
+
+## 10. 文档索引
 
 | 文档 | 用途 |
 |---|---|
-| **本文件** | 唯一权威交接文档：现状、机制、必守坑位、未修问题与优化建议、验证工具 |
+| **本文件** | 唯一权威交接文档：现状、机制、必守坑位、未修问题与优化建议、验证工具、**发版计划** |
 | [ImageFilter-架构与机制走查.md](ImageFilter-架构与机制走查.md) | 深度证据：D1–D14 逐条（含代码行号、复现数据）、§8 三轮修复的根因与社区调研来源 |
 | [README.md](../README.md) / [README.en.md](../README.en.md) | 对外介绍、安装与快捷键 |
 | `PROJECT_LOG.md`、`HANDOFF.md`（本地，未入库） | **已过期**，保留仅作历史；以本文件为准 |

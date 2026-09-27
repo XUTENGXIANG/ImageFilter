@@ -121,6 +121,8 @@ npx tauri build
 
 构建产物输出到 `src-tauri/target/release/bundle/`。
 
+> **参与开发 / 接手这个项目，请先读 [docs/ImageFilter-交接与上手.md](docs/ImageFilter-交接与上手.md)** —— 代码地图、关键机制（三级解码链、查看器状态机、并发与取消模式）、必守坑位、未修问题与优化建议、发版计划。
+
 ---
 ### dev 启动
 
