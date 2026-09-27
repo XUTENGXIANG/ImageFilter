@@ -46,6 +46,7 @@ cargo test --lib       # 在 src-tauri/ 下执行；26 活跃 + 3 忽略
 | 坑 | 现象 / 处理 |
 |---|---|
 | **端口 1420 被占** | 旧 vite 进程不会随窗口关闭退出 → `beforeDevCommand terminated with non-zero status`。`netstat -ano \| findstr :1420` 找 PID，`taskkill /PID <PID> /F` 后重启 |
+| **dev 被临时文件搞崩** | 同一个报错还有另一个来源：某些工具/编辑器**原子保存**（先写 `.xxx.<pid>.<uuid>.tmpdir/xxx.tmp` 再改名）时，Vite watcher 去 watch 正被占用的临时文件会抛**未捕获的 EBUSY** 并直接终止 dev。已在 `vite.config.ts` 的 `watch.ignored` 里加 `**/.*.tmpdir/**` 与 `**/*.tmp` 兜住；若仍遇到，重跑 `npx tauri dev` 即可（与代码无关） |
 | **改 profile 后的链接失败** | 出现 `LNK2019: 无法解析的外部符号 anon.*.llvm.*`（cdylib 链接失败，而 rlib 测试能过）→ 是残留的过期增量产物，`cargo clean -p image-filter` 后重建即恢复（实测清掉 11 GiB） |
 | **dev 构建速度** | `Cargo.toml` 已加 `[profile.dev] opt-level = 2` + `[profile.dev.package."*"] opt-level = 3`：dev 下 AI 分析 **63.0s → 5.67s**（29 张）。首次或改 profile 后需重建全部依赖约 2–3 分钟，之后增量约 20s |
 | **热重载** | 前端走 Vite HMR；**Rust 改动自动重编译并重启窗口**（编辑中途的编译错误会在日志里出现，属正常） |
