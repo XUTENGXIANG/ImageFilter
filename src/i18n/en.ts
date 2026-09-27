@@ -101,6 +101,7 @@ export default {
     sortType: "Type",
     sortDate: "Date",
     all: "All",
+    starFilter: "{n}★+",
     stop: "Stop",
     ai: "AI Analyze",
     aiCount: "AI Analyze ({n} selected)",

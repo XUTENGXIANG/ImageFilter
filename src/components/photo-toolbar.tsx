@@ -71,10 +71,12 @@ export function PhotoToolbar({
     <CollapsibleBar align="top" expanded={expanded} onToggle={onToggle} collapseInside>
       {selectedDrive && photosCount > 0 ? (
         <>
-        {/* 窄窗口下这一行会挤爆(Phase 4 又加了"排序方向"和"筛选"两个控件):
-            用 flex-wrap 换成多行, 并给每项 shrink-0 + whitespace-nowrap ——
-            否则 flex 会把按钮压窄、文字竖着折成两行(全/选、AI 分/析)。
-            min-h-9 + py-1 保证只有一行时高度与原来完全相同。 */}
+        {/* 这一行要尽量保持**单行**(实机反馈: 不要换行、不要竖排)。为了做到这点:
+            · 星级筛选收成了下拉(省掉原来 6 个 chip 约 250px 的宽度);
+            · 每项 shrink-0 + whitespace-nowrap, 谁都不许被压窄、文字不许折行;
+            · flex-wrap 只当**安全网** —— 窗口被压到极窄(左栏+右栏占位后不足 ~450px)时才换行,
+              换行时右侧那组(AI 分析 + 收起箭头)整体落到下一行右端, 不会出现竖排文字;
+            · min-h-9 + py-1: 单行时高度与原来的 h-9 完全一致。 */}
         <div className="flex flex-wrap items-center px-4 min-h-9 py-1 gap-2">
           <button onClick={onSelectAll} className="shrink-0 whitespace-nowrap text-[10px] text-zinc-500 hover:text-zinc-300">{t("toolbar.selectAll")}</button>
           <button onClick={onClearSelection} className="shrink-0 whitespace-nowrap text-[10px] text-zinc-500 hover:text-zinc-300">{t("toolbar.clear")}</button>
@@ -100,15 +102,21 @@ export function PhotoToolbar({
               : <SortAmountDown theme="outline" size="13" strokeWidth={3} />}
           </button>
           </Tip>
-          {[0, 1, 2, 3, 4, 5].map((s) => (
-            <button
-              key={s}
-              onClick={() => onStarFilterChange(starFilter === s ? 0 : s)}
-              className={`shrink-0 whitespace-nowrap text-[10px] px-1 rounded ${starFilter === s ? "text-amber-400 bg-amber-400/10" : "text-zinc-600 hover:text-zinc-400"}`}
-            >
-              {s === 0 ? t("toolbar.all") : "★".repeat(s)}
-            </button>
-          ))}
+          {/* 星级筛选收成一个下拉(实机反馈: 6 个 chip 一字排开占 ~250px, 窄窗口直接把那一行
+              挤爆 —— 竖排或换行)。展开才呈现几星, 常态只占一个控件宽, 那一行因此能保持单行。
+              语义没变: 仍是"至少 N 星"(0 = 全部); 选中态用琥珀色标出来, 免得忘了筛选还开着。 */}
+          <select
+            value={starFilter}
+            onChange={(e) => onStarFilterChange(Number(e.target.value))}
+            className={`shrink-0 bg-zinc-800 text-[10px] px-1 py-0.5 rounded border ${
+              starFilter > 0 ? "text-amber-400 border-amber-500/40" : "text-zinc-400 border-zinc-700"
+            }`}
+          >
+            <option value={0}>{t("toolbar.all")}</option>
+            {[1, 2, 3, 4, 5].map((s) => (
+              <option key={s} value={s}>{t("toolbar.starFilter", { n: s })}</option>
+            ))}
+          </select>
           {/* Phase 4: 标签 + 分析结果收进这里(那一行本来就满, 硬塞会挤爆) */}
           <button
             onClick={() => setFilterOpen((v) => !v)}

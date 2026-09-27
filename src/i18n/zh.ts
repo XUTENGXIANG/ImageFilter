@@ -106,6 +106,7 @@ export default {
     sortType: "类型",
     sortDate: "日期",
     all: "全部",
+    starFilter: "≥{n}★",
     stop: "停止",
     ai: "AI 分析",
     aiCount: "AI 分析选中 ({n})",
