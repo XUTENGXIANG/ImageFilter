@@ -42,7 +42,16 @@ function preloadImage(src: string): Promise<string> {
 // 长按(键盘 auto-repeat)必须忽略的一次性按键。评分键在"自动前进"开启后尤其危险:
 // 长按 3 一秒会把后面几十张全部打上 3 星 —— 用户看不见的批量误写。
 // 不含 ←/→: 方向键长按连翻是既有手感, 不能改。
-const NON_REPEAT_KEYS = new Set(["j", "x", "1", "2", "3", "4", "5"]);
+const NON_REPEAT_KEYS = new Set(["j", "x", "1", "2", "3", "4", "5", "z"]);
+
+/** 适应窗口比例 = 元素布局盒 / 自然尺寸。
+ *  用 offsetWidth/offsetHeight(布局盒)而不是 getBoundingClientRect(): 后者含 transform,
+ *  旋转 90/270 时宽高互换会算错; 布局盒天然不含 transform, 旋转下同样成立。
+ *  返回 0 表示图还没就绪(naturalWidth 为 0)。 */
+function fitScaleOf(el: HTMLImageElement): number {
+  if (!el.naturalWidth || !el.naturalHeight || !el.offsetWidth || !el.offsetHeight) return 0;
+  return Math.min(el.offsetWidth / el.naturalWidth, el.offsetHeight / el.naturalHeight);
+}
 
 export function PhotoViewer({ photos, index, ratings, onRate, onClose, originRect, thumbnails, selectedPaths, onToggleSelect, autoAdvance }: Props) {
   const { t } = useTranslation();
@@ -57,6 +66,13 @@ export function PhotoViewer({ photos, index, ratings, onRate, onClose, originRec
   const [scale, setScale] = useState(1);
   const [rotation, setRotation] = useState(0);            // 0/90/180/270
   const [offset, setOffset] = useState({ x: 0, y: 0 });
+  const [pixelView, setPixelView] = useState(false);       // 1:1 实际像素模式标记
+  const imgRef = useRef<HTMLImageElement | null>(null);    // 高清图(读 naturalWidth / 布局盒)
+  const areaRef = useRef<HTMLDivElement | null>(null);     // 图片区容器(算鼠标相对中心坐标)
+  const hoverRef = useRef({ x: 0, y: 0 });                 // 鼠标相对容器中心; 没进过图区就是 {0,0}
+  const anchorRef = useRef({ x: 0, y: 0 });                // 上次 1:1 计算用的锚点(src 换图后重锚用)
+  const natRef = useRef({ w: 0, h: 0 });                   // 上次 1:1 计算时的自然尺寸(同上)
+  const lastResetPathRef = useRef<string | null>(null);    // 只有真换图才重置缩放/旋转/偏移
   const dragRef = useRef<{ startX: number; startY: number; ox: number; oy: number; dragging: boolean }>({ startX: 0, startY: 0, ox: 0, oy: 0, dragging: false });
   const loadedSrcRef = useRef<Record<string, string>>({});
   const currentPathRef = useRef<string | null>(null);
@@ -143,15 +159,71 @@ export function PhotoViewer({ photos, index, ratings, onRate, onClose, originRec
     else handleClose();
   }, [autoAdvance, cur, photos.length, navigateTo, handleClose]);
 
+  // ── 1:1 实际像素查看 (Z) ──────────────────────────────────
+  // 锚点公式: 屏幕坐标 = scale × 布局坐标 + offset
+  // (img 在图片区容器内 justify/items-center 居中, 故"容器中心" = "图片布局盒中心",
+  //  hoverRef 与布局坐标同一个系)。
+  // 要求鼠标下的图面点在缩放前后停在同一个屏幕点 (cx, cy):
+  //   之前 cx = scale·px + offset.x  →  px = (cx − offset.x) / scale
+  //   之后 cx = k·px + offset.x'      →  offset.x' = cx − k·(cx − offset.x)/scale
+  // 文档给的 offset.x + (cx − offset.x)(1 − k) 是本式在 scale === 1 时的特例;
+  // 用户可能已滚轮缩放到别的倍数再按 Z, 所以这里用通式(scale===1 时与文档完全一致)。
+  const applyPixelView = useCallback((anchor: { x: number; y: number }) => {
+    const el = imgRef.current;
+    if (!el) return false;                            // 高清图还没挂载
+    const fit = fitScaleOf(el);
+    if (!fit) return false;                           // naturalWidth 还没就绪
+    const k = Math.min(8, Math.max(0.2, 1 / fit));    // 夹到既有 0.2–8 缩放上下限
+    anchorRef.current = anchor;
+    natRef.current = { w: el.naturalWidth, h: el.naturalHeight };
+    setOffset({
+      x: anchor.x - (k * (anchor.x - offset.x)) / scale,
+      y: anchor.y - (k * (anchor.y - offset.y)) / scale,
+    });
+    setScale(k);
+    setPixelView(true);
+    return true;
+  }, [offset, scale]);
+
+  // 用独立标记判定是否处于 1:1, 而不是 scale > 1: 小图(小于窗口)的 1:1 比例 < 1,
+  // 用 scale > 1 判定会陷入"再按 Z 又进 1:1"的死循环。
+  const togglePixelView = useCallback(() => {
+    if (pixelView) { setScale(1); setOffset({ x: 0, y: 0 }); setPixelView(false); return; }
+    // 旋转 90/270 时图面点与鼠标位置不再满足"平移 + 等比缩放", 退回以视图中心为锚
+    applyPixelView(rotation % 360 === 0 ? hoverRef.current : { x: 0, y: 0 });
+  }, [pixelView, rotation, applyPixelView]);
+
+  // 内嵌预览图换成全解码图后 naturalWidth 变了(例如 1616 → 6000), 若仍在 1:1 需按新尺寸
+  // 重算, 并把锚点上的图面内容钉回原位: offset' = anchor − (naturalNew / naturalOld)·(anchor − offset)
+  // (由 k·布局盒 = natural 恒等式推出, 与容器尺寸无关)
+  const reapplyPixelView = useCallback(() => {
+    const el = imgRef.current;
+    if (!el || !el.naturalWidth || !natRef.current.w) return;
+    const fit = fitScaleOf(el);
+    if (!fit) return;
+    const a = anchorRef.current;
+    const rx = el.naturalWidth / natRef.current.w;
+    const ry = el.naturalHeight / natRef.current.h;
+    setOffset({ x: a.x - rx * (a.x - offset.x), y: a.y - ry * (a.y - offset.y) });
+    natRef.current = { w: el.naturalWidth, h: el.naturalHeight };
+    setScale(Math.min(8, Math.max(0.2, 1 / fit)));
+  }, [offset]);
+
   // 渐进加载: 先内嵌JPEG秒开, 后台全解码后无感替换
   useEffect(() => {
     if (!photo) return;
     const path = photo.path;
     currentPathRef.current = path;
     const cached = loadedSrcRef.current[path];
-    setScale(1);
-    setOffset({ x: 0, y: 0 });
-    setRotation(0);
+    // 只在"真的换图"时重置缩放/旋转/偏移: 评分会让 sortedPhotos 换新数组引用, 本 effect
+    // 随之重跑 —— 不守卫的话"在 1:1 下打分"(自动前进关闭时)会被弹回适应窗口。
+    if (lastResetPathRef.current !== path) {
+      lastResetPathRef.current = path;
+      setScale(1);
+      setOffset({ x: 0, y: 0 });
+      setRotation(0);
+      setPixelView(false);
+    }
     if (cached) {
       setSrc(cached);
       setShowSrc(true);
@@ -201,6 +273,8 @@ export function PhotoViewer({ photos, index, ratings, onRate, onClose, originRec
     let fullTimer: number | undefined;
 
     // 第1步: 内嵌JPEG — 单次切换立即发(零延迟), 快速连续切换时debounce 120ms
+    // lastSwitchRef 只由本处写入: 任何"切换路径"的代码(navigateTo/autoNext)都不得写它,
+    // 否则 rapid 判定被刷新成恒真, 慢速评分也会白等 120ms(见 autoNext 上方注释)。
     const now = performance.now();
     const rapid = now - lastSwitchRef.current < 500;
     lastSwitchRef.current = now;
@@ -284,10 +358,12 @@ export function PhotoViewer({ photos, index, ratings, onRate, onClose, originRec
       if (e.key === "Escape") { handleClose(); }
       else if (e.key === "ArrowLeft") { navigateTo((cur - 1 + photos.length) % photos.length); }
       else if (e.key === "ArrowRight") { navigateTo((cur + 1) % photos.length); }
-      else if (e.key === "=" || e.key === "+") { setScale((s) => Math.min(8, s * 1.25)); }
-      else if (e.key === "-") { setScale((s) => Math.max(0.2, s / 1.25)); }
-      else if (e.key === "0") { setScale(1); setOffset({ x: 0, y: 0 }); setRotation(0); }
+      else if (e.key === "=" || e.key === "+") { setPixelView(false); setScale((s) => Math.min(8, s * 1.25)); }
+      else if (e.key === "-") { setPixelView(false); setScale((s) => Math.max(0.2, s / 1.25)); }
+      else if (e.key === "0") { setPixelView(false); setScale(1); setOffset({ x: 0, y: 0 }); setRotation(0); }
       else if (e.key.toLowerCase() === "r") { setRotation((r) => (e.shiftKey ? (r + 270) % 360 : (r + 90) % 360)); }
+      // Z: 适应窗口 <-> 1:1 实际像素。不抢 Ctrl/Cmd/Alt, 免得与将来的 Ctrl+Z 撤销冲突
+      else if (e.key.toLowerCase() === "z" && !e.ctrlKey && !e.metaKey && !e.altKey) { togglePixelView(); }
       else if (e.key.toLowerCase() === "j") { onRate(photo.path, 3); autoNext(); }
       else if (e.key.toLowerCase() === "x") { onRate(photo.path, 0); autoNext(); }
       else if (e.key >= "1" && e.key <= "5") { onRate(photo.path, Number(e.key)); autoNext(); }
@@ -295,11 +371,12 @@ export function PhotoViewer({ photos, index, ratings, onRate, onClose, originRec
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [photo, cur, photos.length, navigateTo, handleClose, onRate, onToggleSelect, autoNext]);
+  }, [photo, cur, photos.length, navigateTo, handleClose, onRate, onToggleSelect, autoNext, togglePixelView]);
 
-  // Wheel zoom — 缩到<=1时居中(重置offset)
+  // Wheel zoom — 缩到<=1时居中(重置offset)。滚轮改过缩放就不再是 1:1(否则 Z 会陷入死循环)
   const onWheel = useCallback((e: React.WheelEvent) => {
     e.preventDefault();
+    setPixelView(false);
     setScale((s) => {
       const next = Math.min(8, Math.max(0.2, e.deltaY < 0 ? s * 1.15 : s / 1.15));
       if (next <= 1) setOffset({ x: 0, y: 0 });
@@ -388,7 +465,18 @@ export function PhotoViewer({ photos, index, ratings, onRate, onClose, originRec
       </div>
 
       {/* 图片区 — 缩略图铺底秒显, 高清图加载后淡入替换 */}
-      <div className="flex-1 relative overflow-hidden flex items-center justify-center select-none">
+      <div
+        ref={areaRef}
+        className="flex-1 relative overflow-hidden flex items-center justify-center select-none"
+        onMouseMove={(e) => {
+          // 鼠标相对"图片区中心"的坐标: 容器中心 = 图片布局盒中心(img 被 justify/items-center 居中),
+          // 与锚点公式用的布局坐标同一个系
+          const r = areaRef.current?.getBoundingClientRect();
+          if (!r) return;
+          hoverRef.current = { x: e.clientX - (r.left + r.width / 2), y: e.clientY - (r.top + r.height / 2) };
+        }}
+        onMouseLeave={() => { hoverRef.current = { x: 0, y: 0 }; }}   // 鼠标移出图区后按 Z → 以视图中心为锚
+      >
         {/* 缩略图 (秒显) */}
         {(() => {
           const thumb = thumbnails[photo.path] && thumbnails[photo.path] !== "__err__"
@@ -407,11 +495,16 @@ export function PhotoViewer({ photos, index, ratings, onRate, onClose, originRec
         {/* 高清图 (preview/full, 淡入) — 拖拽时禁用transform过渡保证跟手 */}
         {src ? (
           <img
+            ref={imgRef}
             src={src}
             alt={photo.fileName}
             draggable={false}
             decoding="async"
             className="max-w-full max-h-full object-contain"
+            // 预览图换成全解码图后 naturalWidth 变了: 仍在 1:1 就按新尺寸重算并把锚点钉住。
+            // 只在"同一张图"上重锚: 换图时 lastResetPathRef 还没追上 currentPathRef, 此时
+            // 该由加载 effect 去重置缩放, 这里重锚会与它竞态(理论最坏 1 帧)
+            onLoad={() => { if (pixelView && lastResetPathRef.current === currentPathRef.current) reapplyPixelView(); }}
             style={{
               transform: `translate(${offset.x}px, ${offset.y}px) rotate(${rotation}deg) scale(${scale})`,
               cursor: scale > 1 ? "grab" : "default",
@@ -442,6 +535,7 @@ export function PhotoViewer({ photos, index, ratings, onRate, onClose, originRec
       <div className="flex items-center justify-center gap-3 py-2 flex-shrink-0 text-[10px] text-zinc-600">
         <span>{t("viewer.nav")}</span>
         <span>{t("viewer.zoom")}</span>
+        <span>{t("viewer.actual")}</span>
         <span>{t("viewer.pan")}</span>
         <span>{t("viewer.reset")}</span>
         <span>{t("viewer.rotate")}</span>
