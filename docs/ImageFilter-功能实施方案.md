@@ -548,7 +548,7 @@ cd src-tauri && cargo check --lib
 
 ### 会话 ② · Phase 2（2026-09-27）
 
-- **代码状态**：起点 HEAD `4622622` · 起点工作区干净（仅 `task-7-review-package.decoded.txt` 未跟踪，不属本项目；`src-tauri/Cargo.toml` 有非本会话的**行尾符噪音**，已刻意不 `add`）· 提交 `5e4e865 feat(undo): 评分/勾选撤销与重做(Ctrl+Z / Ctrl+Shift+Z)` · 本会话 HEAD `<docs-sha>`（仅文档）· `npx tsc --noEmit` 两次均 exit 0 · `npx vite build` exit 0 · i18n 静态校验 exit 0（zh/en 各 **169** 个叶子 key 完全对齐、源码 169 个 `t("…")` 全部可解析、无死 key）· `src/undo.ts` 纯函数冒烟 27 条断言全绿（esbuild 转译后跑 Node，临时脚本用完即删）
+- **代码状态**：起点 HEAD `4622622` · 起点工作区干净（仅 `task-7-review-package.decoded.txt` 未跟踪，不属本项目；`src-tauri/Cargo.toml` 有非本会话的**行尾符噪音**，已刻意不 `add`）· 提交 `5e4e865 feat(undo): 评分/勾选撤销与重做(Ctrl+Z / Ctrl+Shift+Z)` · 本会话 HEAD `dbaeb11`（仅文档）· `npx tsc --noEmit` 两次均 exit 0 · `npx vite build` exit 0 · i18n 静态校验 exit 0（zh/en 各 **169** 个叶子 key 完全对齐、源码 169 个 `t("…")` 全部可解析、无死 key）· `src/undo.ts` 纯函数冒烟 27 条断言全绿（esbuild 转译后跑 Node，临时脚本用完即删）
 - **已定决定**：
   - **补丁栈放 `useState<{undo, redo}>`（原子更新）而不是文档建议的 `useRef`**：文档同时要求导出 `canUndo`/`canRedo`，而 ref 不触发渲染会让这两个值永远停在首次渲染的 `false`（谎报）；`canUndo`/`canRedo` 由 `useMemo` 派生，三者同一次渲染内一致；
   - **新增 `src/undo.ts`** 承载全部纯逻辑（`Patch` 类型、`pushPatch` 栈顶去重、`popUndo`/`popRedo`、`applyRatingPatch`/`applySelectionPatch`）；每处决策写进代码注释（决策日志纪律 1），文件头写死三条不变式；
