@@ -25,7 +25,11 @@ rawler = "0.7"
 kamadak-exif = "0.5"
 image = "0.25"
 zune-jpeg = "0.4"
-imgfprint = "0.4"
+# 感知哈希(近重复检测): 用 Czkawka 作者维护的 image_hasher 取代 imgfprint。
+# 原因: imgfprint 的 score 是"条件均值"(Hamming 距离 >32/64 的块被排除、不计入分母),
+# 大面积平坦区会被放大成高相似度; image_hasher 直接给位级 Hamming 距离, 语义明确、
+# 阈值可照抄 Czkawka 的实测档位。详见 docs/ImageFilter-架构与机制走查.md §8.4
+image_hasher = "3.1"
 
 # File system
 walkdir = "2"
@@ -49,4 +53,18 @@ windows = { version = "0.62.2", features = ["Win32_UI_Shell", "Win32_Graphics_Gd
 
 # zune-jpeg SIMD is slow in debug builds
 [profile.dev.package.zune-jpeg]
+opt-level = 3
+
+# ── dev(调试)构建的性能配置 ─────────────────────────────────────────────
+# 背景: dev 构建默认全部 opt-level=0, 而本项目的重活都在数值循环里
+# (JPEG 解码后的色彩转换与重采样、拉普拉斯卷积、大文件字节扫描)。
+# 实测同一批 29 张真实照片的分析: debug 63.0s → release 2.17s(29 倍),
+# 用户体感就是"AI 分析时 CPU 占满、电脑很卡"。
+# 依赖全部 o3(它们的解码/重采样是大头)、本项目代码 o2(编译代价小),
+# 让 dev 下的运行速度接近 release。
+# 注意: 改动本段会让下次构建**重新编译所有依赖**(一次性, 之后照常增量)。
+[profile.dev]
+opt-level = 2
+
+[profile.dev.package."*"]
 opt-level = 3

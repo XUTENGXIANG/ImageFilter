@@ -119,7 +119,9 @@ pub async fn get_preview_image(file_path: String) -> Result<String, String> {
         return Ok(file_path);
     }
 
-    let cache_dir = cache_dir().ok_or("No cache dir")?.join("image-filter").join("preview_v3");
+    // 目录版本 v4: v3 时期 jpeg_dimensions 校验过松, 可能缓存了损坏的内嵌图
+    // (实测存在一个 ff d8 ff 7d 开头的坏文件)。换版本号让这些条目自然失效重建。
+    let cache_dir = cache_dir().ok_or("No cache dir")?.join("image-filter").join("preview_v4");
     std::fs::create_dir_all(&cache_dir).map_err(|e| format!("Mkdir: {}", e))?;
 
     let mtime = std::fs::metadata(src)
@@ -363,31 +365,67 @@ pub(crate) fn load_analysis_image(path: &std::path::Path) -> Option<image::Dynam
     image::open(path).ok()
 }
 
-/// 分析用原始字节（analyzer.rs 复用）: RAW 返回内嵌 JPEG 字节, 其他返回原文件字节
-pub(crate) fn load_analysis_bytes(path: &std::path::Path) -> Option<Vec<u8>> {
-    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
-    if RAW_EXTENSIONS.contains(&ext.as_str()) {
-        return extract_largest_preview_bytes(path);
-    }
-    std::fs::read(path).ok()
-}
-
-/// 从 JPEG 字节解析宽高（找 SOF0/SOF2 段）
+/// 从 JPEG 字节解析宽高（严格按段结构遍历, 只接受 SOF0/SOF2）
+///
+/// 为什么不能"扫到 0xFF 就当段头": 那样会在**任意垃圾字节**里误判出 SOF ——
+/// 坏数据也能解析出"宽高", 于是被当成合法预览写进缓存并长期复用。
+/// 实测已经出现过一次: preview_v3 里有个以 `ff d8 ff 7d` 开头的损坏文件,
+/// 既导致查看器显示空白, 也让分析器直接静默跳过那张照片。
+/// 这里要求严格按段长度推进, 遇到非 0xFF 的段边界即判定数据已损坏。
 fn jpeg_dimensions(data: &[u8]) -> Option<(u32, u32)> {
-    let mut i = 2;
-    while i + 4 < data.len() {
-        if data[i] != 0xFF { i += 1; continue; }
-        let marker = data[i + 1];
-        if marker == 0xC0 || marker == 0xC2 {
-            if i + 9 < data.len() {
-                let h = u16::from_be_bytes([data[i + 5], data[i + 6]]) as u32;
-                let w = u16::from_be_bytes([data[i + 7], data[i + 8]]) as u32;
-                return Some((w, h));
-            }
+    if data.len() < 4 || data[0] != 0xFF || data[1] != 0xD8 {
+        return None; // 必须以 SOI 开头
+    }
+
+    let mut i = 2usize;
+    while i + 3 < data.len() {
+        if data[i] != 0xFF {
+            return None; // 段头必须以 0xFF 开头, 否则结构已损坏
         }
-        let len = u16::from_be_bytes([data[i + 2], data[i + 3]]) as usize;
-        if len < 2 { return None; }
-        i += 2 + len;
+        // 跳过填充的连续 0xFF
+        let mut j = i;
+        while j < data.len() && data[j] == 0xFF {
+            j += 1;
+        }
+        if j >= data.len() {
+            return None;
+        }
+        let marker = data[j];
+        i = j + 1;
+
+        // 无长度字段的独立标记
+        match marker {
+            0xD8 | 0x01 | 0xD0..=0xD7 => continue, // SOI / TEM / RSTn
+            0xD9 => return None,                   // EOI: 还没遇到 SOF
+            _ => {}
+        }
+
+        if i + 1 >= data.len() {
+            return None;
+        }
+        let len = u16::from_be_bytes([data[i], data[i + 1]]) as usize;
+        if len < 2 {
+            return None;
+        }
+        let seg_end = i + len;
+        if seg_end > data.len() {
+            return None;
+        }
+
+        // SOF0(基线) / SOF2(渐进): 段内固定偏移 —— 精度(1) 高(2) 宽(2)
+        if marker == 0xC0 || marker == 0xC2 {
+            if len < 8 {
+                return None;
+            }
+            let h = u16::from_be_bytes([data[i + 3], data[i + 4]]) as u32;
+            let w = u16::from_be_bytes([data[i + 5], data[i + 6]]) as u32;
+            if w == 0 || h == 0 {
+                return None;
+            }
+            return Some((w, h));
+        }
+
+        i = seg_end;
     }
     None
 }
@@ -591,5 +629,63 @@ fn cache_dir() -> Option<std::path::PathBuf> {
                     std::path::PathBuf::from(h).join(".cache")
                 })
             })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn jpeg_dimensions_reads_encoded_jpeg() {
+        // 用 image crate 真编一张 JPEG, 验证能解析出正确宽高
+        let img = image::RgbImage::from_fn(64, 48, |x, y| {
+            image::Rgb([(x * 4) as u8, (y * 5) as u8, 128])
+        });
+        let mut buf: Vec<u8> = Vec::new();
+        image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buf, 85)
+            .encode_image(&img)
+            .expect("编码 JPEG 失败");
+
+        assert_eq!(jpeg_dimensions(&buf), Some((64, 48)));
+    }
+
+    /// 回归护栏: 样本取自真实损坏缓存文件 `preview_v3/b19755bbbe7f2164_prev.jpg` 的开头字节
+    /// (`ff d8 ff 7d ...`)。这个流里没有合法的段结构, 但**深处藏着一组像 SOF 的字节** ——
+    /// 旧的"扫到 0xFF 就当段头"实现会把它当成 SOF 并解析出假的宽高, 于是坏数据被当成
+    /// 合法预览缓存下来(查看器空白)且被分析器静默跳过。严格遍历必须拒绝。
+    #[test]
+    fn jpeg_dimensions_rejects_corrupt_stream_with_plausible_sof() {
+        let mut buf = vec![0u8; 32 * 1024];
+        let header = [
+            0xFFu8, 0xD8, 0xFF, 0x7D, 0x60, 0x64, 0x4E, 0x4C, 0x2D, 0x20, 0x92, 0xAA,
+        ];
+        buf[..header.len()].copy_from_slice(&header);
+
+        // 段长谎报为 0x6064 = 24676 字节 → 严格遍历跳过它后落在 0 字节上, 判定损坏;
+        // 而"扫描式"实现会继续往后找 0xFF 并咬住下面这组假 SOF。
+        let fake_sof_at = 25_000;
+        buf[fake_sof_at] = 0xFF;
+        buf[fake_sof_at + 1] = 0xC0;
+        buf[fake_sof_at + 2] = 0x00;
+        buf[fake_sof_at + 3] = 0x11; // 段长 17
+        buf[fake_sof_at + 4] = 0x08; // 精度 8
+        buf[fake_sof_at + 5] = 0x10; // 高 0x1000
+        buf[fake_sof_at + 6] = 0x00;
+        buf[fake_sof_at + 7] = 0x20; // 宽 0x2000
+        buf[fake_sof_at + 8] = 0x00;
+
+        assert_eq!(
+            jpeg_dimensions(&buf),
+            None,
+            "损坏的 JPEG 流不应解析出宽高(否则会被当成合法预览缓存)"
+        );
+    }
+
+    #[test]
+    fn jpeg_dimensions_rejects_non_jpeg_and_tiny_input() {
+        assert_eq!(jpeg_dimensions(&[]), None);
+        assert_eq!(jpeg_dimensions(&[0xFF, 0xD8]), None);
+        assert_eq!(jpeg_dimensions(b"\x89PNG\r\n\x1a\n"), None);
     }
 }
