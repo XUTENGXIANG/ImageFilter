@@ -208,10 +208,11 @@ export default {
 
   // ── Toast ──
   toast: {
+    // 单括号插值: 见 i18n/index.ts 的 prefix/suffix 设置(不是 i18next 默认的 {{}})
     undo: "Undid",
     undoRedo: "Redid",
-    ratingChange: "{{prev}}★ → {{next}}★",
-    selectionChange: "{{n}} selected",
+    ratingChange: "{prev}★ → {next}★",
+    selectionChange: "{n} selected",
   },
 
 };

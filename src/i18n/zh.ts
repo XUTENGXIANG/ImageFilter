@@ -222,8 +222,10 @@ export default {
   toast: {
     undo: "已撤销",
     undoRedo: "已重做",
-    ratingChange: "{{prev}}★ → {{next}}★",
-    selectionChange: "勾选 {{n}} 张",
+    // 注意: 本项目插值用**单括号** {n}(见 i18n/index.ts 的 prefix/suffix),
+    // 写成 {{prev}} 会被解析成不存在的变量 "{prev" 并原样显示。
+    ratingChange: "{prev}★ → {next}★",
+    selectionChange: "勾选 {n} 张",
   },
 
 };
