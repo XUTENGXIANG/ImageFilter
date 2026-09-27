@@ -35,7 +35,7 @@
 
 1. **不许简化查看器的四条加载分支**（交接文档 §5-1）。所有改动是在这四条之上加分支，不是替换。
 2. **评分目前是"单一事实源"**：`useScanner.setRating` 是唯一写入点（[useScanner.ts:127](../src/useScanner.ts:127)），任何新写入路径（撤销、XMP、标签）都必须汇流到这里或与它并列并被同一处序列化，否则会出现"查看器与网格不一致"这类回归（交接文档 §7 修过）。
-3. **i18n 双写**：zh 与 en 各 171 个 key 目前完全对齐，**新增 key 必须两边同时加**，否则会踩 fallback。
+3. **i18n 双写**：zh 与 en 各 169 个 key 目前完全对齐（会话 ① 时是 163，会话 ② 加了 6 个），**新增 key 必须两边同时加**，否则会踩 fallback。
 4. **落地页 demo 的 mock 层**（另一仓库，见 [superpowers/specs](superpowers/specs/2026-08-11-imagefilter-website-design.md)）会 mock Tauri API：**Phase 5/6 一旦改命令签名，需要同步那份 mock**，否则官网迷你演示会白屏。
 
 ---
@@ -145,7 +145,24 @@ const setRating = useCallback((path: string, stars: number) => {
 
 > ⚠️ 在 `setRatings` 的 updater 里做副作用（`pushPatch`）在 React 18/19 的 StrictMode 下会被**调用两次**（开发环境）。当前 `main.tsx` 未使用 StrictMode，所以现状可接受；但更稳的写法是**在 updater 外面**用 `ratings[path]` 读取旧值——代价是 `setRating` 需要依赖 `ratings`，会让所有卡片的 `onRate` 引用变化、双层 memo 失效（这正是交接文档 §6 P2-6 提到的老问题）。**权衡后建议**：保持 updater 内写入 + 在 `pushPatch` 内做基于 `(path, prev, next)` 的**去重**（与栈顶完全相同的补丁不重复入栈），这样即使被调用两次也只入栈一条。
 
+> 🛠 **会话 ② 落地时的更正（以本节为准）**：上面这段的两处前提都错了 ——
+> ① `main.tsx` **有** `<React.StrictMode>`（第 8-10 行），所以"现状可接受"不成立，去重是**必须**的；
+> ② 替代方案（把旧值读到 updater 外面）**已否决**，正确解法是 `useScanner` 内的 `ratingsRef` 同步镜像 ——
+> 不让 `setRating` 依赖 `ratings`，既不破坏 memo，又能让"同一 tick 连按两次 Ctrl+Z"各自读到最新值。
+> 实际实现见 `src/undo.ts`（`pushPatch` 栈顶去重）与 `src/useScanner.ts`（`recordPatch` / `undo` / `redo`），
+> 去重只比较稳定原语且**先做无变化早退**，故只会命中 StrictMode 双调用、绝不会吞掉真实的连续操作
+> （27 条断言覆盖，含"两个真实连续操作必须入栈两条"）。细节见文末会话 ② 决策日志。
+
+> 备选实现（**不采纳**）：把 `undoStack`/`redoStack` 放 `useRef`。文档本节要求同时导出
+> `canUndo`/`canRedo`，而 ref 不触发渲染 → 这两个值会永远停留在首次渲染的 `false`（谎报）。
+> 会话 ② 改用 `useState<{undo, redo}>` 原子更新，`canUndo`/`canRedo` 由 `useMemo` 派生。
+
+
 2. 勾选变更同理：`handlePhotoClick`（[useScanner.ts:73-101](../src/useScanner.ts:73)）、`selectAll`、`clearSelection` 三处都要记录 `prev/next` 的路径数组。
+   > 补充（会话 ② 核实）：`handlePhotoClick` 内部有**三个**分支（Ctrl 切换 / Shift 范围 / 单击累积）都要记；
+   > 且查看器的勾选框（viewer.tsx:436）与空格键（viewer.tsx:370）也走 `App.toggleSelect → handlePhotoClick`，
+   > 即"记录点 3 处、覆盖 5 条入口"。另外 `loadFolder` 里直接 `setSelectedPaths(new Set())` 也要走同一个
+   > wrapper，否则选择集镜像会过期、补丁的 `prev` 记错（会话 ② 实现为 `selectPaths` 唯一写入口）。
 
 3. 新增导出：`undo()`、`redo()`、`canUndo`、`canRedo`。
 
@@ -161,7 +178,19 @@ if ((e.ctrlKey || e.metaKey) && key === "z") {
 
 注意 [App.tsx:160-171](../src/App.tsx:160) 已经拦了 `Ctrl+A`，这里要**同时**在输入框内豁免（`e.target` 是 INPUT/TEXTAREA 时不处理），否则用户没法在目标目录/模板输入框里撤销打字。
 
+> 🛠 会话 ② 的实现与两处补充：
+> - 撤销键**合并进 Ctrl+A 那个 effect**（两者是同一份输入框豁免判断，省一个 window 监听器），依赖数组必须是 `[viewerIndex, undo, redo, t]` —— 漏了 `viewerIndex` 就会出现"App 与 viewer 双重撤销，一次 Ctrl+Z 退两步"（与 [App.tsx:193](../src/App.tsx:193) 同一条坑，交接 §5-7）；
+> - 只有真的撤到/重做到东西才 `preventDefault()`，空栈时把 `Ctrl+Z` 让给浏览器（否则"什么都没撤还把原生撤销吃掉"）；
+> - `showToast` 的 `const` 声明必须在 effect **之前**，否则依赖数组急切求值会 TDZ 崩溃（同 `viewerIndex` 的纪律）；会话 ② 把它从 App 中段上移。
+
 **C. `src/viewer.tsx`**：查看器的 keydown handler 里也要处理 `Ctrl+Z`（否则在查看器内撤销无效）。或者更干净：把撤销键放在**唯一的 window 级 handler** 里，并让查看器的 handler 对它早退。
+
+> 🛠 会话 ② 选了前者（**新增 viewer 分支 + App 侧早退**），理由：把撤销收进唯一 window handler 需要把
+> `photos/cur/navigateTo/autoNext` 全部提到 App 或 ref 透传，改动面远大于"两处各加 4 行 + 一处早退"，
+> 且要动查看器四条加载分支的闭包链。键盘分工：**查看器打开时 App 的 handler 整体早退**（`viewerIndex !== null`），
+> 查看器内由 viewer 自己的 handler 处理 —— 两套监听因此不会双触发。
+> 两条行为约定：① 撤销前先把画面**调回补丁里的那张**（自动前进可能已经把人带到下一张了），用户才看得见撤了什么；
+> ② 撤销路径**不调 `autoNext()`**，也不碰 `scale/offset/rotation/pixelView` —— 撤销不是"做完一次决策"。
 
 ### 关键陷阱
 
@@ -517,6 +546,47 @@ cd src-tauri && cargo check --lib
 
 ---
 
+### 会话 ② · Phase 2（2026-09-27）
+
+- **代码状态**：起点 HEAD `4622622` · 起点工作区干净（仅 `task-7-review-package.decoded.txt` 未跟踪，不属本项目；`src-tauri/Cargo.toml` 有非本会话的**行尾符噪音**，已刻意不 `add`）· 提交 `5e4e865 feat(undo): 评分/勾选撤销与重做(Ctrl+Z / Ctrl+Shift+Z)` · 本会话 HEAD `<docs-sha>`（仅文档）· `npx tsc --noEmit` 两次均 exit 0 · `npx vite build` exit 0 · i18n 静态校验 exit 0（zh/en 各 **169** 个叶子 key 完全对齐、源码 169 个 `t("…")` 全部可解析、无死 key）· `src/undo.ts` 纯函数冒烟 27 条断言全绿（esbuild 转译后跑 Node，临时脚本用完即删）
+- **已定决定**：
+  - **补丁栈放 `useState<{undo, redo}>`（原子更新）而不是文档建议的 `useRef`**：文档同时要求导出 `canUndo`/`canRedo`，而 ref 不触发渲染会让这两个值永远停在首次渲染的 `false`（谎报）；`canUndo`/`canRedo` 由 `useMemo` 派生，三者同一次渲染内一致；
+  - **新增 `src/undo.ts`** 承载全部纯逻辑（`Patch` 类型、`pushPatch` 栈顶去重、`popUndo`/`popRedo`、`applyRatingPatch`/`applySelectionPatch`）；每处决策写进代码注释（决策日志纪律 1），文件头写死三条不变式；
+  - **StrictMode 去重是真的必需**：核对 `main.tsx` 第 8-10 行**确有** `<React.StrictMode>`，文档原话"未使用 StrictMode 所以现状可接受"已失效（正文已更正）；去重判据 = **调用方无变化早退**（评分 `before === stars`）+ `pushPatch` 只比较稳定原语，故只可能命中双调用，**不会吞掉真实连续操作**（断言 2a-2c 专门钉死这条失败方向）；
+  - **用 `ratingsRef` / `selectedPathsRef` 同步镜像**：`undo()` 在同一 tick 内被连按两次时，读闭包 state 会两次拿到同一份旧值、静默丢掉第二条补丁；镜像在 updater 内赋值（与既有 `localStorage.setItem` 同款写法）。**顺带解掉文档的两难**：`setRating` 不必依赖 `ratings`，卡片 `onRate` 引用稳定、双层 memo 不失效；
+  - **`selectPaths` 成为选择集的唯一写入口**（含 `loadFolder` 里那次清空）：直接调 `setSelectedPaths` 会让镜像过期、补丁的 `prev` 记错 —— 这是自查时发现并修掉的真实缺陷，不是预防性改动；
+  - **撤销键合并进 Ctrl+A 那个 effect**（同一份输入框豁免判断，少一个 window 监听器），依赖数组含 `viewerIndex`（防与 viewer 双重撤销）、`showToast` 从 App 中段**上移**到该 effect 之前（依赖数组急切求值会 TDZ，同 `viewerIndex` 的纪律）；
+  - **空栈时不 `preventDefault()`**：把 `Ctrl+Z` 让给浏览器，避免"什么都没撤还把原生撤销吃掉"；
+  - **查看器内撤销前先把画面调回补丁里的那张**（`undoTargetPath` 由 `lastUndoPath` 传入）：自动前进可能已把人带到下一张，不回跳用户就看不见撤了什么；**撤销路径不调 `autoNext()`**（撤销="我改主意"，不该立刻前进）、**不碰 `scale/offset/rotation/pixelView`**（撤销不改路径就不该动画面状态，`lastResetPathRef` 因此不会触发）；
+  - **`Ctrl+Z` 的重复键只让 App 侧处理**：viewer 的 `e.repeat` 守卫排在撤销分支之前（`z` 本就在 `NON_REPEAT_KEYS` 里），所以查看器内长按 Ctrl+Z 不连撤 —— 有意为之，本 Phase 不做节流；
+  - **不补 vitest，改做一次可复现的 Node 冒烟**：`src/undo.ts` 零 React 依赖，用仓库自带的 esbuild 转译后断言 27 条（StrictMode 双调用只入栈一条 / 真实连续操作必须入栈 / 栈深上限 / redo 清空与往返一致 / 应用函数幂等）。这既不动 `vite.config.ts`（另有会话可能正在改），也把交接 §6 P1-2"先测纯函数"的前置条件做实 —— 日后引入 vitest 是零改造成本；
+  - **i18n 净增 6 个 key（163 → 169）**：`help.undo`(=`Ctrl+Z`，兼作 kbd 文案)、`help.undoDesc`、`toast.undo`、`toast.undoRedo`、`toast.ratingChange`、`toast.selectionChange`；**帮助对话框与欢迎页两处都加了**（否则新 key 是死 key，会话 ① 的同一条纪律）；
+  - **toast 文案在 App 里生成**（`patchToast(t, patch, kind)`），不在 `useScanner` 里预格式化 —— hook 不该依赖 i18n，且文案要随语言切换即时变化。
+- **被否决方案**：
+  - 栈用 `useRef`（文档建议）→ 否决：与 `canUndo`/`canRedo` 自相矛盾（ref 不触发渲染 → 永远 `false`）；
+  - 把 `ratings[path]` 挪到 updater 外读旧值（文档建议的"更稳写法"）→ 否决：`setRating` 依赖 `ratings` 会让所有卡片 `onRate` 换引用、双层 memo 失效（交接 §6 P2-6 的老问题）；正确解法是 `ratingsRef`；
+  - 把撤销收进**唯一**的 window handler、让 viewer 早退（文档给的"更干净"方案）→ 否决：要把 `photos/cur/navigateTo/autoNext` 提到 App 或 ref 透传，改动面远大于"两处各 4 行 + App 一处早退"，且会碰到四条加载分支的闭包链；
+  - 撤销后调用 `autoNext()` → 否决：被撤的那张会立刻滑走，用户无法复核；
+  - 用 `Set` 快照比较选择集是否变化（深比 `paths`）来判断去重 → 否决：改为引用比较（选择集每次变更都新建数组，引用即版本），并在文件头写死"数组是冻结快照"的不变式；
+  - `applyRatingPatch` 只在"当前值等于补丁的 `next`"时才生效（更严格的守卫）→ 否决：那会让同一补丁重复回放时仍产生新对象（不幂等）；改为"只看目标值"，既幂等又容忍"当前值不在 `{prev,next}` 里"的意外状态；
+  - 引入 vitest（用户原始提示里的备选）→ 否决：需加依赖 + 改 `vite.config.ts`，而该文件正可能有并发改动，冲突风险不该由本 Phase 承担；
+  - `Ctrl+Y` 作为重做别名 → 否决：文档只要求 `Ctrl+Shift+Z`，多一个键多一份误触面；
+  - 查看器底部提示条再加一条 `Ctrl+Z` 文案 → 否决：提示条已有 7 条偏满，撤销属通用快捷键，写进帮助即可（也省一个 key）；
+  - 长按 Ctrl+Z 连撤（把 `z` 移出 `NON_REPEAT_KEYS` 或加节流）→ 否决：手抖按住会一口气退掉几十步且不可预期，本 Phase 先不做。
+- **验收结果**：**静态验收 6 项全通过**：① `npx tsc --noEmit` exit 0（改前/改后各一次）；② `npx vite build` exit 0；③ i18n 叶子 key zh/en 各 169 且零差异；④ 源码 169 个 `t("…")` 全部能解析到、无死 key；⑤ `src/undo.ts` 冒烟 27/27（含"两个真实连续操作必须入栈两条"这一最危险失败方向）；⑥ 每个 `setSelectedPaths` 调用点都经过 `selectPaths`（用 grep 逐点核对）。**实机 GUI 0 项**：清单第 1–22 项**全部未实机验证**（本会话未跑 `npx tauri dev`），首次实机时优先做第 1、2、5、9、12 项（评分撤销、连撤 LIFO、输入框豁免、自动前进下撤销不回跳错图/不前进、1:1+旋转下撤销不重置）。
+  另有一次**探针结论记录**：想用 `renderToString` 实证 "StrictMode 双调用 updater"，结果渲染期更新只调用 1 次（该路径不双调用），故未能实证 —— 去重按 React 官方文档的结论保留（它无论双调用与否都正确，且不双调用时也不会有副作用）。
+- **遗留 / 本次不做**：
+  - `canUndo`/`canRedo` 已导出但**当前 UI 不消费**（帮助只写静态文案）；若要加"撤销"按钮/置灰态，直接用这两个布尔值；
+  - 网格里的 App Ctrl+Z handler **没有** `e.repeat` 守卫（查看器内有）：长按网格 Ctrl+Z 会连撤到栈空。风险低（撤销是幂等回退、不是静默写盘），但这是个已知的不一致；
+  - 跨文件夹/跨设备撤销按文档刻意不支持：`loadFolder`/`browseDrive` 同步清空两个栈，切回原文件夹也撤不了（"刷新设备"按钮同样会清空）；
+  - 撤销时的 localStorage 写入仍是 `try/catch` 静默失败（与既有 `setRating` 一致），配额/隐私模式失败时用户看不到；
+  - `undoTargetPath` 的"回跳"依赖目标仍在 `photos`（未筛选全集）里：自动化流程下若目标已被移出列表，就不回跳、只回放补丁；
+  - `undo`/`redo` 的副作用在 `setHistory` 的 updater 内（StrictMode 会跑两次）：已做到幂等（应用函数返回原引用即 bail out），但这是"值得在改动它时重新推一遍"的写法，未改造成外部读栈；
+  - toast 停留仍是既有 1200ms，`已撤销：4★ → 3★` 这类长文案会顶到时限；本次不调（避免影响既有导入/弹出提示的手感）；
+  - 会话 ① 手测清单里未验证的第 2、6、11、13 项本次也未补测（本次未碰加载/重锚逻辑，但 Phase 2 改了 viewer 的 keydown 依赖，理论无关）。
+
+---
+
 ## 附 · 会话 ① GUI 手测清单（Phase 1 + 3）
 
 > 已实机通过：**第 1、4、5、8、9、10、16 项**（2026-09-27）。其余 13 项仍待执行——下次碰查看器/设置相关代码前，优先补第 2、6、11、13 项（末张关闭、≥2 星筛选下打 0 星、预览→全解码重锚、滚轮/`0` 退出 1:1），这四项失败概率最高。
@@ -554,6 +624,46 @@ cd src-tauri && cargo check --lib
 
 ---
 
+## 附 · 会话 ② GUI 手测清单（Phase 2 · 撤销/重做）
+
+> 状态：**全部 22 项未实机验证**（2026-09-27 会话 ② 只做了静态验收 + 纯函数冒烟，未跑 `npx tauri dev`）。
+> 首次实机请优先做 **1、2、5、9、12** 项（评分撤销落地、连撤 LIFO、输入框豁免、自动前进下的撤销语义、1:1+旋转下撤销不重置画面），这五项失败概率最高。
+> 执行前：`npm run tauri dev`，打开一个含 RAW 的文件夹；先按 `R` 确认旋转、按 `Z` 确认 1:1 都能正常工作。
+> 每项后标注结果：✅ 通过 / ❌ 失败（附现象）/ ⏭ 跳过（附原因）。做完把结果回填进上面的决策日志"验收结果"，并同步本文档开头那段状态。
+
+**Phase 2 基本功能**
+
+1. 给 A 打 4 星 → `Ctrl+Z` → 网格徽标回到上一状态；**关掉 App 重开或看 DevTools 里的 `localStorage["imagefilter-ratings"]`**，值也同步回退（不能只退回 UI）。
+2. 连打 5 张分（3/4/5/2/1）→ 连按 `Ctrl+Z` 5 次 → 5 张按**后进先出**依次回退；第 6 次按 `Ctrl+Z` 无事发生、无报错。
+3. 撤销 2 次 → `Ctrl+Shift+Z` 重做 1 次 → 状态与"只撤销 1 次"相同；再打一次新分 → 重做栈清空（`Ctrl+Shift+Z` 无事发生）。
+4. 勾选 3 张 → `Ctrl+Z` → 3 张全部取消勾选；`Ctrl+Shift+Z` → 3 张重新勾上。
+5. **在目标目录/命名模板输入框里打字后按 `Ctrl+Z`** → 撤销的是**输入文字**，星级/勾选不变（输入框豁免）。
+6. 点工具栏"全选" → `Ctrl+Z` → 回到全选前的选择集；"取消" → `Ctrl+Z` → 选择集恢复。
+7. 在**查看器内**按空格勾选当前图 → `Ctrl+Z` → 勾选回退（这条走的是 viewer → `toggleSelect` → `handlePhotoClick` 路径，与网格不同入口）。
+8. 在**查看器内**打分 → `Ctrl+Z` → 星级回退，且 toast 出现在查看器之上（`z-[200]` > 查看器 `z-50`）；`Ctrl+Shift+Z` 重做同理。
+9. 切到别的文件夹后再按 `Ctrl+Z` → **无事发生**（不报错、不改任何文件夹的数据）；点设备面板"刷新"后再按 `Ctrl+Z` 同样无事发生（切设备也会清栈）。
+
+**Phase 1 / 3 与撤销的交互（本次改动的硬指标）**
+
+10. **开着自动前进**：查看器内连打 4 张分（每打一张自动前进）→ 连按 `Ctrl+Z` → 画面**逐张回跳**到被撤的那张，星级随之回退；**按 `Ctrl+Z` 时不触发自动前进**（不能出现"撤一下又滑走一张"）。
+11. 开着**自动前进**、开着 **≥2 星筛选**：查看器内把当前图从 4 星打到 0 星（它会掉出筛选）→ 再按 `Ctrl+Z` → 星级回退，且**不跳到别的照片**；若该图确实回到筛选结果里，查看器应停在它上面。
+12. **关掉自动前进**：先按 `Z` 进 1:1、按 `R` 旋转 90°、滚轮再放大一档 → 点星条打一次分 → 按 `Ctrl+Z` → **缩放/旋转/偏移全部保持不变**（`lastResetPathRef` 守卫不被撤销触发），画面**不前进**。
+13. 在查看器内按 `←`/`→` 切图后按 `Ctrl+Z` → 撤销的是**刚才打过的那张**（回跳生效），不是当前这张。
+14. 撤销/重做后查看器的进度文本（`cur + 1 / photos.length`）与画面一致；快速连按 `Ctrl+Z` 不闪黑帧、不出现空图（四条加载分支未被破坏）。
+
+**老回归（历史真实回归过的地方）**
+
+15. 查看器内按 `1`-`5` 后，网格里"选中但没在看"的那张星级**不变**（§7 双写 bug）。
+16. `Ctrl+Z` 撤销评分后，查看器与网格显示的星级**一致**（不能只有一边回退）。
+17. 浅色主题下撤销 toast 不出现近白字压近白底（§D8 级联层）。
+18. 英文界面（设置里切语言）下：帮助对话框显示 `Ctrl+Z` / "Undo rating / selection…"、toast 显示 "Undid: …"，**无中文残留、无裸露 key**。
+19. 网格里 `Ctrl+A` 仍被拦（输入框外不全选文本），且与 `Ctrl+Z` 互不干扰。
+20. 长按 `Ctrl+Z` 一秒 → 最多退到栈空，不报错、不卡死（注意：网格侧无 `e.repeat` 守卫，会连撤到空 —— 这是已知行为，见决策日志遗留项；查看器侧只撤一次）。
+21. Shift 范围选仍然正确（`handlePhotoClick` 的三个分支都改成走 `selectPaths`，需确认范围选后 `Ctrl+Z` 能整段回退）。
+22. 连续快速切换设备 → 任务管理器 CPU 不飙升（§8.6 代次取消；本次未碰导入/扫描，抽查即可）。
+
+---
+
 ## 附 · 会话启动提示（复制粘贴即可开新会话）
 
 > **用法**：一次只粘一段。第一句必须要求"先只输出改动计划"，这样如果我理解偏了，你在 2000 token 内就能发现，而不是等我改完 5 个文件。
@@ -570,7 +680,7 @@ cd src-tauri && cargo check --lib
 改完跑 npx tsc --noEmit，并给出 GUI 手测清单。
 ```
 
-### 会话 ②（Phase 2）— 会话 ① 收尾后再用
+### 会话 ②（Phase 2）— ✅ 会话 ② 已完成（见决策日志），下一会话请用会话 ③
 
 ```text
 接着做 docs/ImageFilter-功能实施方案.md 的 Phase 2（撤销/重做）。
