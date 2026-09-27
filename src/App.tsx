@@ -1,6 +1,7 @@
 import { useEffect, useState, useMemo, useRef, useCallback, memo } from "react";
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { useTranslation } from "react-i18next";
+import type { TFunction } from "i18next";
 import { PixelMenu, SEPARATOR, type MenuItem } from "./contextmenu";
 import { FloatingPanel } from "./panel";
 import { PhotoViewer } from "./viewer";
@@ -22,6 +23,20 @@ import { ImportBar } from "./components/import-bar";
 // ═══════════════════════════════════════════════════════════════════
 import { Disk, DiskOne } from "@icon-park/react";
 import type { ScannedPhoto, AnalysisResult } from "./types";
+import type { Patch } from "./undo";
+
+/**
+ * 撤销/重做的 toast 文案。
+ * 在 App 里生成而不是在 useScanner 里: hook 不该依赖 i18n 文案,
+ * 且文案必须随语言切换即时变化(不能在入栈时预格式化)。
+ */
+function patchToast(t: TFunction, p: Patch, kind: "undo" | "redo"): string {
+  const verb = kind === "undo" ? t("toast.undo") : t("toast.undoRedo");
+  const what = p.kind === "rating"
+    ? t("toast.ratingChange", { prev: p.prev, next: p.next })
+    : t("toast.selectionChange", { n: p.next.length });
+  return `${verb}：${what}`;
+}
 
 /**
  * 照片网格项 — memoized 组件:
@@ -138,6 +153,9 @@ function App() {
     togglePreloadFull,
     autoAdvance,
     toggleAutoAdvance,
+    undo,
+    redo,
+    lastUndoPath,
   } = useScanner();
 
   // 图片查看器: viewerIndex=null 关闭, 数字=打开第N张
@@ -151,6 +169,17 @@ function App() {
     setViewerIndex(null);
   }, [activeFolder]);
 
+  // 弹出提示浮窗
+  // (位置在 Ctrl+Z effect 之前: 那个 effect 的依赖数组会被急切求值, showToast 若是
+  //  const 声明在后面就触发 TDZ — 与 viewerIndex 是同一条纪律)
+  const [toast, setToast] = useState<string | null>(null);
+  const toastTimer = useRef<number | undefined>(undefined);
+  const showToast = (msg: string) => {
+    setToast(msg);
+    window.clearTimeout(toastTimer.current);
+    toastTimer.current = window.setTimeout(() => setToast(null), 1200);
+  };
+
   // Disable browser default context menu
   useEffect(() => {
     const handler = (e: MouseEvent) => e.preventDefault();
@@ -158,19 +187,36 @@ function App() {
     return () => window.removeEventListener("contextmenu", handler);
   }, []);
 
-  // 屏蔽 Ctrl+A 全选文本（输入框内除外）
+  // 屏蔽 Ctrl+A 全选文本（输入框内除外）+ Phase 2 的 Ctrl+Z / Ctrl+Shift+Z 撤销重做
+  // 两者共用同一份"输入框豁免"判断, 合并成一个监听器, 少一个 window 事件回调。
+  //
+  // ⚠️ 依赖数组必须含 viewerIndex(与下面快捷键 effect 同一个坑, 交接 §5-7):
+  // 否则查看器打开后闭包里的值仍是 null, 会出现 App 与 viewer 双重撤销 ——
+  // 一次 Ctrl+Z 撤两步。查看器内的撤销由 viewer 自己的 handler 处理。
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if (e.ctrlKey && e.key.toLowerCase() === "a") {
-        const tag = (e.target as HTMLElement)?.tagName;
-        if (tag !== "INPUT" && tag !== "TEXTAREA") {
+      const tag = (e.target as HTMLElement)?.tagName;
+      const inField = tag === "INPUT" || tag === "TEXTAREA"; // 输入框内交给浏览器原生撤销
+      const mod = (e.ctrlKey || e.metaKey) && !e.altKey;
+      const key = e.key.toLowerCase();
+      if (mod && key === "a") {
+        if (!inField) e.preventDefault();
+        return;
+      }
+      if (mod && key === "z") {
+        if (inField || viewerIndex !== null) return;
+        const done = e.shiftKey ? redo() : undo();
+        // 只有真的撤销/重做了才 preventDefault: 空栈时把 Ctrl+Z 让给浏览器,
+        // 避免"明明什么都没撤, 却把原生撤销也吃掉了"
+        if (done) {
           e.preventDefault();
+          showToast(patchToast(t, done, e.shiftKey ? "redo" : "undo"));
         }
       }
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, []);
+  }, [viewerIndex, undo, redo, t]);
 
   useEffect(() => {
     detectDrives();
@@ -266,15 +312,6 @@ function App() {
     (path: string) => handlePhotoClick(path, { ctrlKey: false, shiftKey: false }),
     [handlePhotoClick]
   );
-
-  // 弹出提示浮窗
-  const [toast, setToast] = useState<string | null>(null);
-  const toastTimer = useRef<number | undefined>(undefined);
-  const showToast = (msg: string) => {
-    setToast(msg);
-    window.clearTimeout(toastTimer.current);
-    toastTimer.current = window.setTimeout(() => setToast(null), 1200);
-  };
 
   // 透明毛玻璃背景: 默认开启, 深色/浅色随主题切换
   const [transparentBg, setTransparentBg] = useState<boolean>(() => localStorage.getItem("imagefilter-glass") !== "0");
@@ -617,6 +654,10 @@ function App() {
           selectedPaths={selectedPaths}
           onToggleSelect={toggleSelect}
           autoAdvance={autoAdvance}
+          onUndo={undo}
+          onRedo={redo}
+          undoTargetPath={lastUndoPath}
+          onUndoToast={(p, kind) => showToast(patchToast(t, p, kind))}
         />
       )}
       {/* 弹出提示浮窗 — 渐变出现停留1秒后消失 */}

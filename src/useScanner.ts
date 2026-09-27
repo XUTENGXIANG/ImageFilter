@@ -1,8 +1,13 @@
-import { useState, useCallback, useRef } from "react";
+import { useState, useCallback, useRef, useMemo } from "react";
 import { invoke, convertFileSrc, Channel } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import i18n from "./i18n";
 import type { DriveInfo, ScannedPhoto, FolderEntry, FolderNode, ImportProgress, AnalysisResult } from "./types";
+import {
+  EMPTY_HISTORY, applyRatingPatch, applySelectionPatch, patchPath,
+  popRedo, popUndo, pushPatch,
+  type History, type Patch,
+} from "./undo";
 
 function entryToNode(entry: FolderEntry): FolderNode {
   return {
@@ -66,47 +71,89 @@ export function useScanner() {
   // Multi-select state (Windows Explorer style)
   const [selectedPaths, setSelectedPaths] = useState<Set<string>>(new Set());
   const [lastClicked, setLastClicked] = useState<string | null>(null);
+  // 选择集镜像: 撤销/重做与 clearSelection 要在不新增 useCallback 依赖的前提下读当前值
+  // (加进依赖数组会让所有卡片的 onToggle 引用变化、双层 memo 失效 — 交接 §6 P2-6)。
+  const selectedPathsRef = useRef<Set<string>>(selectedPaths);
+
+  // 选择集的**唯一**写入 wrapper: 同步镜像 + 触发渲染。
+  // 引用恒定(useCallback([]) + setState 引用稳定), 所以不会给任何回调引入新依赖。
+  // 任何地方直接调 setSelectedPaths 都会让镜像过期 → 补丁的 prev 记错。
+  const selectPaths = useCallback((next: Set<string>) => {
+    selectedPathsRef.current = next;
+    setSelectedPaths(next);
+  }, []);
 
   // 后台计数请求代次 — 只有最新一次设备切换的计数结果才允许写回(见 browseDrive)
   const countGenRef = useRef(0);
+
+  // ═══ Phase 2 · 撤销/重做(patch stack) ═══════════════════════════════
+  // 栈放 useState 而不是 useRef: 文档建议的 useRef 与"导出 canUndo/canRedo"
+  // 自相矛盾 —— ref 不触发渲染, 那两个值会永远是首次渲染的 false(谎报)。
+  // {undo, redo} 作为**一个** state 原子更新, 避免两次 setState 把栈撕裂。
+  const [history, setHistory] = useState<History>(EMPTY_HISTORY);
+  const [lastUndoPath, setLastUndoPath] = useState<string | null>(null);
+
+  // 补丁记录: 只由 setRating / 勾选三条路径调用
+  const recordPatch = useCallback((p: Patch) => {
+    setHistory((prev) => pushPatch(prev, p));
+  }, []);
+
+  // 切文件夹 / 切设备必须清空两个栈(文档 Phase 2 关键陷阱): 否则会把 A 文件夹的
+  // 评分/勾选撤销到 B 文件夹的展示上(勾选尤其危险: loadFolder 里已清空 selectedPaths,
+  // 跨文件夹撤销会凭空造出一份选择)。必须**同步**调用, 不能放 effect ——
+  // 切换途中按 Ctrl+Z 不能落到新列表上。
+  const clearHistory = useCallback(() => {
+    setHistory(EMPTY_HISTORY);
+    setLastUndoPath(null);
+  }, []);
+
+  // 勾选变更的唯一提交口: 同步镜像 + 记补丁, 一步都不能漏
+  // (漏了镜像 → 撤销读到旧选择集; 漏了补丁 → 该次勾选撤不回来)
+  const commitSelection = useCallback((next: Set<string>, path: string) => {
+    const prevPaths = [...selectedPathsRef.current];
+    selectPaths(next);
+    setLastClicked(path);
+    recordPatch({ kind: "selection", paths: [...next], prev: prevPaths, next: [...next] });
+  }, [recordPatch, selectPaths]);
 
   const handlePhotoClick = useCallback((path: string, event: { ctrlKey: boolean; shiftKey: boolean }) => {
     const photoPaths = photos.map((p) => p.path);
     if (event.ctrlKey) {
       // Ctrl+click: toggle single
-      setSelectedPaths((prev) => {
-        const next = new Set(prev);
-        if (next.has(path)) next.delete(path); else next.add(path);
-        return next;
-      });
-      setLastClicked(path);
+      const next = new Set(selectedPathsRef.current);
+      if (next.has(path)) next.delete(path); else next.add(path);
+      commitSelection(next, path);
     } else if (event.shiftKey && lastClicked) {
       // Shift+click: select range
       const start = photoPaths.indexOf(lastClicked);
       const end = photoPaths.indexOf(path);
       if (start >= 0 && end >= 0) {
         const [from, to] = start < end ? [start, end] : [end, start];
-        const range = new Set(photoPaths.slice(from, to + 1));
-        setSelectedPaths(range);
+        commitSelection(new Set(photoPaths.slice(from, to + 1)), path);
       }
     } else {
       // 单击: 切换勾选(累积) — 连续点击多张照片保持已勾选的
-      setSelectedPaths((prev) => {
-        const next = new Set(prev);
-        if (next.has(path)) next.delete(path); else next.add(path);
-        return next;
-      });
-      setLastClicked(path);
+      const next = new Set(selectedPathsRef.current);
+      if (next.has(path)) next.delete(path); else next.add(path);
+      commitSelection(next, path);
     }
-  }, [photos, lastClicked]);
+  }, [photos, lastClicked, commitSelection]);
 
   const selectAll = useCallback(() => {
-    setSelectedPaths(new Set(photos.map((p) => p.path)));
-  }, [photos]);
+    const all = photos.map((p) => p.path);
+    const prevPaths = [...selectedPathsRef.current];
+    const next = new Set(all);
+    selectPaths(next);
+    // 全选不移动 lastClicked 锚点(保持现状行为)
+    recordPatch({ kind: "selection", paths: all, prev: prevPaths, next: all });
+  }, [photos, recordPatch, selectPaths]);
 
   const clearSelection = useCallback(() => {
-    setSelectedPaths(new Set());
-  }, []);
+    const prevPaths = [...selectedPathsRef.current];
+    const next = new Set<string>();
+    selectPaths(next);
+    recordPatch({ kind: "selection", paths: [], prev: prevPaths, next: [] });
+  }, [recordPatch, selectPaths]);
 
   // Import state
   const [importing, setImporting] = useState(false);
@@ -124,13 +171,89 @@ export function useScanner() {
   const [sortBy, setSortBy] = useState<"name" | "type" | "date">("name");
   const [starFilter, setStarFilter] = useState(0); // 0=all, 1-5=filter
 
+  // 评分镜像: 撤销/重做要在调用处同步读到"当前星级", 不能等 re-render
+  // (理由见下面 undo 的注释); 同时它让 setRating 无需依赖 ratings,
+  // 避免所有卡片的 onRate 换引用、双层 memo 失效。
+  const ratingsRef = useRef<Record<string, number>>(ratings);
+
   const setRating = useCallback((path: string, stars: number) => {
     setRatings((prev) => {
+      const before = prev[path] ?? 0;
+      // 无变化早退: 既避免多余渲染, 也让"连点同一颗星"根本不产生补丁
+      // (viewer 星条第二次点击会传 0, 这里挡住的是真正的重复赋值)
+      if (before === stars) return prev;
+      recordPatch({ kind: "rating", path, prev: before, next: stars });
       const next = { ...prev, [path]: stars };
+      // 副作用写在 updater 内是既有写法(localStorage 本来就在这里), 但 React 19
+      // StrictMode(main.tsx 有 <React.StrictMode>)会把 updater 调两次 —— 所以
+      // pushPatch 必须做栈顶去重, 且去重判据只比较稳定原语(见 src/undo.ts 文件头)。
+      ratingsRef.current = next;
       try { localStorage.setItem("imagefilter-ratings", JSON.stringify(next)); } catch {}
       return next;
     });
+  }, [recordPatch]);
+
+  // 撤销 / 重做: 只回放补丁, 评分仍汇流到 setRating 的同一份 localStorage key
+  //
+  // 为什么要用 ratingsRef 而不是闭包里的 ratings: React 的 state 更新是异步的,
+  // 同一 tick 内连按两次 Ctrl+Z(keydown 连发)若从闭包里的 ratings 求逆, 两次会读到
+  // 同一份旧值 —— 第二条补丁被静默吞掉, 用户看到"按了没反应"。
+  // 镜像在 updater 内赋值, 与既有的 localStorage.setItem 同款写法
+  // (StrictMode 双调用只是幂等写两次同一个值, 且 applied 只被赋同一个补丁)。
+  const undo = useCallback((): Patch | null => {
+    let applied: Patch | null = null;
+    setHistory((prev) => {
+      const { patch, history: next } = popUndo(prev);
+      if (!patch) return prev;
+      applied = patch;
+      if (patch.kind === "rating") {
+        const next$ = applyRatingPatch(ratingsRef.current, patch);
+        if (next$ !== ratingsRef.current) {
+          ratingsRef.current = next$;
+          try { localStorage.setItem("imagefilter-ratings", JSON.stringify(next$)); } catch {}
+          setRatings(next$);
+        }
+      } else {
+        const next$ = applySelectionPatch(selectedPathsRef.current, patch);
+        if (next$ !== selectedPathsRef.current) selectPaths(next$);
+      }
+      return next;
+    });
+    // 让查看器能回到"被撤销的那张"(自动前进可能已经把用户带到下一张了);
+    // 用 state 而不是 ref: 它要在同一次提交里被 App 作为 prop 传给查看器
+    const target = applied ? patchPath(applied) : null;
+    if (target) setLastUndoPath(target);
+    return applied;
   }, []);
+
+  const redo = useCallback((): Patch | null => {
+    let applied: Patch | null = null;
+    setHistory((prev) => {
+      const { patch, history: next } = popRedo(prev);
+      if (!patch) return prev;
+      applied = patch;
+      // 重做 = 把补丁的 prev/next 对调后再回放(生成新对象, 不改动栈里那份)
+      if (patch.kind === "rating") {
+        const next$ = applyRatingPatch(ratingsRef.current, { kind: "rating", path: patch.path, prev: patch.next, next: patch.prev });
+        if (next$ !== ratingsRef.current) {
+          ratingsRef.current = next$;
+          try { localStorage.setItem("imagefilter-ratings", JSON.stringify(next$)); } catch {}
+          setRatings(next$);
+        }
+      } else {
+        const next$ = applySelectionPatch(selectedPathsRef.current, { kind: "selection", paths: patch.paths, prev: patch.next, next: patch.prev });
+        if (next$ !== selectedPathsRef.current) selectPaths(next$);
+      }
+      return next;
+    });
+    const target = applied ? patchPath(applied) : null;
+    if (target) setLastUndoPath(target);
+    return applied;
+  }, []);
+
+  const canUndo = useMemo(() => history.undo.length > 0, [history]);
+  const canRedo = useMemo(() => history.redo.length > 0, [history]);
+
   const [destDir, setDestDir] = useState<string | null>(null);
   const [folderRule, setFolderRule] = useState("");
   const [fileRule, setFileRule] = useState("");
@@ -175,6 +298,7 @@ export function useScanner() {
   }, []);
 
   const browseDrive = useCallback(async (mountPoint: string) => {
+    clearHistory(); // 切设备清空撤销栈(见 clearHistory 注释)
     setBrowsing(true);
     setSelectedDrive(mountPoint);
     allowAssetDir(mountPoint); // asset 协议按需放行该设备
@@ -219,13 +343,14 @@ export function useScanner() {
   }, []);
 
   const loadFolder = useCallback(async (folderPath: string) => {
+    clearHistory(); // 切文件夹清空撤销栈(见 clearHistory 注释), 必须在第一个 await 之前
     setLoadingFolder(true);
     setActiveFolder(folderPath);
     allowAssetDir(folderPath); // asset 协议按需放行该文件夹
     setPhotos([]);
     setThumbnails({});
     setSelectedPhoto(null);
-    setSelectedPaths(new Set());
+    selectPaths(new Set()); // 必须走 wrapper: 否则选择集镜像会留着上一个文件夹的勾选
 
     try {
       const [photosList, subEntry] = await Promise.all([
@@ -385,6 +510,9 @@ export function useScanner() {
     customFolder, setCustomFolder, useCustomFolder, setUseCustomFolder,
     analyzing, analysis, runAnalysis, stopAnalysis,
     ratings, setRating, sortBy, setSortBy, starFilter, setStarFilter,
+    // Phase 2: canUndo/canRedo 已导出, 但当前 UI(帮助文案)只写静态说明, 暂未消费
+    // —— 若要加"撤销"按钮/置灰状态, 直接用这两个布尔值即可(它们随栈变化重渲染)
+    undo, redo, canUndo, canRedo, lastUndoPath,
     pickDestDir, startImport, preloadFull, togglePreloadFull,
     autoAdvance, toggleAutoAdvance,
   };

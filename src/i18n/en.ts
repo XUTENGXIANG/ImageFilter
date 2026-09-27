@@ -53,6 +53,8 @@ export default {
     nav: "Navigate (viewer)",
     reset: "Reset (viewer)",
     actual: "1:1 actual pixels",
+    undo: "Ctrl+Z",
+    undoDesc: "Undo rating / selection (this session only; cleared when switching folder or device)",
     select: "Select (viewer)",
     space: "Space",
     ctrlClick: "Ctrl+Click",
@@ -202,6 +204,14 @@ export default {
   panel: {
     expandLeft: "Expand devices panel",
     expandRight: "Expand details panel",
+  },
+
+  // ── Toast ──
+  toast: {
+    undo: "Undid",
+    undoRedo: "Redid",
+    ratingChange: "{{prev}}★ → {{next}}★",
+    selectionChange: "{{n}} selected",
   },
 
 };

@@ -56,6 +56,8 @@ export default {
     nav: "切换(查看器)",
     reset: "重置(查看器)",
     actual: "1:1 实际像素",
+    undo: "Ctrl+Z",
+    undoDesc: "撤销评分/勾选(仅本次会话，切文件夹或设备后清空)",
     select: "勾选(查看器)",
     space: "空格",
     ctrlClick: "Ctrl+点击",
@@ -214,6 +216,14 @@ export default {
   panel: {
     expandLeft: "展开设备面板",
     expandRight: "展开信息面板",
+  },
+
+  // ── 提示浮窗(toast) ──
+  toast: {
+    undo: "已撤销",
+    undoRedo: "已重做",
+    ratingChange: "{{prev}}★ → {{next}}★",
+    selectionChange: "勾选 {{n}} 张",
   },
 
 };

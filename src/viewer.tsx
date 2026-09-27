@@ -7,6 +7,7 @@ import { useTranslation } from "react-i18next";
 // ═══════════════════════════════════════════════════════
 import { Close, Left, Right, RotateOne, Rotate } from "@icon-park/react";
 import type { ScannedPhoto } from "./types";
+import type { Patch } from "./undo";
 import { Tip } from "./components/tip";
 
 interface Props {
@@ -20,6 +21,13 @@ interface Props {
   selectedPaths: Set<string>; // 多选状态(与缩略图联动)
   onToggleSelect: (path: string) => void; // 切换勾选
   autoAdvance: boolean; // 评分后自动跳到下一张(设置项, 默认开)
+  // ── Phase 2 撤销/重做 ──
+  // 可空: 查看器是纯展示组件, 没接撤销能力时 Ctrl+Z 直接不管(不 preventDefault)
+  onUndo?: () => Patch | null;
+  onRedo?: () => Patch | null;
+  /** 最近一次撤销所作用的那张照片: 撤销前先把画面调回它, 用户才看得见撤了什么 */
+  undoTargetPath?: string | null;
+  onUndoToast?: (patch: Patch, kind: "undo" | "redo") => void;
 }
 
 function preloadImage(src: string): Promise<string> {
@@ -53,7 +61,7 @@ function fitScaleOf(el: HTMLImageElement): number {
   return Math.min(el.offsetWidth / el.naturalWidth, el.offsetHeight / el.naturalHeight);
 }
 
-export function PhotoViewer({ photos, index, ratings, onRate, onClose, originRect, thumbnails, selectedPaths, onToggleSelect, autoAdvance }: Props) {
+export function PhotoViewer({ photos, index, ratings, onRate, onClose, originRect, thumbnails, selectedPaths, onToggleSelect, autoAdvance, onUndo, onRedo, undoTargetPath, onUndoToast }: Props) {
   const { t } = useTranslation();
   const [cur, setCur] = useState(index);
   // 缩放动画: entering=true 从缩略图位置放大; leaving=true 缩回后关闭
@@ -353,6 +361,29 @@ export function PhotoViewer({ photos, index, ratings, onRate, onClose, originRec
       // 长按(auto-repeat)不重复触发一次性动作(评分): 自动前进开启时长按 3
       // 会把后续几十张全打成 3 星。←/→ 不在名单内, 保留长按连翻。
       if (e.repeat && NON_REPEAT_KEYS.has(e.key.toLowerCase())) return;
+      // Phase 2: 查看器内的 Ctrl+Z / Ctrl+Shift+Z。
+      // App 的 window 监听器在查看器打开时**整体早退**(App.tsx 的 viewerIndex 判断),
+      // 所以这里是查看器内撤销的唯一入口, 不会双触发。
+      // `z` 在 NON_REPEAT_KEYS 里(防长按 Z 连切 1:1), 故长按 Ctrl+Z 不会连撤 ——
+      // 这是有意的: 否则手抖按住就是"一口气退掉几十步"且不可预期, 本 Phase 不做节流。
+      const mod = (e.ctrlKey || e.metaKey) && !e.altKey;
+      if (mod && e.key.toLowerCase() === "z") {
+        if (!onUndo || !photo) return;             // 未接撤销能力/图未就绪: 不抢浏览器原生撤销
+        // 撤销要作用在"被改的那张"上: 自动前进可能已经把画面带到下一张了,
+        // 先把画面调回补丁里的那张, 用户才看得见撤了什么(见 docs 会话 ②/§3.3)
+        if (undoTargetPath && undoTargetPath !== photo.path) {
+          const i = photos.findIndex((p) => p.path === undoTargetPath);
+          if (i >= 0) navigateTo(i);
+        }
+        const done = e.shiftKey ? (onRedo ? onRedo() : null) : onUndo();
+        // 不调 autoNext(): 撤销是"我改主意", 一撤销就前进会让被撤的那张立刻滑走。
+        // 也不碰 scale/offset/rotation/pixelView —— 撤销不改路径就不该动画面状态。
+        if (done) {
+          e.preventDefault();
+          onUndoToast?.(done, e.shiftKey ? "redo" : "undo");
+        }
+        return;
+      }
       // 列表收缩到当前索引之外时 photo 会是 undefined — 必须在访问 photo.path 之前挡住
       if (!photo) return;
       if (e.key === "Escape") { handleClose(); }
@@ -371,7 +402,7 @@ export function PhotoViewer({ photos, index, ratings, onRate, onClose, originRec
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [photo, cur, photos.length, navigateTo, handleClose, onRate, onToggleSelect, autoNext, togglePixelView]);
+  }, [photo, cur, photos.length, navigateTo, handleClose, onRate, onToggleSelect, autoNext, togglePixelView, onUndo, onRedo, undoTargetPath, onUndoToast]);
 
   // Wheel zoom — 缩到<=1时居中(重置offset)。滚轮改过缩放就不再是 1:1(否则 Z 会陷入死循环)
   const onWheel = useCallback((e: React.WheelEvent) => {
