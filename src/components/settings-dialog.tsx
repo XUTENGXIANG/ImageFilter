@@ -73,12 +73,15 @@ export function SettingsDialog({
   const { t } = useTranslation();
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="w-[420px] max-h-[80vh] overflow-auto">
+      {/* max-h 从 80vh 抬到 88vh + 行距 4→3: 让 9 行设置尽量一屏放下(会话 ③ 加了
+          "颜色标签快捷键"那一行后, 内容超过 80vh → 右侧滚动条回来了)。
+          no-scrollbar 兜底: 万一窗口太矮还是要滚, 滚轮/触控板照旧可用, 但不显示侧边滚动条。 */}
+      <DialogContent className="w-[420px] max-h-[88vh] overflow-auto no-scrollbar">
         <DialogHeader>
           <DialogTitle>{t("settings.title")}</DialogTitle>
           <DialogDescription>{t("settings.subtitle")}</DialogDescription>
         </DialogHeader>
-        <div className="space-y-4 py-2">
+        <div className="space-y-3 py-2">
           <SettingRow title={t("settings.language")} desc={t("settings.languageDesc")}>
             <div className="flex rounded-md border border-border overflow-hidden text-sm">
               {(["zh", "en"] as Lang[]).map((l) => (
