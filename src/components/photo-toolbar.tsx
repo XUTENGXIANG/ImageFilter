@@ -71,14 +71,18 @@ export function PhotoToolbar({
     <CollapsibleBar align="top" expanded={expanded} onToggle={onToggle} collapseInside>
       {selectedDrive && photosCount > 0 ? (
         <>
-        <div className="flex items-center px-4 h-9 gap-2">
-          <button onClick={onSelectAll} className="text-[10px] text-zinc-500 hover:text-zinc-300">{t("toolbar.selectAll")}</button>
-          <button onClick={onClearSelection} className="text-[10px] text-zinc-500 hover:text-zinc-300">{t("toolbar.clear")}</button>
-          <span className="text-[10px] text-zinc-600">{t("toolbar.selected", { n: selectedCount, total: photosCount })}</span>
+        {/* 窄窗口下这一行会挤爆(Phase 4 又加了"排序方向"和"筛选"两个控件):
+            用 flex-wrap 换成多行, 并给每项 shrink-0 + whitespace-nowrap ——
+            否则 flex 会把按钮压窄、文字竖着折成两行(全/选、AI 分/析)。
+            min-h-9 + py-1 保证只有一行时高度与原来完全相同。 */}
+        <div className="flex flex-wrap items-center px-4 min-h-9 py-1 gap-2">
+          <button onClick={onSelectAll} className="shrink-0 whitespace-nowrap text-[10px] text-zinc-500 hover:text-zinc-300">{t("toolbar.selectAll")}</button>
+          <button onClick={onClearSelection} className="shrink-0 whitespace-nowrap text-[10px] text-zinc-500 hover:text-zinc-300">{t("toolbar.clear")}</button>
+          <span className="shrink-0 whitespace-nowrap text-[10px] text-zinc-600">{t("toolbar.selected", { n: selectedCount, total: photosCount })}</span>
           <select
             value={sortBy}
             onChange={(e) => onSortByChange(e.target.value as "name" | "type" | "date")}
-            className="bg-zinc-800 text-[10px] text-zinc-400 px-1 py-0.5 rounded border border-zinc-700"
+            className="shrink-0 bg-zinc-800 text-[10px] text-zinc-400 px-1 py-0.5 rounded border border-zinc-700"
           >
             <option value="name">{t("toolbar.sortName")}</option>
             <option value="type">{t("toolbar.sortType")}</option>
@@ -86,10 +90,10 @@ export function PhotoToolbar({
           </select>
           {/* 排序方向: asc = "今天的观感"(name/type A→Z, date 新→旧), 见 docs 4.5 ——
               所以提示只写"切换方向", 不写"升序/降序"(否则与日期的字面含义打架) */}
-          <Tip label={t("toolbar.sortDir")} className="flex items-center">
+          <Tip label={t("toolbar.sortDir")} className="flex items-center shrink-0">
           <button
             onClick={onToggleSortDir}
-            className="w-5 h-5 flex items-center justify-center rounded text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800"
+            className="shrink-0 w-5 h-5 flex items-center justify-center rounded text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800"
           >
             {sortDir === "asc"
               ? <SortAmountUp theme="outline" size="13" strokeWidth={3} />
@@ -100,7 +104,7 @@ export function PhotoToolbar({
             <button
               key={s}
               onClick={() => onStarFilterChange(starFilter === s ? 0 : s)}
-              className={`text-[10px] px-1 rounded ${starFilter === s ? "text-amber-400 bg-amber-400/10" : "text-zinc-600 hover:text-zinc-400"}`}
+              className={`shrink-0 whitespace-nowrap text-[10px] px-1 rounded ${starFilter === s ? "text-amber-400 bg-amber-400/10" : "text-zinc-600 hover:text-zinc-400"}`}
             >
               {s === 0 ? t("toolbar.all") : "★".repeat(s)}
             </button>
@@ -108,18 +112,18 @@ export function PhotoToolbar({
           {/* Phase 4: 标签 + 分析结果收进这里(那一行本来就满, 硬塞会挤爆) */}
           <button
             onClick={() => setFilterOpen((v) => !v)}
-            className={`text-[10px] px-2 py-0.5 rounded ${
+            className={`shrink-0 whitespace-nowrap text-[10px] px-2 py-0.5 rounded ${
               filtersActive || filterOpen ? "bg-zinc-700 text-zinc-200" : "bg-zinc-800 text-zinc-500 hover:text-zinc-300"
             }`}
           >
             {t("toolbar.filter")}
           </button>
           <ThumbSizeSlider />
-          <div className="flex-1" />
+          {/* ml-auto 而不是 flex-1 占位块: 换行后这组按钮仍贴右, 占位块会让它留在左侧 */}
           <button
             onClick={() => analyzing ? onStopAnalysis() : onAnalyzeAll()}
             title={!analyzing && analyzeCount > 0 ? t("toolbar.aiSelected", { n: analyzeCount }) : undefined}
-            className={`text-[10px] px-2 py-0.5 rounded text-zinc-400 ${
+            className={`ml-auto shrink-0 whitespace-nowrap text-[10px] px-2 py-0.5 rounded text-zinc-400 ${
               analyzing
                 ? "bg-red-900/50 hover:bg-red-800/50 text-red-400"
                 : "bg-zinc-800 hover:bg-zinc-700"
@@ -129,7 +133,7 @@ export function PhotoToolbar({
             {analyzing ? t("toolbar.stop") : analyzeCount > 0 ? t("toolbar.aiCount", { n: analyzeCount }) : t("toolbar.ai")}
           </button>
           {/* 收起按钮 — 集成在主体内 */}
-          <Tip label={t("bars.collapse")} className="flex items-center">
+          <Tip label={t("bars.collapse")} className="flex items-center shrink-0">
           <button
             onClick={onToggle}
             className="w-6 h-6 flex items-center justify-center rounded hover:bg-zinc-800 text-zinc-500 hover:text-zinc-300 transition-colors"
@@ -140,10 +144,10 @@ export function PhotoToolbar({
         </div>
         {filterOpen && (
           <div className="flex items-center flex-wrap gap-2 px-4 pb-2 -mt-1 text-[10px] text-zinc-600">
-            <span className="text-zinc-500">{t("label.title")}</span>
+            <span className="shrink-0 whitespace-nowrap text-zinc-500">{t("label.title")}</span>
             <button
               onClick={() => onLabelFilterChange([])}
-              className={`px-1 rounded ${labelFilter.length === 0 ? "text-zinc-200 bg-zinc-700" : "text-zinc-600 hover:text-zinc-400"}`}
+              className={`shrink-0 whitespace-nowrap px-1 rounded ${labelFilter.length === 0 ? "text-zinc-200 bg-zinc-700" : "text-zinc-600 hover:text-zinc-400"}`}
             >{t("toolbar.all")}</button>
             {/* 色卡用 title 而不是 Tip: 这一层有 overflow-hidden, Tip 的绝对定位气泡会被裁掉 */}
             {LABEL_ORDER.map((l) => (
@@ -151,18 +155,18 @@ export function PhotoToolbar({
                 key={l}
                 onClick={() => toggleLabel(l)}
                 title={t(`label.${l}`)}
-                className={`w-4 h-4 rounded-full border ${
+                className={`shrink-0 w-4 h-4 rounded-full border ${
                   labelFilter.includes(l)
                     ? "ring-2 ring-white/70 border-white/70"
                     : "border-white/20 opacity-60 hover:opacity-100"
                 } ${LABEL_BG[l]}`}
               />
             ))}
-            <span className="ml-2 text-zinc-500">{t("toolbar.flags")}</span>
+            <span className="shrink-0 whitespace-nowrap ml-2 text-zinc-500">{t("toolbar.flags")}</span>
             <select
               value={flagFilter}
               onChange={(e) => onFlagFilterChange(e.target.value as FlagFilter)}
-              className="bg-zinc-800 text-[10px] text-zinc-400 px-1 py-0.5 rounded border border-zinc-700"
+              className="shrink-0 bg-zinc-800 text-[10px] text-zinc-400 px-1 py-0.5 rounded border border-zinc-700"
             >
               <option value="all">{t("toolbar.all")}</option>
               <option value="blurry">{t("grid.blurry")}</option>
@@ -171,10 +175,9 @@ export function PhotoToolbar({
               <option value="duplicate">{t("grid.duplicate")}</option>
               <option value="best">{t("grid.best")}</option>
             </select>
-            <div className="flex-1" />
             <button
               onClick={onClearFilters}
-              className="px-2 py-0.5 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-300"
+              className="ml-auto shrink-0 whitespace-nowrap px-2 py-0.5 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-300"
             >{t("toolbar.clearFilters")}</button>
           </div>
         )}
