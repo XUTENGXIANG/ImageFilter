@@ -696,7 +696,7 @@ cd src-tauri && cargo check --lib
 先说明为何不补；不许改 Rust；i18n 双写。
 ```
 
-### 会话 ③（Phase 4）— 会话 ② 收尾后再用
+### 会话 ③（Phase 4）— 会话 ② 已完成，现在可用
 
 ```text
 接着做 docs/ImageFilter-功能实施方案.md 的 Phase 4（颜色标签 + 可叠加筛选）。
