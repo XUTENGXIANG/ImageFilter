@@ -637,7 +637,7 @@ cd src-tauri && cargo check --lib
 
 ### 会话 ③ · Phase 4（2026-09-27）
 
-- **代码状态**：起点 HEAD `344cdb2` · 起点工作区干净（仅 `task-7-review-package.decoded.txt` 未跟踪，不属本项目；`src-tauri/Cargo.toml` 有非本会话的**行尾符噪音**，刻意不 add）· 提交 `7e9a959 feat(label): 颜色标签与星级/标签/分析三维叠加筛选`（13 文件 +647/−61）、`docs: 会话 ③ 手测清单 + 决策日志` · `npx tsc --noEmit` 改前/改后各一次均 exit 0 · `npx vite build` exit 0 · i18n 静态校验 exit 0（zh/en 各 **191** 个叶子 key 完全对齐；源码 186 个字面 `t("…")` 全部可解析，其余 5 个由 `label.` 动态前缀覆盖；无死 key、无双括号占位符）· `src/undo.ts` 纯函数冒烟 **27/27**
+- **代码状态**：起点 HEAD `344cdb2` · 起点工作区干净（仅 `task-7-review-package.decoded.txt` 未跟踪，不属本项目；`src-tauri/Cargo.toml` 有非本会话的**行尾符噪音**，刻意不 add）· 提交 `7e9a959 feat(label): 颜色标签与星级/标签/分析三维叠加筛选`（13 文件 +647/−61）· 本会话 HEAD `7a42804`（仅文档：Phase 4 方案定稿 + 会话 ③ 手测清单与决策日志）· `npx tsc --noEmit` 改前/改后各一次均 exit 0 · `npx vite build` exit 0 · i18n 静态校验 exit 0（zh/en 各 **191** 个叶子 key 完全对齐；源码 186 个字面 `t("…")` 全部可解析，其余 5 个由 `label.` 动态前缀覆盖；无死 key、无双括号占位符）· `src/undo.ts` 纯函数冒烟 **27/27**
 - **已定决定**：
   - 标签存独立 key `imagefilter-labels`，**清除 = 删键**（与 ratings 保留 `path: 0` 刻意不同），读取时丢非法值 —— Phase 5 要拿这份 map 直写 `xmp:Label`，不能带脏值/半成品键；
   - 新增 `src/labels.ts` 承载 `Label` / `LABEL_ORDER` / `LABEL_BG` / `readLabels` / `isLabelChord`：**展示组件不许 import `useScanner`**（那会把 `@tauri-apps/api` 拖进纯展示组件），类型由 `useScanner` `export type` 转发；
