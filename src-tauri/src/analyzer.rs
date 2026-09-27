@@ -751,6 +751,35 @@ mod tests {
         }
     }
 
+    /// 标定辅助(默认忽略): 计时目录递归计数(count_folders 的核心),
+    /// 用于评估"切换设备触发全盘遍历"的成本。
+    ///
+    /// 运行: $env:IMAGEFILTER_COUNT_PATHS="C:\Windows\System32;C:\Program Files";
+    ///       cargo test --lib bench_count_folder -- --ignored --nocapture
+    #[test]
+    #[ignore = "calibration helper — 需要指定 IMAGEFILTER_COUNT_PATHS"]
+    fn bench_count_folder() {
+        let Ok(paths) = std::env::var("IMAGEFILTER_COUNT_PATHS") else {
+            println!("未设置 IMAGEFILTER_COUNT_PATHS, 跳过");
+            return;
+        };
+        for p in paths.split(';').filter(|s| !s.trim().is_empty()) {
+            let path = std::path::PathBuf::from(p.trim());
+            if !path.is_dir() {
+                println!("跳过(不是目录): {}", path.display());
+                continue;
+            }
+            let t = std::time::Instant::now();
+            let n = crate::scanner::browse::count_photos_recursive_for_bench(&path);
+            println!(
+                "{:>8.2}s  照片数={:<8} {}",
+                t.elapsed().as_secs_f64(),
+                n,
+                path.display()
+            );
+        }
+    }
+
     #[test]
     fn exposure_check_luma_uses_histogram_thresholds() {
         let over = image::GrayImage::from_pixel(100, 100, image::Luma([255]));

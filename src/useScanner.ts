@@ -1,4 +1,4 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useRef } from "react";
 import { invoke, convertFileSrc, Channel } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import i18n from "./i18n";
@@ -66,6 +66,9 @@ export function useScanner() {
   // Multi-select state (Windows Explorer style)
   const [selectedPaths, setSelectedPaths] = useState<Set<string>>(new Set());
   const [lastClicked, setLastClicked] = useState<string | null>(null);
+
+  // 后台计数请求代次 — 只有最新一次设备切换的计数结果才允许写回(见 browseDrive)
+  const countGenRef = useRef(0);
 
   const handlePhotoClick = useCallback((path: string, event: { ctrlKey: boolean; shiftKey: boolean }) => {
     const photoPaths = photos.map((p) => p.path);
@@ -175,17 +178,22 @@ export function useScanner() {
       setFolderTree(root);
 
       // Background: count folder photos
+      // 只有最新一次切换的结果才允许写回: 连续切换设备时旧请求会晚到,
+      // 若直接 applyCounts 会把已经换掉的设备树覆盖成旧数据。
+      // (真正省 CPU 的是后端: count_folders 内部有代次取消 + 固定/网络盘跳过递归计数)
       const folderPaths = entry.subfolders.map((f) => f.path);
       if (folderPaths.length > 0) {
+        const myGen = ++countGenRef.current;
         setCounting(true);
         invoke<Record<string, number>>("count_folders", { folderPaths })
           .then((map) => {
+            if (myGen !== countGenRef.current) return; // 已被后续切换取代
             setFolderTree((prev) => applyCounts(prev, map));
             setCounting(false);
           })
           .catch((err) => {
             console.error("count_folders:", err);
-            setCounting(false);
+            if (myGen === countGenRef.current) setCounting(false);
           });
       }
     } catch (err) {
