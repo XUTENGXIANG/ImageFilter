@@ -14,7 +14,9 @@ export function HelpDialog({
   const { t } = useTranslation();
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="w-[480px] max-h-[80vh] overflow-auto">
+      {/* 与设置对话框同一套: 88vh + no-scrollbar(保留滚动、隐藏滚动条)。
+          全仓库的滚动容器一律这样, 见 docs 「共同的前置约束」第 9 条 */}
+      <DialogContent className="w-[480px] max-h-[88vh] overflow-auto no-scrollbar">
         <DialogHeader>
           <DialogTitle>{t("help.title")}</DialogTitle>
           <DialogDescription>{t("help.subtitle")}</DialogDescription>
