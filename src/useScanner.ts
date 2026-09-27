@@ -2,12 +2,13 @@ import { useState, useCallback, useRef, useMemo } from "react";
 import { invoke, convertFileSrc, Channel } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import i18n from "./i18n";
-import type { DriveInfo, ScannedPhoto, FolderEntry, FolderNode, ImportProgress, AnalysisResult } from "./types";
+import type { DriveInfo, ScannedPhoto, FolderEntry, FolderNode, ImportProgress, AnalysisResult, FlagFilter } from "./types";
 import {
-  EMPTY_HISTORY, applyRatingPatch, applySelectionPatch, patchPath,
+  EMPTY_HISTORY, applyLabelPatch, applyRatingPatch, applySelectionPatch, patchPath,
   popRedo, popUndo, pushPatch,
   type History, type Patch,
 } from "./undo";
+import { LABELS_STORAGE_KEY, readLabels, type Label } from "./labels";
 
 function entryToNode(entry: FolderEntry): FolderNode {
   return {
@@ -70,7 +71,12 @@ export function useScanner() {
 
   // Multi-select state (Windows Explorer style)
   const [selectedPaths, setSelectedPaths] = useState<Set<string>>(new Set());
-  const [lastClicked, setLastClicked] = useState<string | null>(null);
+  // Shift 范围选的锚点(上次点击的那张)。**故意用 ref 而不是 state**
+  // (交接文档 §6 P2-6): 进依赖数组会让 handlePhotoClick 每次点击都换引用,
+  // 卡片的 onToggle 随之换引用、双层 memo 全失效。
+  // 只由 commitSelection 写、只由 handlePhotoClick 的 Shift 分支读, 都在事件处理器里,
+  // 不参与渲染 —— 所以它**不许**出现在任何依赖数组里(放进去就等于退回 state)。
+  const lastClickedRef = useRef<string | null>(null);
   // 选择集镜像: 撤销/重做与 clearSelection 要在不新增 useCallback 依赖的前提下读当前值
   // (加进依赖数组会让所有卡片的 onToggle 引用变化、双层 memo 失效 — 交接 §6 P2-6)。
   const selectedPathsRef = useRef<Set<string>>(selectedPaths);
@@ -93,10 +99,39 @@ export function useScanner() {
   const [history, setHistory] = useState<History>(EMPTY_HISTORY);
   const [lastUndoPath, setLastUndoPath] = useState<string | null>(null);
 
-  // 补丁记录: 只由 setRating / 勾选三条路径调用
+  // 补丁记录: 只由 setRating / 勾选三条路径 / setLabel 调用
   const recordPatch = useCallback((p: Patch) => {
     setHistory((prev) => pushPatch(prev, p));
   }, []);
+
+  // ── Phase 4 · 颜色标签 ───────────────────────────────────────────────
+  // 独立 localStorage key(不动 imagefilter-ratings); 清除 = 删键, 读取时丢非法值
+  // —— 取舍见 src/labels.ts 文件头与 docs 4.1 / 4.5。
+  const [labels, setLabels] = useState<Record<string, Label>>(readLabels);
+
+  // 标签镜像: 与 ratingsRef 同款 —— 撤销要在同一 tick 内读到"当前"标签
+  // (连按两次 Ctrl+Z 时读闭包 state 会两次拿到旧值、静默丢掉第二条补丁),
+  // 同时让 setLabel 不必依赖 labels, 卡片 onLabel 引用稳定(双层 memo 不失效)。
+  const labelsRef = useRef<Record<string, Label>>(labels);
+
+  // 标签的**唯一写入点**(docs 前置约束 6): 无变化早退 → 记补丁 → 镜像 → 落盘。
+  // 任何地方直接调 setLabels 或直接写 localStorage 都会让撤销漏掉这一步 / 镜像过期。
+  const setLabel = useCallback((path: string, label: Label | null) => {
+    setLabels((prev) => {
+      // 无变化早退: 既避免多余渲染, 也让"Ctrl+2 长按连发"根本不产生补丁
+      // (含"给一张没有标签的照片清标签"这种空操作)
+      const before = prev[path] ?? null;
+      if (before === label) return prev;
+      recordPatch({ kind: "label", path, prev: before, next: label });
+      const next = { ...prev };
+      if (label === null) delete next[path]; else next[path] = label;
+      // 副作用写在 updater 内是既有写法(localStorage 本来就在这里); StrictMode 会把
+      // updater 调两次, 所以 pushPatch 必须做栈顶去重(见 src/undo.ts 不变式 1)。
+      labelsRef.current = next;
+      try { localStorage.setItem(LABELS_STORAGE_KEY, JSON.stringify(next)); } catch {}
+      return next;
+    });
+  }, [recordPatch]);
 
   // 切文件夹 / 切设备必须清空两个栈(文档 Phase 2 关键陷阱): 否则会把 A 文件夹的
   // 评分/勾选撤销到 B 文件夹的展示上(勾选尤其危险: loadFolder 里已清空 selectedPaths,
@@ -112,7 +147,10 @@ export function useScanner() {
   const commitSelection = useCallback((next: Set<string>, path: string) => {
     const prevPaths = [...selectedPathsRef.current];
     selectPaths(next);
-    setLastClicked(path);
+    // 锚点同步写(不触发渲染): 三个分支(Ctrl / Shift / 单击)都走这里,
+    // 锚点都指向"本次点击的 path" —— 与改 ref 之前逐字节一致:
+    // Shift 连点 = 从上一个末端延伸/回缩。
+    lastClickedRef.current = path;
     recordPatch({ kind: "selection", paths: [...next], prev: prevPaths, next: [...next] });
   }, [recordPatch, selectPaths]);
 
@@ -123,21 +161,28 @@ export function useScanner() {
       const next = new Set(selectedPathsRef.current);
       if (next.has(path)) next.delete(path); else next.add(path);
       commitSelection(next, path);
-    } else if (event.shiftKey && lastClicked) {
-      // Shift+click: select range
-      const start = photoPaths.indexOf(lastClicked);
+    } else if (event.shiftKey && lastClickedRef.current) {
+      // Shift+click: 范围选。锚点先从 ref 取到局部变量再算 —— 必须**先读后写**,
+      // 因为 commitSelection 会把锚点改成"本次点击的 path"。
+      // 注意: 基准仍是 photos(扫描顺序), 不是 sortedPhotos(可见顺序),
+      // 所以开着筛选/按日期排序时范围"看起来不对"是**既有行为**, Phase 4 不改它
+      // (要改得把可见顺序从 App 透传进 hook, 属另一次重构; 见 docs 4.3 遗留)。
+      const anchor = lastClickedRef.current;
+      const start = photoPaths.indexOf(anchor);
       const end = photoPaths.indexOf(path);
+      // 锚点已不在列表里(跨文件夹、或被筛掉) → 与改前一样不产生任何补丁
       if (start >= 0 && end >= 0) {
         const [from, to] = start < end ? [start, end] : [end, start];
         commitSelection(new Set(photoPaths.slice(from, to + 1)), path);
       }
     } else {
       // 单击: 切换勾选(累积) — 连续点击多张照片保持已勾选的
+      // (Shift 但锚点为 null 时也落到这里: 退化成普通点击, 不是静默无操作)
       const next = new Set(selectedPathsRef.current);
       if (next.has(path)) next.delete(path); else next.add(path);
       commitSelection(next, path);
     }
-  }, [photos, lastClicked, commitSelection]);
+  }, [photos, commitSelection]);
 
   const selectAll = useCallback(() => {
     const all = photos.map((p) => p.path);
@@ -163,6 +208,14 @@ export function useScanner() {
   // AI analysis
   const [analyzing, setAnalyzing] = useState(false);
   const [analysis, setAnalysis] = useState<Record<string, AnalysisResult>>({});
+  // 分析结果镜像: runAnalysis 的增量合并要在"进入分析时"读到当前 map(见其注释),
+  // 与 ratingsRef / selectedPathsRef / labelsRef 同款纪律。
+  const analysisRef = useRef<Record<string, AnalysisResult>>(analysis);
+  /** 分析结果的唯一写入口: 镜像与 state 一起更新, 不许分开写 */
+  const commitAnalysis = useCallback((next: Record<string, AnalysisResult>) => {
+    analysisRef.current = next;
+    setAnalysis(next);
+  }, []);
   // Ratings & sort
   const [ratings, setRatings] = useState<Record<string, number>>(() => {
     try { return JSON.parse(localStorage.getItem("imagefilter-ratings") || "{}"); }
@@ -170,6 +223,15 @@ export function useScanner() {
   });
   const [sortBy, setSortBy] = useState<"name" | "type" | "date">("name");
   const [starFilter, setStarFilter] = useState(0); // 0=all, 1-5=filter
+  // ── Phase 4 · 筛选三维度 + 排序方向 ──────────────────────────────────
+  // 都是**纯视图状态**: 不落盘、不入撤销栈(与 starFilter 同待遇, docs 4.5)。
+  // 语义: 星级 = ≥N星; 标签 = 空数组不过滤、多选命中任一; 分析 = all 不过滤,
+  // 其余要求"有分析结果且命中"(没分析过的一律不算, 这就是"未分析"提示的存在理由)。
+  const [labelFilter, setLabelFilter] = useState<Label[]>([]);
+  const [flagFilter, setFlagFilter] = useState<FlagFilter>("all");
+  // asc = "今天的观感"(name/type A→Z, date 新→旧), desc = 反转比较器。
+  // 刻意不把 asc 理解成字面"旧→新": 否则第一次切到日期排序就会觉得排序反了(docs 4.5)。
+  const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
 
   // 评分镜像: 撤销/重做要在调用处同步读到"当前星级", 不能等 re-render
   // (理由见下面 undo 的注释); 同时它让 setRating 无需依赖 ratings,
@@ -213,6 +275,14 @@ export function useScanner() {
           try { localStorage.setItem("imagefilter-ratings", JSON.stringify(next$)); } catch {}
           setRatings(next$);
         }
+      } else if (patch.kind === "label") {
+        // 标签回放: 与评分同款 —— 写镜像 + 落盘 + setState, 三步一起(漏一步就"只退了 UI")
+        const next$ = applyLabelPatch(labelsRef.current, patch);
+        if (next$ !== labelsRef.current) {
+          labelsRef.current = next$;
+          try { localStorage.setItem(LABELS_STORAGE_KEY, JSON.stringify(next$)); } catch {}
+          setLabels(next$);
+        }
       } else {
         const next$ = applySelectionPatch(selectedPathsRef.current, patch);
         if (next$ !== selectedPathsRef.current) selectPaths(next$);
@@ -239,6 +309,14 @@ export function useScanner() {
           ratingsRef.current = next$;
           try { localStorage.setItem("imagefilter-ratings", JSON.stringify(next$)); } catch {}
           setRatings(next$);
+        }
+      } else if (patch.kind === "label") {
+        // 重做 = 把 prev/next 对调后回放(生成新补丁, 不改栈里那份 —— 不变式 3)
+        const next$ = applyLabelPatch(labelsRef.current, { kind: "label", path: patch.path, prev: patch.next, next: patch.prev });
+        if (next$ !== labelsRef.current) {
+          labelsRef.current = next$;
+          try { localStorage.setItem(LABELS_STORAGE_KEY, JSON.stringify(next$)); } catch {}
+          setLabels(next$);
         }
       } else {
         const next$ = applySelectionPatch(selectedPathsRef.current, { kind: "selection", paths: patch.paths, prev: patch.next, next: patch.prev });
@@ -288,6 +366,21 @@ export function useScanner() {
     });
   }, []);
 
+  // ── Phase 4 · 颜色标签的修饰键(Ctrl / Alt) ───────────────────────────
+  // key imagefilter-label-modifier: 只有显式 "alt" 才算 Alt, 缺省/损坏一律当 Ctrl
+  // —— 与 autoAdvance 同款防御写法(别改成 useLocalStorageSetting: 那个 hook
+  // 对字符串虽能用, 但这里要的是"读取时兜底", 与既有两处开关保持一致)。
+  // 为什么可配: Tauri 的 WebView2 可能把 Ctrl+数字 / Ctrl+0 当浏览器加速键吃掉,
+  // 那样用户不用等改代码就能切到 Alt(docs 4.1)。
+  const [labelModifier, setLabelModifierState] = useState<"ctrl" | "alt">(() => {
+    try { return localStorage.getItem("imagefilter-label-modifier") === "alt" ? "alt" : "ctrl"; }
+    catch { return "ctrl"; }
+  });
+  const setLabelModifier = useCallback((v: "ctrl" | "alt") => {
+    setLabelModifierState(v);
+    try { localStorage.setItem("imagefilter-label-modifier", v); } catch {}
+  }, []);
+
   const detectDrives = useCallback(async () => {
     try {
       const list = await invoke<DriveInfo[]>("detect_drives");
@@ -299,6 +392,7 @@ export function useScanner() {
 
   const browseDrive = useCallback(async (mountPoint: string) => {
     clearHistory(); // 切设备清空撤销栈(见 clearHistory 注释)
+    lastClickedRef.current = null; // 换列表 → Shift 锚点作废(同 loadFolder, 见 docs 4.3)
     setBrowsing(true);
     setSelectedDrive(mountPoint);
     allowAssetDir(mountPoint); // asset 协议按需放行该设备
@@ -351,6 +445,9 @@ export function useScanner() {
     setThumbnails({});
     setSelectedPhoto(null);
     selectPaths(new Set()); // 必须走 wrapper: 否则选择集镜像会留着上一个文件夹的勾选
+    // Shift 锚点也作废: 旧路径不在新列表里, 留着只会让 Shift 点击变成"没反应"
+    // (改 ref 之前 lastClicked 状态同样跨文件夹残留 —— 顺手修掉这个死点击)
+    lastClickedRef.current = null;
 
     try {
       const [photosList, subEntry] = await Promise.all([
@@ -444,19 +541,30 @@ export function useScanner() {
   const runAnalysis = useCallback(async (paths: string[]) => {
     if (paths.length === 0) return;
     setAnalyzing(true);
-    setAnalysis({});
 
+    // Phase 4 · 增量合并(docs 4.4-B): 只丢掉**本次要分析的这些 path**的旧结果,
+    // 其余照片的分析结果原样保留。
+    // 旧写法 setAnalysis({}) 会让"勾 3 张只分析这 3 张"变成"把其余几百张的结果抹掉":
+    // 徽标全消失、未分析计数跳到总数 —— 与"分析只作用于选区"直接冲突。
+    // 用 analysisRef 而不是闭包里的 analysis: 后者在同一渲染周期内是旧值。
+    const target = new Set(paths);
     const results: Record<string, AnalysisResult> = {};
+    for (const [p, r] of Object.entries(analysisRef.current)) {
+      if (!target.has(p)) results[p] = r;
+    }
+    commitAnalysis({ ...results });
 
     // Step 1: blur + exposure (streaming)
     const onProgress = new Channel<AnalysisResult>();
     onProgress.onmessage = (r: AnalysisResult) => {
       results[r.path] = r;
-      setAnalysis({ ...results });
+      commitAnalysis({ ...results });
     };
     await invoke("analyze_photos", { filePaths: paths, onProgress }).catch(console.error);
 
     // Step 2: duplicate detection
+    // 注意(已有语义, 不改 Rust): 判重只在**本次传入的集合内**进行,
+    // 所以选区分析时"重复"只在选区内成立、"最佳"也可能与全量结果不同。
     try {
       const dups = await invoke<AnalysisResult[]>("find_duplicates", { filePaths: paths });
       for (const d of dups) {
@@ -464,11 +572,11 @@ export function useScanner() {
           results[d.path] = { ...(results[d.path] || {} as AnalysisResult), ...d };
         }
       }
-      setAnalysis({ ...results });
+      commitAnalysis({ ...results });
     } catch (err) { console.error("find_duplicates:", err); }
 
     setAnalyzing(false);
-  }, []);
+  }, [commitAnalysis]);
 
   const loadExif = useCallback(async (photo: ScannedPhoto) => {
     if (photo.exif.cameraMake || photo.exif.dateTaken) return photo;
@@ -510,6 +618,9 @@ export function useScanner() {
     customFolder, setCustomFolder, useCustomFolder, setUseCustomFolder,
     analyzing, analysis, runAnalysis, stopAnalysis,
     ratings, setRating, sortBy, setSortBy, starFilter, setStarFilter,
+    // Phase 4: 颜色标签 + 三个筛选维度 + 排序方向 + 标签修饰键
+    labels, setLabel, labelFilter, setLabelFilter, flagFilter, setFlagFilter,
+    sortDir, setSortDir, labelModifier, setLabelModifier,
     // Phase 2: canUndo/canRedo 已导出, 但当前 UI(帮助文案)只写静态说明, 暂未消费
     // —— 若要加"撤销"按钮/置灰状态, 直接用这两个布尔值即可(它们随栈变化重渲染)
     undo, redo, canUndo, canRedo, lastUndoPath,

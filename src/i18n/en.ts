@@ -25,6 +25,8 @@ export default {
     preloadDesc: "Preload full images of currently visible photos for faster viewer; takes effect immediately",
     autoAdvance: "Auto-advance after rating",
     autoAdvanceDesc: "Jump to the next photo after J / X / 1-5 or a star click; closes the viewer after the last photo. Use ← to go back.",
+    labelKeys: "Color label shortcut",
+    labelKeysDesc: "Modifier for color labels: Ctrl+1-5 to label, Ctrl+0 to clear; pick Alt if Ctrl+digit is taken by the system",
     transparentBg: "Transparent frosted background",
     transparentBgDesc: "Use Windows Mica glass that follows the dark/light theme; takes effect immediately",
     transparentBgOpacity: "Title bar glass opacity",
@@ -48,6 +50,8 @@ export default {
     keep: "Keep (3★)",
     trash: "Reject (0★)",
     star: "Rate 1-5★",
+    label: "Ctrl/Alt+1-5",
+    labelDesc: "Color label (grid & viewer)",
     autoAdvance: "Auto-advance after rating",
     rotate: "Rotate (viewer)",
     nav: "Navigate (viewer)",
@@ -99,6 +103,12 @@ export default {
     all: "All",
     stop: "Stop",
     ai: "AI Analyze",
+    aiCount: "AI Analyze ({n})",
+    aiSelected: "Analyze only the {n} selected",
+    filter: "Filters",
+    flags: "Analysis",
+    sortDir: "Toggle sort direction",
+    clearFilters: "Clear filters",
     cols: "{n} cols",
     empty: "Open a photo folder to show toolbar",
   },
@@ -114,6 +124,9 @@ export default {
     underexposed: "Underexposed",
     duplicate: "Duplicate",
     best: "Best",
+    pendingAnalysis: "{n} photos not analyzed yet",
+    analyzePending: "Analyze these {n}",
+    noMatch: "No photos match the current filters",
   },
 
   import: {
@@ -137,6 +150,18 @@ export default {
     seqRenameEx: "e.g. 0001.ARW",
     subFolder: "Import into subfolder",
     subFolderPlaceholder: "Enter folder name",
+  },
+
+  // ── Color labels (Phase 4) ──
+  label: {
+    title: "Color labels",
+    red: "Red",
+    yellow: "Yellow",
+    green: "Green",
+    blue: "Blue",
+    purple: "Purple",
+    clear: "Clear label",
+    none: "None",
   },
 
   menu: {
@@ -212,6 +237,7 @@ export default {
     undo: "Undid",
     undoRedo: "Redid",
     ratingChange: "{prev}★ → {next}★",
+    labelChange: "{prev} → {next}",
     selectionChange: "{n} selected",
   },
 

@@ -27,6 +27,8 @@ export default {
     preloadDesc: "预载当前可见区域所有照片全图，打开查看器更快；开关立即生效，无需重启",
     autoAdvance: "评分后自动前进",
     autoAdvanceDesc: "按 J / X / 1-5 或点星条后自动跳到下一张，打完最后一张自动关闭查看器；想留下就用 ← 回退",
+    labelKeys: "颜色标签快捷键",
+    labelKeysDesc: "颜色标签用哪个修饰键：Ctrl+1-5 打标、Ctrl+0 清除；若 Ctrl+数字被系统占用就选 Alt",
     transparentBg: "透明毛玻璃背景",
     transparentBgDesc: "启用后使用 Windows Mica 毛玻璃，随深色/浅色主题自动切换；立即生效",
     transparentBgOpacity: "标题栏玻璃透明度",
@@ -51,6 +53,8 @@ export default {
     keep: "保留(3星)",
     trash: "废弃(0星)",
     star: "星级评分",
+    label: "Ctrl/Alt+1-5",
+    labelDesc: "颜色标签（网格与查看器）",
     autoAdvance: "评分后自动前进",
     rotate: "旋转(查看器)",
     nav: "切换(查看器)",
@@ -104,6 +108,12 @@ export default {
     all: "全部",
     stop: "停止",
     ai: "AI 分析",
+    aiCount: "AI 分析 ({n})",
+    aiSelected: "只分析选中的 {n} 张",
+    filter: "筛选",
+    flags: "分析结果",
+    sortDir: "切换排序方向",
+    clearFilters: "清除筛选",
     cols: "{n} 列",
     empty: "打开照片文件夹后显示工具栏",
   },
@@ -120,6 +130,9 @@ export default {
     underexposed: "欠曝",
     duplicate: "重复",
     best: "最佳",
+    pendingAnalysis: "还有 {n} 张未分析",
+    analyzePending: "分析这 {n} 张",
+    noMatch: "没有照片符合当前筛选",
   },
 
   // ── 导入栏 ──
@@ -144,6 +157,19 @@ export default {
     seqRenameEx: "如 0001.ARW",
     subFolder: "导入到子文件夹",
     subFolderPlaceholder: "输入文件夹名",
+  },
+
+  // ── 颜色标签(Phase 4) ──
+  // title 同时用作工具栏筛选分区标题与右键子菜单标题(一处定义, 两处调用)
+  label: {
+    title: "颜色标签",
+    red: "红",
+    yellow: "黄",
+    green: "绿",
+    blue: "蓝",
+    purple: "紫",
+    clear: "清除颜色标签",
+    none: "无标签",
   },
 
   // ── 右键菜单 ──
@@ -225,6 +251,7 @@ export default {
     // 注意: 本项目插值用**单括号** {n}(见 i18n/index.ts 的 prefix/suffix),
     // 写成 {{prev}} 会被解析成不存在的变量 "{prev" 并原样显示。
     ratingChange: "{prev}★ → {next}★",
+    labelChange: "{prev} → {next}",
     selectionChange: "勾选 {n} 张",
   },
 

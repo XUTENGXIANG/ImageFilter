@@ -45,6 +45,14 @@ export interface ImportProgress {
   percent: number;
 }
 
+/**
+ * Phase 4 · 分析结果筛选维度（"all" = 不过滤）。
+ * 取值与卡片徽标同一套语义：blurry/over/under 来自 analyze_photos，
+ * duplicate/best 来自 find_duplicates。**没分析过的照片一律不算命中** ——
+ * 这正是网格顶部"还有 N 张未分析"提示存在的原因（docs 4.2）。
+ */
+export type FlagFilter = "all" | "blurry" | "over" | "under" | "duplicate" | "best";
+
 /** AI 分析结果（模糊/曝光/重复） */
 export interface AnalysisResult {
   path: string;

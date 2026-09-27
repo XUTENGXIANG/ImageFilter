@@ -17,6 +17,9 @@ interface Props {
   onTogglePreloadFull: () => void;
   autoAdvance: boolean;
   onToggleAutoAdvance: () => void;
+  /** Phase 4: 颜色标签用哪个修饰键(Ctrl / Alt)。见 docs 4.1 */
+  labelModifier: "ctrl" | "alt";
+  onLabelModifierChange: (v: "ctrl" | "alt") => void;
   transparentBg: boolean;
   onToggleTransparentBg: () => void;
   glassOpacity: number;
@@ -64,6 +67,7 @@ export function SettingsDialog({
   open, onOpenChange, theme, onThemeChange, lang, onLangChange,
   preloadFull, onTogglePreloadFull, transparentBg, onToggleTransparentBg,
   autoAdvance, onToggleAutoAdvance,
+  labelModifier, onLabelModifierChange,
   glassOpacity, onGlassOpacityChange, backgroundOpacity, onBackgroundOpacityChange,
 }: Props) {
   const { t } = useTranslation();
@@ -109,6 +113,23 @@ export function SettingsDialog({
 
           <SettingRow title={t("settings.autoAdvance")} desc={t("settings.autoAdvanceDesc")}>
             <Toggle checked={autoAdvance} onChange={onToggleAutoAdvance} />
+          </SettingRow>
+
+          {/* Phase 4: 颜色标签的修饰键。分段按钮与上面的"语言"同一套写法。
+              之所以让用户选: Tauri 的 WebView2 可能把 Ctrl+数字当浏览器加速键吃掉 */}
+          <SettingRow title={t("settings.labelKeys")} desc={t("settings.labelKeysDesc")}>
+            <div className="flex rounded-md border border-border overflow-hidden text-sm">
+              {(["ctrl", "alt"] as const).map((m) => (
+                <button
+                  key={m}
+                  type="button"
+                  onClick={() => onLabelModifierChange(m)}
+                  className={`px-3 py-1.5 transition-colors ${labelModifier === m ? "bg-foreground text-background" : "hover:bg-muted text-muted-foreground"}`}
+                >
+                  {m === "ctrl" ? "Ctrl" : "Alt"}
+                </button>
+              ))}
+            </div>
           </SettingRow>
 
           <SettingRow title={t("settings.transparentBg")} desc={t("settings.transparentBgDesc")}>

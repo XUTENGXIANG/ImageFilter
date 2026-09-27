@@ -17,6 +17,8 @@ export function TitleBar({
   onTogglePreloadFull,
   autoAdvance,
   onToggleAutoAdvance,
+  labelModifier,
+  onLabelModifierChange,
   transparentBg,
   onToggleTransparentBg,
   backgroundOpacity,
@@ -26,6 +28,8 @@ export function TitleBar({
   onTogglePreloadFull: () => void;
   autoAdvance: boolean;
   onToggleAutoAdvance: () => void;
+  labelModifier: "ctrl" | "alt";
+  onLabelModifierChange: (v: "ctrl" | "alt") => void;
   transparentBg: boolean;
   onToggleTransparentBg: () => void;
   backgroundOpacity: number;
@@ -130,6 +134,8 @@ export function TitleBar({
         onTogglePreloadFull={onTogglePreloadFull}
         autoAdvance={autoAdvance}
         onToggleAutoAdvance={onToggleAutoAdvance}
+        labelModifier={labelModifier}
+        onLabelModifierChange={onLabelModifierChange}
         transparentBg={transparentBg}
         onToggleTransparentBg={onToggleTransparentBg}
         glassOpacity={glassOpacity}

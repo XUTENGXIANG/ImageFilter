@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import { Movie, PictureOne } from "@icon-park/react";
 import { formatBytes } from "../lib/format";
 import type { ScannedPhoto } from "../types";
+import { LABEL_BG, type Label } from "../labels";
 
 /** 从文件名取扩展名标签 (dng→DNG, jpg→JPG, png→PNG...) */
 function formatBadge(fileName: string): string {
@@ -27,12 +28,12 @@ function TypeBadge({ photo }: { photo: ScannedPhoto }) {
 }
 
 export const PhotoCard = memo(function PhotoCard({
-  photo, thumbnail, isSelected, isChecked, onClick, onToggle, analysis, rating, onRate, onContextMenu, onDoubleClick,
+  photo, thumbnail, isSelected, isChecked, onClick, onToggle, analysis, rating, label, onRate, onContextMenu, onDoubleClick,
 }: {
   photo: ScannedPhoto; thumbnail?: string; isSelected: boolean; isChecked: boolean;
   onClick: (e: React.MouseEvent) => void; onToggle: (e: React.MouseEvent) => void;
   analysis?: { isBlurry?: boolean; isOverexposed?: boolean; isUnderexposed?: boolean; isBestInGroup?: boolean; duplicateGroup?: number };
-  rating?: number; onRate?: (stars: number) => void; onContextMenu?: () => void; onDoubleClick?: (e: React.MouseEvent) => void;
+  rating?: number; label?: Label; onRate?: (stars: number) => void; onContextMenu?: () => void; onDoubleClick?: (e: React.MouseEvent) => void;
 }) {
   const { t } = useTranslation();
   return (
@@ -73,6 +74,13 @@ export const PhotoCard = memo(function PhotoCard({
         {analysis?.isUnderexposed && <Badge color="bg-indigo-600/80" label={t("grid.underexposed")} />}
         {analysis?.duplicateGroup !== undefined && !analysis?.isBestInGroup && <Badge color="bg-gray-600/80" label={t("grid.duplicate")} />}
         {analysis?.isBestInGroup && <Badge color="bg-emerald-600/80" label={t("grid.best")} />}
+        {/* Phase 4: 颜色标签 —— **只读**展示(卡片不新增可点区域: 免得又多一个
+            "点了会不会勾选"的交互面)。鼠标入口是右键"颜色标签"子菜单,
+            键盘是 Ctrl/Alt + 1-5(修饰键在设置里选)。用圆点而不是图标/文字:
+            五种颜色本身就是信息, 这里也不适合挂 tooltip(卡片是 overflow-hidden)。 */}
+        {label && (
+          <span className={`w-3 h-3 mt-[3px] rounded-full border border-white/60 shadow ${LABEL_BG[label]}`} />
+        )}
       </div>
       {(rating ?? 0) > 0 && (
         <div className="absolute bottom-1.5 right-1.5 text-[10px] text-amber-400">

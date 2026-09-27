@@ -8,6 +8,7 @@ import { useTranslation } from "react-i18next";
 import { Close, Left, Right, RotateOne, Rotate } from "@icon-park/react";
 import type { ScannedPhoto } from "./types";
 import type { Patch } from "./undo";
+import { LABEL_BG, LABEL_ORDER, isLabelChord, type Label } from "./labels";
 import { Tip } from "./components/tip";
 
 interface Props {
@@ -15,6 +16,11 @@ interface Props {
   index: number;
   ratings: Record<string, number>;
   onRate: (path: string, stars: number) => void;
+  // ── Phase 4 · 颜色标签 ──
+  labels: Record<string, Label>;
+  onLabel: (path: string, label: Label | null) => void;
+  /** 打标签用的修饰键(Ctrl / Alt, 在设置里选; 见 labels.ts 的 isLabelChord) */
+  labelModifier: "ctrl" | "alt";
   onClose: () => void;
   originRect?: { x: number; y: number; w: number; h: number }; // 缩略图位置
   thumbnails: Record<string, string>; // 已有缩略图缓存 (秒显)
@@ -61,7 +67,7 @@ function fitScaleOf(el: HTMLImageElement): number {
   return Math.min(el.offsetWidth / el.naturalWidth, el.offsetHeight / el.naturalHeight);
 }
 
-export function PhotoViewer({ photos, index, ratings, onRate, onClose, originRect, thumbnails, selectedPaths, onToggleSelect, autoAdvance, onUndo, onRedo, undoTargetPath, onUndoToast }: Props) {
+export function PhotoViewer({ photos, index, ratings, onRate, labels, onLabel, labelModifier, onClose, originRect, thumbnails, selectedPaths, onToggleSelect, autoAdvance, onUndo, onRedo, undoTargetPath, onUndoToast }: Props) {
   const { t } = useTranslation();
   const [cur, setCur] = useState(index);
   // 缩放动画: entering=true 从缩略图位置放大; leaving=true 缩回后关闭
@@ -386,6 +392,18 @@ export function PhotoViewer({ photos, index, ratings, onRate, onClose, originRec
       }
       // 列表收缩到当前索引之外时 photo 会是 undefined — 必须在访问 photo.path 之前挡住
       if (!photo) return;
+      // ── Phase 4 · 颜色标签(Ctrl/Alt + 1-5 打标, +0 清除) ──
+      // ⚠️ 必须排在这一段**最前面**: 下面的分支里有 plain `0`(重置视图)与
+      // `e.key >= "1" && e.key <= "5"`(打星), 排在它们后面的话 Ctrl+2 会先被星级吃掉。
+      // 判定统一走 isLabelChord(与 App 的网格共用一个语义)。
+      // 打标**不**调 autoNext(): 标签是二次分拣, 一前进就看不见刚打的标。
+      const labelKey = e.key.toLowerCase();
+      if (isLabelChord(e, labelModifier) && labelKey >= "0" && labelKey <= "5") {
+        if (labelKey === "0") onLabel(photo.path, null);
+        else onLabel(photo.path, LABEL_ORDER[Number(labelKey) - 1]);
+        e.preventDefault();
+        return;
+      }
       if (e.key === "Escape") { handleClose(); }
       else if (e.key === "ArrowLeft") { navigateTo((cur - 1 + photos.length) % photos.length); }
       else if (e.key === "ArrowRight") { navigateTo((cur + 1) % photos.length); }
@@ -402,7 +420,7 @@ export function PhotoViewer({ photos, index, ratings, onRate, onClose, originRec
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [photo, cur, photos.length, navigateTo, handleClose, onRate, onToggleSelect, autoNext, togglePixelView, onUndo, onRedo, undoTargetPath, onUndoToast]);
+  }, [photo, cur, photos.length, navigateTo, handleClose, onRate, onToggleSelect, autoNext, togglePixelView, onUndo, onRedo, undoTargetPath, onUndoToast, onLabel, labelModifier]);
 
   // Wheel zoom — 缩到<=1时居中(重置offset)。滚轮改过缩放就不再是 1:1(否则 Z 会陷入死循环)
   const onWheel = useCallback((e: React.WheelEvent) => {
@@ -483,6 +501,21 @@ export function PhotoViewer({ photos, index, ratings, onRate, onClose, originRec
             className="w-8 h-8 flex items-center justify-center rounded hover:bg-zinc-800 text-zinc-400"
           ><RotateOne theme="filled" size="15" strokeWidth={3} /></button>
           </Tip>
+          {/* Phase 4 · 颜色标签 — 点亮的那个再点一次 = 清除(与星条按钮同款 toggle;
+              键盘走 Ctrl/Alt + 1-5 / 0, 键盘只赋值不 toggle) */}
+          {LABEL_ORDER.map((l) => (
+            <Tip key={l} label={t(`label.${l}`)} className="flex items-center">
+            <button
+              data-tauri-drag-region={false}
+              onClick={() => onLabel(photo.path, labels[photo.path] === l ? null : l)}
+              className={`w-4 h-4 rounded-full border transition-opacity ${
+                labels[photo.path] === l
+                  ? "ring-2 ring-white/80 border-white/80 opacity-100"
+                  : "border-white/25 opacity-60 hover:opacity-100"
+              } ${LABEL_BG[l]}`}
+            />
+            </Tip>
+          ))}
           {/* 星级 */}
           {[1, 2, 3, 4, 5].map((s) => (
             <button key={s} data-tauri-drag-region={false} onClick={() => { onRate(photo.path, rating === s ? 0 : s); autoNext(); }}
