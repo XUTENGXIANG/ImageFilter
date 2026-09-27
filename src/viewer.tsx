@@ -54,6 +54,9 @@ export function PhotoViewer({ photos, index, ratings, onRate, onClose, originRec
   const dragRef = useRef<{ startX: number; startY: number; ox: number; oy: number; dragging: boolean }>({ startX: 0, startY: 0, ox: 0, oy: 0, dragging: false });
   const loadedSrcRef = useRef<Record<string, string>>({});
   const currentPathRef = useRef<string | null>(null);
+  // 用户"正在看的那张"的路径 — 只由打开/切换写入(加载流程不写),
+  // 列表被星级筛选收缩时据此重锚, 避免悄悄换成另一张
+  const anchorPathRef = useRef<string | null>(photos[index]?.path ?? null);
   const prefetchingRef = useRef<Set<string>>(new Set());
   const prefetchTimerRef = useRef<number | undefined>(undefined);
 
@@ -96,6 +99,7 @@ export function PhotoViewer({ photos, index, ratings, onRate, onClose, originRec
     const target = photos[next];
     if (!target) return;
     currentPathRef.current = target.path;
+    anchorPathRef.current = target.path;
     const cached = loadedSrcRef.current[target.path];
     if (cached) {
       setSrc(cached);
@@ -222,6 +226,24 @@ export function PhotoViewer({ photos, index, ratings, onRate, onClose, originRec
     };
   }, [photo, photos, cur, commitLoaded, schedulePrefetch]);
 
+  // 列表被星级筛选/评分变更收缩后重锚: 始终显示"原来看的那张"。
+  // 若它已不在列表中(典型场景: 开着 ≥N 星筛选, 在查看器里给它打了更低的星),
+  // 就关闭查看器 —— 而不是让 cur 指向另一张照片、悄悄换了内容。
+  useEffect(() => {
+    if (photos.length === 0) {
+      onClose();
+      return;
+    }
+    const wanted = anchorPathRef.current;
+    if (wanted === null) return;
+    const idx = photos.findIndex((p) => p.path === wanted);
+    if (idx === -1) {
+      onClose();
+      return;
+    }
+    if (idx !== cur) setCur(idx);
+  }, [photos, cur, onClose]);
+
   // 导航按钮显隐: 鼠标移动显示, 静止2秒隐藏
   const [showNav, setShowNav] = useState(true);
   const navTimer = useRef<number | undefined>(undefined);
@@ -234,6 +256,8 @@ export function PhotoViewer({ photos, index, ratings, onRate, onClose, originRec
   // Keyboard: ←/→ navigate, Esc close, +/- zoom, J/X/1-5 rate
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
+      // 列表收缩到当前索引之外时 photo 会是 undefined — 必须在访问 photo.path 之前挡住
+      if (!photo) return;
       if (e.key === "Escape") { handleClose(); }
       else if (e.key === "ArrowLeft") { navigateTo((cur - 1 + photos.length) % photos.length); }
       else if (e.key === "ArrowRight") { navigateTo((cur + 1) % photos.length); }

@@ -26,6 +26,11 @@ pub fn decode_dng_tinydng(path: &str) -> Option<DynamicImage> {
     };
 
     if ret == 0 || rgb.is_null() || w <= 0 || h <= 0 {
+        // C 侧可能已经 malloc(rgb 非空)但返回异常尺寸 —— 这条路径同样必须 free,
+        // 否则异常 DNG 反复触发会累积泄漏
+        if !rgb.is_null() {
+            unsafe { tinydng_free(rgb) };
+        }
         return None;
     }
 

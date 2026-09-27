@@ -138,6 +138,17 @@ function App() {
     togglePreloadFull,
   } = useScanner();
 
+  // 图片查看器: viewerIndex=null 关闭, 数字=打开第N张
+  // 注意: 必须声明在下面的键盘快捷键 effect 之前 —— 该 effect 的依赖数组在渲染时
+  // 会被急切求值, 声明放在后面会触发 TDZ(ReferenceError: Cannot access before initialization)
+  const [viewerIndex, setViewerIndex] = useState<number | null>(null);
+  const [viewerOrigin, setViewerOrigin] = useState<{ x: number; y: number; w: number; h: number } | undefined>(undefined);
+
+  // 切换文件夹时关闭查看器: photos 会被整体替换, 查看器不能继续持有旧列表的索引
+  useEffect(() => {
+    setViewerIndex(null);
+  }, [activeFolder]);
+
   // Disable browser default context menu
   useEffect(() => {
     const handler = (e: MouseEvent) => e.preventDefault();
@@ -177,7 +188,9 @@ function App() {
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [selectedPhoto, setRating]);
+    // viewerIndex 必须进依赖: 否则查看器打开后闭包里的值仍是旧值(null),
+    // 本处理器会与 viewer 自己的快捷键同时触发, 把"选中的那张"也改掉星级
+  }, [selectedPhoto, setRating, viewerIndex]);
 
   // Sort + filter photos
   const sortedPhotos = useMemo(() => {
@@ -261,9 +274,6 @@ function App() {
     toastTimer.current = window.setTimeout(() => setToast(null), 1200);
   };
 
-  // 图片查看器: viewerIndex=null 关闭, 数字=打开第N张
-  const [viewerIndex, setViewerIndex] = useState<number | null>(null);
-  const [viewerOrigin, setViewerOrigin] = useState<{ x: number; y: number; w: number; h: number } | undefined>(undefined);
   // 透明毛玻璃背景: 默认开启, 深色/浅色随主题切换
   const [transparentBg, setTransparentBg] = useState<boolean>(() => localStorage.getItem("imagefilter-glass") !== "0");
 

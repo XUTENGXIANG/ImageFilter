@@ -40,11 +40,11 @@ fn build_dest_path(
 
     let (year, month, day, camera) = get_exif_info(source_path);
 
-    // Folder: empty = no subfolder
+    // Folder: empty = no subfolder (多级模板如 "{date}/{camera}" 会保留目录层级)
     let folder = if folder_template.is_empty() {
         String::new()
     } else {
-        sanitize_path(&folder_template
+        sanitize_template_path(&folder_template
             .replace("{date}", &format!("{}-{}-{}", year, month, day))
             .replace("{year}", &year)
             .replace("{month}", &month)
@@ -109,6 +109,23 @@ fn sanitize_path(s: &str) -> String {
         .collect::<String>()
         .trim()
         .replace(' ', "_")
+}
+
+/// 清洗"文件夹模板"的替换结果: 按 `/` 或 `\` 拆段, 每段单独清洗后用 `/` 重新连接。
+///
+/// 不能直接用 [`sanitize_path`]: 它会把手写的路径分隔符也替换成 `_`, 于是 UI 上同时勾选
+/// "按日期 + 按相机"得到的 `{date}/{camera}` 会被压成单层目录 `2026-08-10_Sony_A7M4`,
+/// 与界面提示(`如 2024-08-08/照片.jpg`)和 README 承诺的多级归档都不符。
+/// 段内的非法字符仍由 [`sanitize_path`] 清掉; 空段(如 `a//b`)会被丢弃。
+///
+/// `..` 这类段不会被这里过滤 —— 留给 [`is_safe_relative`] 在复制前拒绝并报错, 不静默改写用户意图。
+fn sanitize_template_path(template: &str) -> String {
+    template
+        .split(['/', '\\'])
+        .map(sanitize_path)
+        .filter(|segment| !segment.is_empty())
+        .collect::<Vec<_>>()
+        .join("/")
 }
 
 /// Compute MD5 hash of file
@@ -343,4 +360,142 @@ pub async fn import_photos(
     }
 
     Ok(imported)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_root(tag: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("imagefilter_import_{}_{}", tag, std::process::id()))
+    }
+
+    #[test]
+    fn sanitize_path_strips_illegal_chars_and_spaces() {
+        assert_eq!(sanitize_path("Sony A7M4"), "Sony_A7M4");
+        assert_eq!(sanitize_path("a/b\\c:d*e?f\"g<h>i|j"), "a_b_c_d_e_f_g_h_i_j");
+        assert_eq!(sanitize_path("  trim me  "), "trim_me");
+        assert_eq!(sanitize_path("正常名称"), "正常名称");
+    }
+
+    /// 文件夹模板必须保留目录层级, 只清洗段内非法字符
+    #[test]
+    fn sanitize_template_path_keeps_separators() {
+        assert_eq!(sanitize_template_path("2024-08-08"), "2024-08-08");
+        assert_eq!(sanitize_template_path("2024-08-08/Sony A7M4"), "2024-08-08/Sony_A7M4");
+        assert_eq!(sanitize_template_path("a\\b"), "a/b");
+        assert_eq!(sanitize_template_path("a//b/"), "a/b");
+        assert_eq!(sanitize_template_path("a:b/c*d"), "a_b/c_d");
+        assert_eq!(sanitize_template_path(""), "");
+    }
+
+    /// 回归护栏: UI 同时勾选"按日期 + 按相机"会生成 `{date}/{camera}`,
+    /// 必须落成嵌套目录, 不能被压成单层 `日期_相机`
+    #[test]
+    fn build_dest_path_keeps_template_directory_levels() {
+        let src = Path::new("photos").join("IMG_1234.ARW");
+        let (dest, _) = build_dest_path("{date}/{camera}", "{seq}.{ext}", &src, 1);
+
+        let parts: Vec<String> = dest
+            .components()
+            .map(|c| c.as_os_str().to_string_lossy().to_string())
+            .collect();
+        assert_eq!(parts, vec!["0000-00-00", "Unknown", "0001.arw"]);
+    }
+
+    #[test]
+    fn is_safe_relative_only_accepts_plain_relative_paths() {
+        assert!(is_safe_relative(Path::new("2026-08-10/Sony_A7M4/0001.arw")));
+        assert!(is_safe_relative(Path::new("0001.arw")));
+        assert!(!is_safe_relative(Path::new(".")));
+        assert!(!is_safe_relative(Path::new("../escape.arw")));
+        assert!(!is_safe_relative(Path::new("sub/../../escape.arw")));
+        assert!(!is_safe_relative(Path::new("/abs/escape.arw")));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn is_safe_relative_rejects_windows_absolute_path() {
+        assert!(!is_safe_relative(Path::new("C:\\abs\\escape.arw")));
+    }
+
+    /// 无 EXIF 的文件(不存在)走默认值, 但模板替换/小写扩展名/序号补零必须正确
+    #[test]
+    fn build_dest_path_fills_templates_with_defaults_without_exif() {
+        let src = Path::new("photos").join("IMG_1234.ARW");
+        let (dest, name) =
+            build_dest_path("{date}/{camera}", "{seq}_{original}.{ext}", &src, 7);
+
+        assert_eq!(name, "0007_IMG_1234.arw");
+        assert_eq!(
+            dest,
+            Path::new("0000-00-00").join("Unknown").join("0007_IMG_1234.arw")
+        );
+    }
+
+    #[test]
+    fn build_dest_path_keeps_original_name_when_templates_empty() {
+        let src = Path::new("photos").join("IMG_1234.ARW");
+        let (dest, name) = build_dest_path("", "", &src, 1);
+
+        assert_eq!(name, "IMG_1234.arw");
+        assert_eq!(dest, Path::new("IMG_1234.arw"));
+    }
+
+    #[test]
+    fn file_md5_matches_known_digest() {
+        let root = test_root("md5");
+        std::fs::create_dir_all(&root).unwrap();
+        let file = root.join("abc.txt");
+        std::fs::write(&file, b"abc").unwrap();
+
+        assert_eq!(
+            file_md5(&file).unwrap(),
+            "900150983cd24fb0d6963f7d28e17f72" // md5("abc")
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 数据安全契约: 目标相同内容 → 跳过不计数; 目标不同内容 → 唯一后缀, 绝不覆盖
+    #[test]
+    fn copy_one_skips_identical_and_never_overwrites_different() {
+        let root = test_root("copy");
+        let src_dir = root.join("src");
+        let dest_dir = root.join("dest");
+        std::fs::create_dir_all(&src_dir).unwrap();
+        std::fs::create_dir_all(&dest_dir).unwrap();
+
+        let src = src_dir.join("IMG_1.ARW");
+        std::fs::write(&src, b"same-content").unwrap();
+        let rel = PathBuf::from("sub").join("IMG_1.ARW");
+
+        // 首次导入 → 正常复制并校验
+        let first = copy_one(&src, &dest_dir, &rel).expect("首次复制应成功");
+        assert!(!first.skipped);
+        assert_eq!(std::fs::read(dest_dir.join("sub").join("IMG_1.ARW")).unwrap(), b"same-content");
+
+        // 内容相同 → 跳过(不覆盖、不计数)
+        let second = copy_one(&src, &dest_dir, &rel).expect("重复导入应跳过");
+        assert!(second.skipped, "相同内容应判为 skipped");
+
+        // 目标已存在但内容不同 → 生成 _1 后缀, 原文件必须保持原样
+        std::fs::write(&src, b"different-content").unwrap();
+        let third = copy_one(&src, &dest_dir, &rel).expect("不同内容应改名复制");
+        assert!(!third.skipped);
+        assert!(
+            dest_dir.join("sub").join("IMG_1_1.ARW").exists(),
+            "应生成唯一后缀文件"
+        );
+        assert_eq!(
+            std::fs::read(dest_dir.join("sub").join("IMG_1.ARW")).unwrap(),
+            b"same-content",
+            "原有文件被改写了 — 违反绝不覆盖契约"
+        );
+
+        // 路径逃逸必须在触碰文件系统之前被拒绝
+        assert!(copy_one(&src, &dest_dir, Path::new("../escape.ARW")).is_err());
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }

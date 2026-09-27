@@ -51,10 +51,12 @@
   --sidebar-ring: oklch(0.708 0 0);
 }
 
+/* 注意: 这里不要写 color —— 未分层的规则在级联中优先于 @layer, 会压过下面
+   @layer base 里的 body { @apply text-foreground }, 导致浅色主题下基础文字色
+   仍是近白色(#fafafa)而落在近白背景上。正文颜色统一交给 text-foreground。 */
 body {
   margin: 0;
   background: transparent;
-  color: #fafafa;
 }
 
 img {
