@@ -108,7 +108,7 @@ export default {
     all: "全部",
     stop: "停止",
     ai: "AI 分析",
-    aiCount: "AI 分析 ({n})",
+    aiCount: "AI 分析选中 ({n})",
     aiSelected: "只分析选中的 {n} 张",
     filter: "筛选",
     flags: "分析结果",

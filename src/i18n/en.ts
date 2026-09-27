@@ -103,7 +103,7 @@ export default {
     all: "All",
     stop: "Stop",
     ai: "AI Analyze",
-    aiCount: "AI Analyze ({n})",
+    aiCount: "AI Analyze ({n} selected)",
     aiSelected: "Analyze only the {n} selected",
     filter: "Filters",
     flags: "Analysis",

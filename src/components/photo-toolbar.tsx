@@ -119,17 +119,21 @@ export function PhotoToolbar({
             {t("toolbar.filter")}
           </button>
           <ThumbSizeSlider />
-          {/* ml-auto 而不是 flex-1 占位块: 换行后这组按钮仍贴右, 占位块会让它留在左侧 */}
+          {/* 右侧这一组(AI 分析 + 收起箭头)**必须当成一个整体**: ml-auto 让整组永远贴右,
+              组内不拆行 —— 只给 AI 按钮加 ml-auto 的话, 后面的箭头会被挤到下一行的最左边
+              (用户实机反馈: 收起的箭头跑到第二行左端)。 */}
+          <div className="ml-auto shrink-0 flex items-center gap-2">
           <button
             onClick={() => analyzing ? onStopAnalysis() : onAnalyzeAll()}
             title={!analyzing && analyzeCount > 0 ? t("toolbar.aiSelected", { n: analyzeCount }) : undefined}
-            className={`ml-auto shrink-0 whitespace-nowrap text-[10px] px-2 py-0.5 rounded text-zinc-400 ${
+            className={`shrink-0 whitespace-nowrap text-[10px] px-2 py-0.5 rounded text-zinc-400 ${
               analyzing
                 ? "bg-red-900/50 hover:bg-red-800/50 text-red-400"
                 : "bg-zinc-800 hover:bg-zinc-700"
             }`}
           >
-            {/* 有勾选就分析勾选的(带张数), 否则分析整个文件夹 —— 与 App 里的 scope 同一份定义 */}
+            {/* 有勾选就分析勾选的(带张数), 否则分析整个文件夹 —— 与 App 里的 scope 同一份定义。
+                文案里必须出现"选中": 实机首测时 `AI 分析 (1)` 被问"后面这个 1 是什么"。 */}
             {analyzing ? t("toolbar.stop") : analyzeCount > 0 ? t("toolbar.aiCount", { n: analyzeCount }) : t("toolbar.ai")}
           </button>
           {/* 收起按钮 — 集成在主体内 */}
@@ -141,6 +145,7 @@ export function PhotoToolbar({
             <UpOne theme="filled" size="13" strokeWidth={3} />
           </button>
           </Tip>
+          </div>
         </div>
         {filterOpen && (
           <div className="flex items-center flex-wrap gap-2 px-4 pb-2 -mt-1 text-[10px] text-zinc-600">
