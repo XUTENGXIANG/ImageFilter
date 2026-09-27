@@ -561,7 +561,8 @@ cd src-tauri && cargo check --lib
   - **`Ctrl+Z` 的重复键只让 App 侧处理**：viewer 的 `e.repeat` 守卫排在撤销分支之前（`z` 本就在 `NON_REPEAT_KEYS` 里），所以查看器内长按 Ctrl+Z 不连撤 —— 有意为之，本 Phase 不做节流；
   - **不补 vitest，改做一次可复现的 Node 冒烟**：`src/undo.ts` 零 React 依赖，用仓库自带的 esbuild 转译后断言 27 条（StrictMode 双调用只入栈一条 / 真实连续操作必须入栈 / 栈深上限 / redo 清空与往返一致 / 应用函数幂等）。这既不动 `vite.config.ts`（另有会话可能正在改），也把交接 §6 P1-2"先测纯函数"的前置条件做实 —— 日后引入 vitest 是零改造成本；
   - **i18n 净增 6 个 key（163 → 169）**：`help.undo`(=`Ctrl+Z`，兼作 kbd 文案)、`help.undoDesc`、`toast.undo`、`toast.undoRedo`、`toast.ratingChange`、`toast.selectionChange`；**帮助对话框与欢迎页两处都加了**（否则新 key 是死 key，会话 ① 的同一条纪律）；
-  - **toast 文案在 App 里生成**（`patchToast(t, patch, kind)`），不在 `useScanner` 里预格式化 —— hook 不该依赖 i18n，且文案要随语言切换即时变化。
+  - **toast 文案在 App 里生成**（`patchToast(t, patch, kind)`），不在 `useScanner` 里预格式化 —— hook 不该依赖 i18n，且文案要随语言切换即时变化；
+  - **插值占位符必须用单括号**（`{prev}`，不是 i18next 默认的 `{{prev}}`）：本仓库 `i18n/index.ts:26` 把 `prefix/suffix` 改成了 `{`/`}`，写成双括号会被解析成不存在的变量 `"{prev"` 并**原样显示**（首轮实机就是"已撤销：{{prev}}★ → {{next}}★"，见提交 `07b543a`）。**新增任何带占位符的文案前，先对照既有 key 的写法**，别照 i18next 官方文档写。
 - **被否决方案**：
   - 栈用 `useRef`（文档建议）→ 否决：与 `canUndo`/`canRedo` 自相矛盾（ref 不触发渲染 → 永远 `false`）；
   - 把 `ratings[path]` 挪到 updater 外读旧值（文档建议的"更稳写法"）→ 否决：`setRating` 依赖 `ratings` 会让所有卡片 `onRate` 换引用、双层 memo 失效（交接 §6 P2-6 的老问题）；正确解法是 `ratingsRef`；
@@ -573,7 +574,7 @@ cd src-tauri && cargo check --lib
   - `Ctrl+Y` 作为重做别名 → 否决：文档只要求 `Ctrl+Shift+Z`，多一个键多一份误触面；
   - 查看器底部提示条再加一条 `Ctrl+Z` 文案 → 否决：提示条已有 7 条偏满，撤销属通用快捷键，写进帮助即可（也省一个 key）；
   - 长按 Ctrl+Z 连撤（把 `z` 移出 `NON_REPEAT_KEYS` 或加节流）→ 否决：手抖按住会一口气退掉几十步且不可预期，本 Phase 先不做。
-- **验收结果**：**静态验收 6 项全通过**：① `npx tsc --noEmit` exit 0（改前/改后各一次）；② `npx vite build` exit 0；③ i18n 叶子 key zh/en 各 169 且零差异；④ 源码 169 个 `t("…")` 全部能解析到、无死 key；⑤ `src/undo.ts` 冒烟 27/27（含"两个真实连续操作必须入栈两条"这一最危险失败方向）；⑥ 每个 `setSelectedPaths` 调用点都经过 `selectPaths`（用 grep 逐点核对）。**实机 GUI 0 项**：清单第 1–22 项**全部未实机验证**（本会话未跑 `npx tauri dev`），首次实机时优先做第 1、2、5、9、12 项（评分撤销、连撤 LIFO、输入框豁免、自动前进下撤销不回跳错图/不前进、1:1+旋转下撤销不重置）。
+- **验收结果**：**静态验收 6 项全通过**：① `npx tsc --noEmit` exit 0（改前/改后各一次）；② `npx vite build` exit 0；③ i18n 叶子 key zh/en 各 169 且零差异；④ 源码 169 个 `t("…")` 全部能解析到、无死 key；⑤ `src/undo.ts` 冒烟 27/27（含"两个真实连续操作必须入栈两条"这一最危险失败方向）；⑥ 每个 `setSelectedPaths` 调用点都经过 `selectPaths`（用 grep 逐点核对）。**实机 GUI 已开始，首测即发现并修掉 1 个真 bug**：撤销 toast 显示成 `{{prev}}★ → {{next}}★` —— 根因是插值写成了 i18next 默认的双括号，与本仓库 `prefix/suffix` 单括号配置冲突（提交 `07b543a` 修复；已用仓库真实 i18next 复现+验证，并扫过 zh/en 全部 13 个带占位符的 key）。**除该条外，清单第 1–22 项尚未逐项实机验证**（本会话未跑完整 GUI 回归），首次实机时优先做第 1、2、5、9、12 项（评分撤销、连撤 LIFO、输入框豁免、自动前进下撤销不回跳错图/不前进、1:1+旋转下撤销不重置）。
   另有一次**探针结论记录**：想用 `renderToString` 实证 "StrictMode 双调用 updater"，结果渲染期更新只调用 1 次（该路径不双调用），故未能实证 —— 去重按 React 官方文档的结论保留（它无论双调用与否都正确，且不双调用时也不会有副作用）。
 - **遗留 / 本次不做**：
   - `canUndo`/`canRedo` 已导出但**当前 UI 不消费**（帮助只写静态文案）；若要加"撤销"按钮/置灰态，直接用这两个布尔值；
@@ -626,7 +627,9 @@ cd src-tauri && cargo check --lib
 
 ## 附 · 会话 ② GUI 手测清单（Phase 2 · 撤销/重做）
 
-> 状态：**全部 22 项未实机验证**（2026-09-27 会话 ② 只做了静态验收 + 纯函数冒烟，未跑 `npx tauri dev`）。
+> 状态：**已开始实机验证**（2026-09-27 用户在 `npx tauri dev` 下实测）。首测暴露出 1 个显示 bug 并已修复：
+> toast 显示成 `已撤销：{{prev}}★ → {{next}}★` —— 插值写成了 i18next 默认双括号，与本仓库 `prefix/suffix` 单括号配置冲突。
+> **第 8 项（toast 文案）当时是 ❌，修复（提交 `07b543a`）后待复测**；其余 21 项仍待逐项执行。
 > 首次实机请优先做 **1、2、5、9、12** 项（评分撤销落地、连撤 LIFO、输入框豁免、自动前进下的撤销语义、1:1+旋转下撤销不重置画面），这五项失败概率最高。
 > 执行前：`npm run tauri dev`，打开一个含 RAW 的文件夹；先按 `R` 确认旋转、按 `Z` 确认 1:1 都能正常工作。
 > 每项后标注结果：✅ 通过 / ❌ 失败（附现象）/ ⏭ 跳过（附原因）。做完把结果回填进上面的决策日志"验收结果"，并同步本文档开头那段状态。
