@@ -860,16 +860,54 @@ cd src-tauri && cargo check --lib
 
 ### 会话 ④（Phase 5）— ✅ 会话 ③ 已完成（见决策日志），现在可用
 
+> 会话 ③ 收尾后更新过：把会话 ③ 学到的硬约束（i18n 192 个 key / 单括号插值 / `no-scrollbar` /
+> 提交卫生 / 新写入路径必须序列化）都写进了提示词，并加了"开动前先确认 Phase 4 遗留验收"。
+
 ```text
 接着做 docs/ImageFilter-功能实施方案.md 的 Phase 5（评分/色标写 XMP 边车）。
 
-先读该文档的 Phase 5 一节和文末决策日志，再只输出改动计划：
-xmp.rs 的读写策略（如何保留已有字段）、两个命令的签名、
-三档开关的状态机、读取合并的时机、以及导入时复制 .xmp 的落点与单测。
-我确认后再动手。这一 Phase 要写用户的存储卡，请把失败路径列全。
+先读：Phase 5 一节 + Phase 4 一节 + 文末决策日志（会话 ⓪①②③ 都要读）+ 开头「共同的前置约束」9 条。
+（文档里的行号是写文时记的，可能已漂移，请按符号名找，别照行号跳。）
 
-约束：默认 off（不碰卡）；不许引入 XML 解析依赖；写盘走 spawn_blocking；
-新增单测照抄 importer.rs 的 copy_one 测试结构。
+然后**只输出改动计划**，不要动代码，逐条回答：
+0. 开动前先确认 Phase 4 的遗留验收：会话 ③ 手测清单里的第 1、7、10、11、20、25、27、28 项
+   （尤其第 1 项 —— Ctrl+数字在 WebView2 里到底有没有被吞、要不要改用 Alt）。Phase 5 要把
+   imagefilter-labels 这份 map 写进 xmp:Label，标签数据本身得先确认没问题。
+1. xmp.rs 的读写策略：不引入 XML 解析依赖的前提下，怎么做到"**只替换/插入 xmp:Rating 与
+   xmp:Label，其它字段（关键词、版权）原样保留**"？把字符串替换的边界条件写清楚
+   （属性不存在 / 存在但值不同 / 属性写法不同 / 有多个 rdf:Description / 文件不是合法 XMP）。
+2. 两个命令的签名（read_decision / write_decision，要不要再加批量 write_decisions + Channel），
+   以及前端所有调用点（列全）。
+3. 三档开关 off / ask / on 的状态机（localStorage key、默认值、读取兜底），以及 ask 档
+   "只问一次"的判定落点。
+4. 读取合并的时机：为什么必须在 scan_directory 之后、渲染之前完成；边车与本地冲突时谁优先；
+   合并结果要不要回写 localStorage。
+5. 导入时复制 .xmp 的落点与"按同一模板改名"的规则；新增单测照抄 importer.rs 的 copy_one 结构。
+6. **失败路径列全**（这一 Phase 要写用户的卡）：只读卡 / 写保护 / 权限拒绝 / 磁盘满 /
+   文件被占用 / 已有 .xmp 内容损坏 / 写到一半崩溃 / 文件名大小写 / 网络盘 / 并发两次写同一张 ——
+   每条都要写清"用户看到什么、状态怎么回滚、要不要自动降级为 off"。
+
+必须明确表态的三件事（会话 ③ 的教训，别绕过去）：
+A. **写盘与撤销栈的关系**：Ctrl+Z 撤销一次评分/标签之后，边车要不要跟着回写？文档 5.3 倾向
+   "引入待同步集合"。给出结论 + 理由（前置约束第 6 条要求任何改数据的入口都能被 Ctrl+Z 解释）。
+B. **新写入路径一律序列化**：Phase 5 新增的"边车 → 本机 map 的合并写入"必须汇流到既有记录点
+   （setRating / setLabel）或与 src/undo.ts 并列，不许直接 setState，否则撤销会漏掉这一步。
+C. **落地页 demo 的 mock 层**（另一个仓库）：命令签名一变那份 mock 就必须同步，否则官网迷你
+   演示白屏 —— 在计划里列出要同步的点。
+
+约束（照抄，别打折）：
+- 默认 **off**，不碰用户的卡；写盘走 tokio::task::spawn_blocking；
+- **不许引入 XML 解析依赖**；除 Phase 5 设计内的 src-tauri 改动外不动 Rust；不加任何第三方依赖；
+- i18n **双写** zh/en（当前各 **192** 个叶子 key），插值一律**单括号 {n}** —— i18n/index.ts 把
+  prefix/suffix 改成了 { }，写成 {{n}} 会原样显示（会话 ② 踩过）；
+- 所有 `overflow-auto` 容器一律带 `no-scrollbar`（保留滚动、隐藏滚动条）；
+- 纯逻辑验证用"临时脚本 + 仓库自带 esbuild 转译 + Node 断言，用完即删"，**不要引入 vitest、
+  不要动 vite.config.ts**（可能有并发会话在改）；
+- **禁止 `git add -A` / `git commit -a`**：src-tauri/Cargo.toml 有行尾符噪音、
+  task-7-review-package.decoded.txt 不属于本项目，都别提交；只 add 明确路径；
+- 收尾四件套：`npx tsc --noEmit` + `npx vite build`（报 exit code）、i18n 静态校验、
+  GUI 手测清单照「附 · 会话 ②/③ 手测清单」的样子写进文档（未实机验证的项标清楚）、
+  按模板追加「会话 ④」决策日志，拆成 feat(xmp) 与 docs 两个提交。
 ```
 
 ### 会话 ⑤（Phase 6）— 会话 ④ 收尾后再用
