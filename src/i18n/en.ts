@@ -27,6 +27,17 @@ export default {
     autoAdvanceDesc: "Jump to the next photo after J / X / 1-5 or a star click; closes the viewer after the last photo. Use ← to go back.",
     labelKeys: "Color label shortcut",
     labelKeysDesc: "Modifier for color labels: Ctrl+1-5 to label, Ctrl+0 to clear; pick Alt if Ctrl+digit is taken by the system",
+    // Phase 5 · XMP sidecar (three-step switch, default "Off" = local only, never touches the card)
+    // Status text shares this row's desc on purpose (adding a row means re-checking total height)
+    xmpMode: "Write ratings/labels to .xmp",
+    xmpModeDesc: "Off = local only (default, never touches the card); Ask = ask once on the first write; On = write a .xmp sidecar next to each photo after rating/tagging, readable by Lightroom/digiKam",
+    xmpModeOff: "Off",
+    xmpModeAsk: "Ask",
+    xmpModeOn: "On",
+    xmpStatusOff: "Not enabled",
+    xmpStatusWritable: "{dir} is writable",
+    xmpStatusUnwritable: "{dir} is not writable: {reason}",
+    xmpStatusDegraded: " (this location does not support atomic replace; writing directly)",
     transparentBg: "Transparent frosted background",
     transparentBgDesc: "Use Windows Mica glass that follows the dark/light theme; takes effect immediately",
     transparentBgOpacity: "Title bar glass opacity",
@@ -240,6 +251,32 @@ export default {
     ratingChange: "{prev}★ → {next}★",
     labelChange: "{prev} → {next}",
     selectionChange: "{n} selected",
+  },
+
+  // ── Phase 5 · XMP sidecar ──
+  // Error codes mirror XmpError::code() in src-tauri/src/xmp.rs (whitelisted on the
+  // front end, then used as the dynamic prefix `xmp.err.<code>`; unknown falls back).
+  xmp: {
+    askTitle: "Write ratings/labels into .xmp?",
+    askBody: "A sidecar file with the same name will be created next to each photo (e.g. IMG_1234.xmp) so Lightroom / digiKam can read these decisions. Only .xmp files are added or updated — your photos are never modified or deleted.",
+    askYes: "Write .xmp",
+    askNo: "Local only",
+    toastFailed: "Failed to write .xmp: {reason}",
+    toastDowngraded: "This location is not writable; switched back to \"Local only\": {reason}",
+    toastQueueOverflow: "Too many changes — only the latest {n} were synced",
+    err: {
+      writeProtect: "the card is write-protected (read-only)",
+      readOnly: "the file or folder is marked read-only",
+      permission: "permission denied",
+      diskFull: "not enough disk space",
+      busy: "the file is in use by another program",
+      notXmp: "the existing .xmp is not recognizable XMP (left untouched)",
+      unsupportedForm: "the .xmp uses an unsupported form (left untouched)",
+      tooLarge: "the .xmp exceeds the 1 MB limit (left untouched)",
+      encoding: "the .xmp is not UTF-8 encoded (left untouched)",
+      pathTooLong: "the path is too long",
+      unknown: "unknown error",
+    },
   },
 
 };

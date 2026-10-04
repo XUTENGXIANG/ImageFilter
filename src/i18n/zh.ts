@@ -29,6 +29,17 @@ export default {
     autoAdvanceDesc: "按 J / X / 1-5 或点星条后自动跳到下一张，打完最后一张自动关闭查看器；想留下就用 ← 回退",
     labelKeys: "颜色标签快捷键",
     labelKeysDesc: "颜色标签用哪个修饰键：Ctrl+1-5 打标、Ctrl+0 清除；若 Ctrl+数字被系统占用就选 Alt",
+    // Phase 5 · XMP 边车(三档开关, 默认"关闭" = 只写本机、完全不碰卡)
+    // 状态文案挂在同一行的 desc 上, **不新增整行** —— 加行 = 重新算对话框总高(会话 ③ 第 28 项)
+    xmpMode: "评分/颜色标签写入 .xmp",
+    xmpModeDesc: "关闭 = 只写本机（默认，完全不碰卡）；询问 = 首次写入时问一次；写入 = 评分/打标后自动写照片同目录的 .xmp 边车文件，LR/digiKam 也能读到",
+    xmpModeOff: "关闭",
+    xmpModeAsk: "询问",
+    xmpModeOn: "写入",
+    xmpStatusOff: "未启用",
+    xmpStatusWritable: "{dir} 可写",
+    xmpStatusUnwritable: "{dir} 不可写：{reason}",
+    xmpStatusDegraded: "（该位置不支持原子覆盖，已降级为直接写入）",
     transparentBg: "透明毛玻璃背景",
     transparentBgDesc: "启用后使用 Windows Mica 毛玻璃，随深色/浅色主题自动切换；立即生效",
     transparentBgOpacity: "标题栏玻璃透明度",
@@ -254,6 +265,32 @@ export default {
     ratingChange: "{prev}★ → {next}★",
     labelChange: "{prev} → {next}",
     selectionChange: "勾选 {n} 张",
+  },
+
+  // ── Phase 5 · XMP 边车 ──
+  // 错误码与 src-tauri/src/xmp.rs 的 XmpError::code() 一一对应(前端白名单校验后
+  // 用动态前缀 `xmp.err.<code>`, 未知码落到 unknown)。全部**单括号**插值。
+  xmp: {
+    askTitle: "把星级/颜色标签写入 .xmp？",
+    askBody: "会在照片所在文件夹生成同名的 .xmp 边车文件（例如 IMG_1234.xmp），Lightroom / digiKam 等软件也能读到这些决策。只增改 .xmp，绝不改动或删除你的照片。",
+    askYes: "写入 .xmp",
+    askNo: "只写本机",
+    toastFailed: "写入 .xmp 失败：{reason}",
+    toastDowngraded: "该位置不可写，已切回“只写本机”：{reason}",
+    toastQueueOverflow: "改动太多，本次只同步最近 {n} 张",
+    err: {
+      writeProtect: "存储卡处于写保护（只读）",
+      readOnly: "文件或文件夹是只读属性",
+      permission: "权限不足",
+      diskFull: "磁盘空间不足",
+      busy: "文件被其它程序占用",
+      notXmp: "已存在的 .xmp 不是可识别的 XMP（未修改）",
+      unsupportedForm: "该 .xmp 使用了不支持的写法（未修改）",
+      tooLarge: ".xmp 超过 1 MB 上限（未修改）",
+      encoding: ".xmp 不是 UTF-8 编码（未修改）",
+      pathTooLong: "路径过长",
+      unknown: "未知错误",
+    },
   },
 
 };

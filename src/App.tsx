@@ -14,6 +14,9 @@ import { FolderTreeItem } from "./components/folder-tree-item";
 import { PhotoCard } from "./components/photo-card";
 import { PhotoToolbar } from "./components/photo-toolbar";
 import { ImportBar } from "./components/import-bar";
+import {
+  Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter,
+} from "./components/ui/dialog";
 // ═══════════════════════════════════════════════════════════════════
 // 🎨 图标约定: 本项目所有图标一律使用 bytedance/IconPark (@icon-park/react)
 //    参考: https://github.com/bytedance/IconPark
@@ -25,6 +28,7 @@ import { Disk, DiskOne } from "@icon-park/react";
 import type { ScannedPhoto, AnalysisResult, FlagFilter } from "./types";
 import type { Patch } from "./undo";
 import { LABEL_ORDER, isLabelChord, type Label } from "./labels";
+import { xmpErrKey, type XmpNotice } from "./xmp";
 
 /**
  * 撤销/重做的 toast 文案。
@@ -46,6 +50,17 @@ function patchToast(t: TFunction, p: Patch, kind: "undo" | "redo"): string {
     what = t("toast.selectionChange", { n: p.next.length });
   }
   return `${verb}：${what}`;
+}
+
+/**
+ * Phase 5 · XMP 边车的一次性提示文案(与 patchToast 同理: 在 App 里生成, 不放进 hook)。
+ * 错误码来自 Rust 的闭集, 这里再白名单校验一次(xmpErrKey), 未知码落到 unknown。
+ */
+function xmpNoticeText(t: TFunction, n: XmpNotice): string {
+  const reason = t(`xmp.err.${xmpErrKey(n.code)}`);
+  if (n.kind === "downgraded") return t("xmp.toastDowngraded", { reason });
+  if (n.kind === "overflow") return t("xmp.toastQueueOverflow", { n: n.n });
+  return t("xmp.toastFailed", { reason });
 }
 
 /**
@@ -195,6 +210,13 @@ function App() {
     undo,
     redo,
     lastUndoPath,
+    // Phase 5: XMP 边车
+    xmpMode,
+    setXmpMode,
+    xmpAskPending,
+    resolveXmpAsk,
+    xmpStatus,
+    xmpNotice,
   } = useScanner();
 
   // 图片查看器: viewerIndex=null 关闭, 数字=打开第N张
@@ -213,11 +235,21 @@ function App() {
   //  const 声明在后面就触发 TDZ — 与 viewerIndex 是同一条纪律)
   const [toast, setToast] = useState<string | null>(null);
   const toastTimer = useRef<number | undefined>(undefined);
-  const showToast = (msg: string) => {
+  // ms 默认 1200(既有手感不变); Phase 5 的边车失败提示传 4000 ——
+  // "写入 .xmp 失败：存储卡处于写保护（只读）" 这类长文案 1.2s 读不完(会话 ② 已记录)。
+  const showToast = (msg: string, ms = 1200) => {
     setToast(msg);
     window.clearTimeout(toastTimer.current);
-    toastTimer.current = window.setTimeout(() => setToast(null), 1200);
+    toastTimer.current = window.setTimeout(() => setToast(null), ms);
   };
+
+  // Phase 5: 边车的一次性提示(档位降级/写入失败/队列溢出)。
+  // hook 只给"发生了什么"(notice.seq 保证每次都重新触发), 文案在这里用 i18n 拼。
+  useEffect(() => {
+    if (!xmpNotice) return;
+    showToast(xmpNoticeText(t, xmpNotice), 4000);
+    // 只依赖 notice 本身: seq 变了就是一次新提示
+  }, [xmpNotice]);
 
   // Disable browser default context menu
   useEffect(() => {
@@ -543,6 +575,9 @@ function App() {
         onToggleAutoAdvance={toggleAutoAdvance}
         labelModifier={labelModifier}
         onLabelModifierChange={setLabelModifier}
+        xmpMode={xmpMode}
+        onXmpModeChange={setXmpMode}
+        xmpStatus={xmpStatus}
         transparentBg={transparentBg}
         onToggleTransparentBg={() => setTransparentBg((v) => !v)}
         backgroundOpacity={backgroundOpacity}
@@ -811,6 +846,37 @@ function App() {
           onUndoToast={(p, kind) => showToast(patchToast(t, p, kind))}
         />
       )}
+      {/* Phase 5 · XMP 边车 ask 档的"问一次"弹窗。
+          本地评分/标签**已经写完**了 —— 这个框只决定"要不要落盘", 所以用户选"只写本机"
+          不需要回滚任何东西; 直接关掉/按 Esc = 未作答(本会话不再问, 下次启动再问)。 */}
+      <Dialog
+        open={xmpAskPending}
+        onOpenChange={(o) => { if (!o) resolveXmpAsk(null); }}
+      >
+        <DialogContent className="w-[460px]">
+          <DialogHeader>
+            <DialogTitle>{t("xmp.askTitle")}</DialogTitle>
+            <DialogDescription>{t("xmp.askBody")}</DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <button
+              type="button"
+              onClick={() => resolveXmpAsk("off")}
+              className="px-3 py-1.5 rounded-md border border-border text-sm hover:bg-muted"
+            >
+              {t("xmp.askNo")}
+            </button>
+            <button
+              type="button"
+              onClick={() => resolveXmpAsk("on")}
+              className="px-3 py-1.5 rounded-md bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-medium"
+            >
+              {t("xmp.askYes")}
+            </button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       {/* 弹出提示浮窗 — 渐变出现停留1秒后消失 */}
       <div
         className={`fixed top-16 left-1/2 -translate-x-1/2 px-4 py-2 rounded-lg bg-emerald-600/90 text-white text-sm shadow-2xl z-[200] transition-all duration-300 ${

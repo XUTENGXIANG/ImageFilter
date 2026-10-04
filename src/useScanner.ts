@@ -2,13 +2,18 @@ import { useState, useCallback, useRef, useMemo } from "react";
 import { invoke, convertFileSrc, Channel } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import i18n from "./i18n";
-import type { DriveInfo, ScannedPhoto, FolderEntry, FolderNode, ImportProgress, AnalysisResult, FlagFilter } from "./types";
+import type { DriveInfo, ScannedPhoto, FolderEntry, FolderNode, ImportProgress, AnalysisResult, FlagFilter, DecisionRead, DecisionWrite, WriteSummary, XmpProbe } from "./types";
 import {
   EMPTY_HISTORY, applyLabelPatch, applyRatingPatch, applySelectionPatch, patchPath,
   popRedo, popUndo, pushPatch,
   type History, type Patch,
 } from "./undo";
 import { LABELS_STORAGE_KEY, readLabels, type Label } from "./labels";
+import {
+  XMP_MODE_STORAGE_KEY, XMP_QUEUE_LIMIT, buildDecisionWrite, isVolumeFatal,
+  mergeRemoteLabels, mergeRemoteRatings, readXmpMode,
+  type XmpField, type XmpMode, type XmpNotice, type XmpStatus,
+} from "./xmp";
 
 function entryToNode(entry: FolderEntry): FolderNode {
   return {
@@ -92,6 +97,267 @@ export function useScanner() {
   // 后台计数请求代次 — 只有最新一次设备切换的计数结果才允许写回(见 browseDrive)
   const countGenRef = useRef(0);
 
+  // ═══ Phase 5 · XMP 边车(档位 / 待同步队列 / 合并 / 可写性探测) ═══════
+  // 这一整块是"边车"的**唯一**入口: 想读盘/写盘/改档位都走这里。
+  // 与 setRating / setLabel 并列在 hook 内(docs 会话 ④ 的 B 条): 组件里不许出现
+  // setRatings/setLabels, 也不许直接 invoke("write_decisions")。
+  const [xmpMode, setXmpModeState] = useState<XmpMode>(readXmpMode);
+  // 档位镜像: setRating/setLabel 必须是**引用稳定**的回调(档位一旦进依赖数组, 每次改档
+  // 都会让所有卡片的 onRate 换引用、双层 memo 失效 —— 交接 §6 P2-6), 所以一律读 ref。
+  const xmpModeRef = useRef<XmpMode>(xmpMode);
+  // ask 档: 弹窗挂起中 / 本会话是否已经问过(未作答也算"问过了", 下次启动再问)
+  const [xmpAskPending, setXmpAskPending] = useState(false);
+  const xmpAskAnsweredRef = useRef(false);
+  // 待同步队列: path → 要写的**字段集合**。src/xmp.ts 不变式 3: 不存值 ——
+  // 值在 flush 时从 ratingsRef/labelsRef 现读, 于是连按十次 Ctrl+Z 只写一次盘。
+  const xmpQueueRef = useRef<Map<string, Set<XmpField>>>(new Map());
+  const xmpTimerRef = useRef<number | undefined>(undefined);
+  const xmpInFlightRef = useRef(false);
+  // 代次: 切文件夹后旧读盘结果必须整体丢弃(与 countGenRef 同款纪律)
+  const xmpGenRef = useRef(0);
+  const xmpSeqRef = useRef(0);
+  const xmpFailedRef = useRef<Set<string>>(new Set());
+  const xmpNotifiedRef = useRef<Set<string>>(new Set());
+  const xmpProbedRef = useRef<Map<string, XmpProbe>>(new Map());
+  /** flush ↔ schedule 互相需要, 用 ref 打断(既不 TDZ 也不循环依赖) */
+  const xmpFlushRef = useRef<() => void>(() => {});
+  /** 当前文件夹(探测与降级提示都要知道"哪个目录不可写") */
+  const activeFolderRef = useRef(activeFolder);
+  /**
+   * 提示/弹窗的**请求位**。
+   * 为什么不用 state 直接更新: `queueXmpWrite` 可能在 setRating/setLabel/undo 的
+   * updater 里被调用, 而 updater 是**渲染期**执行的(StrictMode 还跑两次) ——
+   * 在渲染期 setState 是禁忌。所以先写 ref, 再由下面那段"渲染期搬运"转成 state
+   * (React 官方允许的"渲染期调整状态", 条件是当场清空 ref → 必然收敛, 不会死循环)。
+   */
+  const xmpNoticeRef = useRef<XmpNotice | null>(null);
+  const xmpAskWantedRef = useRef(false);
+  /** 给 App 的一次性提示(文案在 App 里用 i18n 拼 —— hook 不该依赖 i18n, 会话 ② 定) */
+  const [xmpNotice, setXmpNotice] = useState<XmpNotice | null>(null);
+  /** 设置页常驻状态行(不能只靠 toast: "这张卡不可写"要能随时回看) */
+  const [xmpStatus, setXmpStatus] = useState<XmpStatus | null>(null);
+
+  // 渲染期搬运: ref 请求 → state(幂等收敛, 见上面的注释)
+  if (xmpNoticeRef.current) {
+    const n = xmpNoticeRef.current;
+    xmpNoticeRef.current = null;
+    setXmpNotice(n);
+  }
+  if (xmpAskWantedRef.current) {
+    xmpAskWantedRef.current = false;
+    setXmpAskPending(true);
+  }
+
+  /**
+   * 一次性提示: 同一个 (kind|code|目录) 每会话只弹一次 ——
+   * 否则"卡写保护"就变成每次评分都弹一次错, 那是骚扰(docs §5.3 的要求是"可见", 不是"刷屏")。
+   */
+  const notifyXmp = useCallback((kind: XmpNotice["kind"], code: string | null, n = 0) => {
+    const key = `${kind}|${code ?? "-"}|${activeFolderRef.current}`;
+    if (xmpNotifiedRef.current.has(key)) return;
+    xmpNotifiedRef.current.add(key);
+    xmpSeqRef.current += 1;
+    xmpNoticeRef.current = { seq: xmpSeqRef.current, kind, code, n };
+  }, []);
+
+  /** 只改档位状态(不探测、不 flush)。单独抽出来是为了断开 probe ↔ setXmpMode 的循环引用 */
+  const applyXmpMode = useCallback((m: XmpMode) => {
+    xmpModeRef.current = m;
+    setXmpModeState(m);
+    try { localStorage.setItem(XMP_MODE_STORAGE_KEY, m); } catch {}
+  }, []);
+
+  /** off 的语义是"完全不碰卡": 丢掉待同步队列与失败标记(严格零写盘, 保持 v1.0.x 行为) */
+  const dropXmpQueue = useCallback(() => {
+    xmpQueueRef.current.clear();
+    xmpFailedRef.current.clear();
+    window.clearTimeout(xmpTimerRef.current);
+    xmpTimerRef.current = undefined;
+    setXmpStatus((prev) => (prev ? { ...prev, pending: 0 } : prev));
+  }, []);
+
+  /** 防抖调度(600ms)。已有定时器就复用 —— 连续操作只落一次盘 */
+  const scheduleXmpFlush = useCallback((delay = 600) => {
+    if (xmpModeRef.current !== "on") return;
+    if (xmpTimerRef.current !== undefined) return;
+    xmpTimerRef.current = window.setTimeout(() => {
+      xmpTimerRef.current = undefined;
+      void xmpFlushRef.current();
+    }, delay);
+  }, []);
+
+  /** 入队(幂等: Set 去重 → StrictMode 双调用安全) */
+  const enqueueXmp = useCallback((path: string, fields: XmpField[]) => {
+    const q = xmpQueueRef.current;
+    let set = q.get(path);
+    if (!set) {
+      if (q.size >= XMP_QUEUE_LIMIT) {
+        // 丢最旧的: Map 保持插入顺序, 第一个 key 就是最旧的
+        const oldest = q.keys().next().value as string | undefined;
+        if (oldest !== undefined) q.delete(oldest);
+        notifyXmp("overflow", null, XMP_QUEUE_LIMIT);
+      }
+      set = new Set<XmpField>();
+      q.set(path, set);
+    }
+    for (const f of fields) set.add(f);
+    // 用户又改了这张 → 解除"本会话不再自动重试"的标记(新值值得再试一次)
+    xmpFailedRef.current.delete(path);
+  }, [notifyXmp]);
+
+  /**
+   * 真正落盘: 一次 IPC 提交队列里的所有 path(撤销风暴会在这里被合并成一条)。
+   * 单项失败不影响其它项; 只有"整卷不可写"才降级 off(见 src/xmp.ts::isVolumeFatal)。
+   */
+  const flushXmpQueue = useCallback(async () => {
+    window.clearTimeout(xmpTimerRef.current);
+    xmpTimerRef.current = undefined;
+    if (xmpModeRef.current !== "on") return;
+    if (xmpInFlightRef.current) return; // 单飞: finally 里若队列非空会再排一次
+    const q = xmpQueueRef.current;
+    if (q.size === 0) return;
+
+    const items: DecisionWrite[] = [];
+    for (const [path, fields] of q) {
+      if (xmpFailedRef.current.has(path)) continue; // 本会话不再自动重试
+      items.push(buildDecisionWrite(path, fields, ratingsRef.current, labelsRef.current));
+    }
+    q.clear();
+    if (items.length === 0) {
+      setXmpStatus((prev) => (prev ? { ...prev, pending: 0 } : prev));
+      return;
+    }
+
+    xmpInFlightRef.current = true;
+    try {
+      const summary = await invoke<WriteSummary>("write_decisions", { items });
+      const failures = summary?.failures ?? [];
+      for (const f of failures) xmpFailedRef.current.add(f.path);
+      if (failures.length > 0) notifyXmp("failed", failures[0].code, failures.length);
+      const fatal = failures.find((f) => isVolumeFatal(f.code));
+      if (fatal) {
+        // 只读卡/写保护/权限不足 → 自动降级为 off + 一次提示(docs §5.3 红线),
+        // 绝不"每次评分都弹错"。
+        dropXmpQueue();
+        applyXmpMode("off");
+        notifyXmp("downgraded", fatal.code, 0);
+      }
+      setXmpStatus((prev) =>
+        prev
+          ? { ...prev, pending: xmpQueueRef.current.size, degraded: prev.degraded || !!summary?.degraded }
+          : prev
+      );
+    } catch (err) {
+      console.error("write_decisions:", err);
+      notifyXmp("failed", "unknown", 0);
+    } finally {
+      xmpInFlightRef.current = false;
+      if (xmpModeRef.current === "on" && xmpQueueRef.current.size > 0) scheduleXmpFlush(0);
+    }
+  }, [applyXmpMode, dropXmpQueue, notifyXmp, scheduleXmpFlush]);
+  xmpFlushRef.current = flushXmpQueue;
+
+  /** 探测目录可写性(每个目录每会话只探一次)。不可写 → 立刻降级 off + 一次性提示 */
+  const probeXmpTarget = useCallback(async (dir: string) => {
+    if (!dir) return;
+    const cached = xmpProbedRef.current.get(dir);
+    if (cached) {
+      setXmpStatus({ dir, writable: cached.writable, code: cached.code, pending: xmpQueueRef.current.size, network: cached.network, degraded: false });
+      return;
+    }
+    try {
+      const p = await invoke<XmpProbe>("probe_xmp_target", { dirPath: dir });
+      xmpProbedRef.current.set(dir, p);
+      setXmpStatus({ dir, writable: p.writable, code: p.code, pending: xmpQueueRef.current.size, network: p.network, degraded: false });
+      if (!p.writable) {
+        dropXmpQueue();
+        applyXmpMode("off");
+        notifyXmp("downgraded", p.code, 0);
+      }
+    } catch (err) {
+      console.error("probe_xmp_target:", err);
+    }
+  }, [applyXmpMode, dropXmpQueue, notifyXmp]);
+
+  /** 用户在设置里改档位 */
+  const setXmpMode = useCallback((m: XmpMode) => {
+    if (m === "off") {
+      applyXmpMode("off");
+      dropXmpQueue();
+      setXmpStatus(null);
+      return;
+    }
+    if (m === "ask") {
+      xmpAskAnsweredRef.current = false; // 显式选了"询问" → 允许再问一次
+      applyXmpMode("ask");
+      return;
+    }
+    xmpAskAnsweredRef.current = true;
+    applyXmpMode("on");
+    void probeXmpTarget(activeFolderRef.current); // 先确认可写; 不可写会自己降级回 off
+    scheduleXmpFlush(0); // 把"询问"挂起期间入队的条目立刻写掉
+  }, [applyXmpMode, dropXmpQueue, probeXmpTarget, scheduleXmpFlush]);
+
+  /**
+   * 一次"可能会写盘"的改动入口 —— setRating / setLabel / undo / redo 都走这里。
+   * off: 什么都不做(绝不碰卡); ask 未答: 请求弹一次窗; ask 已被忽略: 本会话不写。
+   *
+   * ⚠️ **只碰 ref**: 它会在 updater(渲染期)里被调用, 所以这里不许 setState
+   * (弹窗走 xmpAskWantedRef + 渲染期搬运), 也不许有"读到旧 state 会写错值"的用法
+   * (值到 flush 时才从镜像现读)。
+   */
+  const queueXmpWrite = useCallback((path: string, fields: XmpField[]) => {
+    const mode = xmpModeRef.current;
+    if (mode === "off") return;
+    if (mode === "ask") {
+      if (xmpAskAnsweredRef.current) return;
+      // 本地**已经**写完, 弹窗只决定"要不要落盘" → 用户选"只写本机"时无需回滚任何东西
+      xmpAskWantedRef.current = true;
+      enqueueXmp(path, fields);
+      return;
+    }
+    enqueueXmp(path, fields);
+    scheduleXmpFlush();
+  }, [enqueueXmp, scheduleXmpFlush]);
+
+  /**
+   * 回答 ask 档的弹窗。choice = "on"/"off"/null(直接关掉或按 Esc = 未作答):
+   * 未作答时档位保持 ask, 但**本会话不再问**(下次启动再问)。
+   */
+  const resolveXmpAsk = useCallback((choice: "on" | "off" | null) => {
+    // 已经作答过又收到一次"关闭"(受控对话框关闭时可能补一次 onOpenChange(false))
+    // → 不要清掉刚刚入队的待写项。只有"真的没作答"才走忽略分支。
+    if (choice === null && xmpAskAnsweredRef.current) {
+      setXmpAskPending(false);
+      return;
+    }
+    xmpAskAnsweredRef.current = true;
+    setXmpAskPending(false);
+    if (choice === "on") setXmpMode("on");
+    else if (choice === "off") setXmpMode("off");
+    else dropXmpQueue(); // 本会话忽略: 不写盘, 也不留脏队列
+  }, [dropXmpQueue, setXmpMode]);
+
+  /**
+   * 合并结果落地(边车 → 本机 map)。**唯一允许"写 ratings/labels 却不记补丁"的路径**
+   * (docs 会话 ④ 的 B 条):
+   *  · 它是**外部真值校准**, 不是用户操作 —— 逐个 path 调 setRating 会为每张被合并的
+   *    照片造一条补丁: 2000 张就把 100 深的撤销栈冲爆, 用户按 Ctrl+Z 会撤到"合并"这一步;
+   *  · 它必然发生在 loadFolder 的 clearHistory() 之后、任何用户操作之前, 所以栈里
+   *    不可能有引用"合并前值"的补丁 —— 这条不变式是它安全的前提。
+   */
+  const applyMergedRatings = useCallback((next: Record<string, number>) => {
+    ratingsRef.current = next;
+    try { localStorage.setItem("imagefilter-ratings", JSON.stringify(next)); } catch {}
+    setRatings(next);
+  }, []);
+
+  const applyMergedLabels = useCallback((next: Record<string, Label>) => {
+    labelsRef.current = next;
+    try { localStorage.setItem(LABELS_STORAGE_KEY, JSON.stringify(next)); } catch {}
+    setLabels(next);
+  }, []);
+
   // ═══ Phase 2 · 撤销/重做(patch stack) ═══════════════════════════════
   // 栈放 useState 而不是 useRef: 文档建议的 useRef 与"导出 canUndo/canRedo"
   // 自相矛盾 —— ref 不触发渲染, 那两个值会永远是首次渲染的 false(谎报)。
@@ -117,6 +383,8 @@ export function useScanner() {
   // 标签的**唯一写入点**(docs 前置约束 6): 无变化早退 → 记补丁 → 镜像 → 落盘。
   // 任何地方直接调 setLabels 或直接写 localStorage 都会让撤销漏掉这一步 / 镜像过期。
   const setLabel = useCallback((path: string, label: Label | null) => {
+    // 无变化早退(与 updater 里那条双保险): 因为下面的入队写在 updater **之外**
+    if ((labelsRef.current[path] ?? null) === label) return;
     setLabels((prev) => {
       // 无变化早退: 既避免多余渲染, 也让"Ctrl+2 长按连发"根本不产生补丁
       // (含"给一张没有标签的照片清标签"这种空操作)
@@ -131,7 +399,9 @@ export function useScanner() {
       try { localStorage.setItem(LABELS_STORAGE_KEY, JSON.stringify(next)); } catch {}
       return next;
     });
-  }, [recordPatch]);
+    // Phase 5: 入队边车(off 档在 queueXmpWrite 里直接返回, 所以"绝不碰卡"仍然成立)
+    queueXmpWrite(path, ["label"]);
+  }, [recordPatch, queueXmpWrite]);
 
   // 切文件夹 / 切设备必须清空两个栈(文档 Phase 2 关键陷阱): 否则会把 A 文件夹的
   // 评分/勾选撤销到 B 文件夹的展示上(勾选尤其危险: loadFolder 里已清空 selectedPaths,
@@ -239,6 +509,8 @@ export function useScanner() {
   const ratingsRef = useRef<Record<string, number>>(ratings);
 
   const setRating = useCallback((path: string, stars: number) => {
+    // 无变化早退(与下层 updater 里那条双保险): 因为下面的边车入队写在 updater **之外**
+    if ((ratingsRef.current[path] ?? 0) === stars) return;
     setRatings((prev) => {
       const before = prev[path] ?? 0;
       // 无变化早退: 既避免多余渲染, 也让"连点同一颗星"根本不产生补丁
@@ -253,7 +525,11 @@ export function useScanner() {
       try { localStorage.setItem("imagefilter-ratings", JSON.stringify(next)); } catch {}
       return next;
     });
-  }, [recordPatch]);
+    // Phase 5: 入队边车。**必须在 updater 之外** —— updater 是渲染期跑的(StrictMode 还跑
+    // 两次), 在里面调 setState(弹窗/状态)就变成渲染期更新。队列是 Set, 重复入队无副作用;
+    // 值到 flush 时才现读, 所以"这里读到稍旧的镜像"也不会写错值。
+    queueXmpWrite(path, ["rating"]);
+  }, [recordPatch, queueXmpWrite]);
 
   // 撤销 / 重做: 只回放补丁, 评分仍汇流到 setRating 的同一份 localStorage key
   //
@@ -275,6 +551,11 @@ export function useScanner() {
           try { localStorage.setItem("imagefilter-ratings", JSON.stringify(next$)); } catch {}
           setRatings(next$);
         }
+        // Phase 5: **撤销/重做也要回写边车**(docs 会话 ④ 的 A 条) —— 否则下一次读盘
+        // (或 Lightroom)会把撤掉的值复活, 用户看到"我明明撤了它自己又回来了"。
+        // 与普通修改走同一条队列: 连撤十次会被合并成一次写(队列只存 path + 字段),
+        // 所以这里不需要任何节流。放在 updater 内是安全的 —— queueXmpWrite 只碰 ref。
+        queueXmpWrite(patch.path, ["rating"]);
       } else if (patch.kind === "label") {
         // 标签回放: 与评分同款 —— 写镜像 + 落盘 + setState, 三步一起(漏一步就"只退了 UI")
         const next$ = applyLabelPatch(labelsRef.current, patch);
@@ -283,6 +564,7 @@ export function useScanner() {
           try { localStorage.setItem(LABELS_STORAGE_KEY, JSON.stringify(next$)); } catch {}
           setLabels(next$);
         }
+        queueXmpWrite(patch.path, ["label"]);
       } else {
         const next$ = applySelectionPatch(selectedPathsRef.current, patch);
         if (next$ !== selectedPathsRef.current) selectPaths(next$);
@@ -294,7 +576,7 @@ export function useScanner() {
     const target = applied ? patchPath(applied) : null;
     if (target) setLastUndoPath(target);
     return applied;
-  }, []);
+  }, [queueXmpWrite]);
 
   const redo = useCallback((): Patch | null => {
     let applied: Patch | null = null;
@@ -310,6 +592,7 @@ export function useScanner() {
           try { localStorage.setItem("imagefilter-ratings", JSON.stringify(next$)); } catch {}
           setRatings(next$);
         }
+        queueXmpWrite(patch.path, ["rating"]); // 同 undo: 重做也要落到边车
       } else if (patch.kind === "label") {
         // 重做 = 把 prev/next 对调后回放(生成新补丁, 不改栈里那份 —— 不变式 3)
         const next$ = applyLabelPatch(labelsRef.current, { kind: "label", path: patch.path, prev: patch.next, next: patch.prev });
@@ -318,6 +601,7 @@ export function useScanner() {
           try { localStorage.setItem(LABELS_STORAGE_KEY, JSON.stringify(next$)); } catch {}
           setLabels(next$);
         }
+        queueXmpWrite(patch.path, ["label"]);
       } else {
         const next$ = applySelectionPatch(selectedPathsRef.current, { kind: "selection", paths: patch.paths, prev: patch.next, next: patch.prev });
         if (next$ !== selectedPathsRef.current) selectPaths(next$);
@@ -327,7 +611,7 @@ export function useScanner() {
     const target = applied ? patchPath(applied) : null;
     if (target) setLastUndoPath(target);
     return applied;
-  }, []);
+  }, [queueXmpWrite]);
 
   const canUndo = useMemo(() => history.undo.length > 0, [history]);
   const canRedo = useMemo(() => history.redo.length > 0, [history]);
@@ -392,6 +676,8 @@ export function useScanner() {
 
   const browseDrive = useCallback(async (mountPoint: string) => {
     clearHistory(); // 切设备清空撤销栈(见 clearHistory 注释)
+    xmpGenRef.current += 1; // Phase 5: 换设备 → 作废在途的边车读取
+    activeFolderRef.current = "";
     lastClickedRef.current = null; // 换列表 → Shift 锚点作废(同 loadFolder, 见 docs 4.3)
     setBrowsing(true);
     setSelectedDrive(mountPoint);
@@ -438,6 +724,9 @@ export function useScanner() {
 
   const loadFolder = useCallback(async (folderPath: string) => {
     clearHistory(); // 切文件夹清空撤销栈(见 clearHistory 注释), 必须在第一个 await 之前
+    // Phase 5: 作废在途的边车读取(旧结果一律丢弃), 并记住当前目录(探测/降级提示要用)
+    xmpGenRef.current += 1;
+    activeFolderRef.current = folderPath;
     setLoadingFolder(true);
     setActiveFolder(folderPath);
     allowAssetDir(folderPath); // asset 协议按需放行该文件夹
@@ -456,6 +745,28 @@ export function useScanner() {
       ]);
 
       setPhotos(photosList);
+
+      // Phase 5 · 边车 → 本地 合并(docs §5.2): 必须在 scan_directory **之后**、
+      // 渲染之前完成。加载态(spinner)盖住这段时间, 用户看不到星级"跳一下";
+      // 放到 effect 里则会先按旧值算一遍 sortedPhotos(≥N★ 筛选), 网格先错再改。
+      // 只有 on 档才读卡(ask 未答前不碰卡; off 绝不碰卡)。
+      if (xmpModeRef.current === "on" && photosList.length > 0) {
+        const myGen = xmpGenRef.current;
+        try {
+          const remotes = await invoke<DecisionRead[]>("read_decisions", {
+            filePaths: photosList.map((p) => p.path),
+          });
+          // 代次不符 = 用户已经切到别的文件夹 → 整体丢弃(含"回写 localStorage")
+          if (myGen === xmpGenRef.current) {
+            const r = mergeRemoteRatings(ratingsRef.current, remotes);
+            if (r.changed.length > 0) applyMergedRatings(r.map);
+            const l = mergeRemoteLabels(labelsRef.current, remotes);
+            if (l.changed.length > 0) applyMergedLabels(l.map);
+          }
+        } catch (err) {
+          console.error("read_decisions:", err);
+        }
+      }
 
       if (photosList.length > 0) {
         const paths = photosList.map((p) => p.path);
@@ -480,7 +791,10 @@ export function useScanner() {
     } finally {
       setLoadingFolder(false);
     }
-  }, []);
+    // Phase 5: on 档下每次打开文件夹都确认一次目标可写(每个目录每会话只真探一次)。
+    // 不放在 browseDrive(浏览设备树)里: 那时还没有照片, 无谓地碰卡。
+    if (xmpModeRef.current === "on") void probeXmpTarget(folderPath);
+  }, [applyMergedLabels, applyMergedRatings, probeXmpTarget]);
 
   /** Load EXIF on demand when user selects a photo */
   /** Pick destination folder */
@@ -626,5 +940,8 @@ export function useScanner() {
     undo, redo, canUndo, canRedo, lastUndoPath,
     pickDestDir, startImport, preloadFull, togglePreloadFull,
     autoAdvance, toggleAutoAdvance,
+    // Phase 5: XMP 边车 —— 档位 / ask 弹窗 / 设置页状态行 / 一次性提示。
+    // 队列、flush、探测都是内部实现, **不导出**(组件里不许直接 invoke write_decisions)
+    xmpMode, setXmpMode, xmpAskPending, resolveXmpAsk, xmpStatus, xmpNotice,
   };
 }

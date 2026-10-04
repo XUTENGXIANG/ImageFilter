@@ -5,6 +5,7 @@ import {
 } from "@/components/ui/dialog";
 import { Toggle } from "@/components/ui/toggle";
 import type { Lang } from "../i18n";
+import { xmpErrKey, type XmpMode, type XmpStatus } from "../xmp";
 
 interface Props {
   open: boolean;
@@ -20,6 +21,10 @@ interface Props {
   /** Phase 4: 颜色标签用哪个修饰键(Ctrl / Alt)。见 docs 4.1 */
   labelModifier: "ctrl" | "alt";
   onLabelModifierChange: (v: "ctrl" | "alt") => void;
+  /** Phase 5: XMP 边车三档开关 + 常驻状态行(见 docs §5.2/§5.3) */
+  xmpMode: XmpMode;
+  onXmpModeChange: (m: XmpMode) => void;
+  xmpStatus: XmpStatus | null;
   transparentBg: boolean;
   onToggleTransparentBg: () => void;
   glassOpacity: number;
@@ -68,9 +73,26 @@ export function SettingsDialog({
   preloadFull, onTogglePreloadFull, transparentBg, onToggleTransparentBg,
   autoAdvance, onToggleAutoAdvance,
   labelModifier, onLabelModifierChange,
+  xmpMode, onXmpModeChange, xmpStatus,
   glassOpacity, onGlassOpacityChange, backgroundOpacity, onBackgroundOpacityChange,
 }: Props) {
   const { t } = useTranslation();
+
+  // 边车状态: 拼进上面那一行的 desc, **不新增整行** —— 加行要让对话框重新算总高(会话 ③ 第 28 项)。
+  // 注意顺序: "不可写"的判断必须排在档位判断**之前** —— 自动降级会把档位改回 off,
+  // 若先看档位, 用户就再也看不到"为什么被降级"了。
+  const xmpStatusText = (() => {
+    if (xmpStatus && !xmpStatus.writable) {
+      return t("settings.xmpStatusUnwritable", {
+        dir: xmpStatus.dir,
+        reason: t(`xmp.err.${xmpErrKey(xmpStatus.code)}`),
+      });
+    }
+    if (xmpMode !== "on") return t("settings.xmpStatusOff");
+    if (!xmpStatus) return "";
+    return t("settings.xmpStatusWritable", { dir: xmpStatus.dir }) + (xmpStatus.degraded ? t("settings.xmpStatusDegraded") : "");
+  })();
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       {/* max-h 从 80vh 抬到 88vh + 行距 4→3: 让 9 行设置尽量一屏放下(会话 ③ 加了
@@ -130,6 +152,29 @@ export function SettingsDialog({
                   className={`px-3 py-1.5 transition-colors ${labelModifier === m ? "bg-foreground text-background" : "hover:bg-muted text-muted-foreground"}`}
                 >
                   {m === "ctrl" ? "Ctrl" : "Alt"}
+                </button>
+              ))}
+            </div>
+          </SettingRow>
+
+          {/* Phase 5: XMP 边车三档。默认"关闭" = 只写本机、完全不碰卡(docs §5.2) */}
+          <SettingRow
+            title={t("settings.xmpMode")}
+            desc={`${t("settings.xmpModeDesc")}${xmpStatusText ? ` · ${xmpStatusText}` : ""}`}
+          >
+            <div className="flex rounded-md border border-border overflow-hidden text-sm">
+              {([
+                ["off", t("settings.xmpModeOff")],
+                ["ask", t("settings.xmpModeAsk")],
+                ["on", t("settings.xmpModeOn")],
+              ] as [XmpMode, string][]).map(([m, label]) => (
+                <button
+                  key={m}
+                  type="button"
+                  onClick={() => onXmpModeChange(m)}
+                  className={`px-3 py-1.5 transition-colors ${xmpMode === m ? "bg-foreground text-background" : "hover:bg-muted text-muted-foreground"}`}
+                >
+                  {label}
                 </button>
               ))}
             </div>

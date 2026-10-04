@@ -5,6 +5,7 @@ mod importer;
 mod scanner;
 mod tinydng;
 mod win_wic;
+mod xmp;
 
 use tauri::Manager;
 use tauri::window::{Effect, EffectsBuilder};
@@ -118,6 +119,10 @@ pub fn run() {
             analyzer::analyze_photos,
             analyzer::find_duplicates,
             analyzer::stop_analysis,
+            // Phase 5 · XMP 边车(评分/色标跟着文件走)。三个命令见 src/xmp.rs 文件头。
+            xmp::read_decisions,
+            xmp::write_decisions,
+            xmp::probe_xmp_target,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -5,7 +5,9 @@ pub mod drives;
 pub mod exif;
 pub mod images;
 
-const SUPPORTED_EXTENSIONS: &[&str] = &[
+/// pub(crate) 而不是私有: xmp.rs 要用它断言"传进来的是照片路径" ——
+/// 边车写入只接受照片路径(不接受任意路径), 这是 Phase 5 的路径红线。
+pub(crate) const SUPPORTED_EXTENSIONS: &[&str] = &[
     "jpg", "jpeg", "png", "gif", "bmp", "tiff", "tif", "webp",
     "arw", "cr2", "cr3", "nef", "dng", "orf", "rw2", "raf", "pef", "srw", "raw",
     "mp4", "mov", "avi", "mkv",

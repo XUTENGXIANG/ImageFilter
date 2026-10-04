@@ -17,6 +17,11 @@ struct ImportedFile {
     hash: String,
     size: u64,
     skipped: bool, // 目标已存在且内容相同 → 跳过
+    /// Phase 5: 一并复制过来的 XMP 边车(没有源边车/目标已一致 → None)
+    sidecar: Option<PathBuf>,
+    /// Phase 5: 边车没复制成功的原因。**不是致命的** —— 照片已经复制好了,
+    /// 只作为一行进度透出(边车冲突/失败不该让整张照片算导入失败)。
+    sidecar_error: Option<String>,
 }
 
 /// Build destination path from template.
@@ -146,6 +151,91 @@ fn is_safe_relative(dest_path: &Path) -> bool {
     })
 }
 
+// ── Phase 5 · XMP 边车 ───────────────────────────────────────────────
+// 边车命名规则与 src/xmp.rs 的 sidecar_candidates 必须一致(两处都写死同一套规则,
+// 各自有单测钉住)。这里只做"复制", 不改内容, 不解析。
+
+/// 边车源候选: ① `stem.xmp`(RAW 约定, 也是 ImageFilter 写的那份)
+/// ② `file_name.xmp`(Lightroom 对非 RAW 的写法)。取第一个存在的。
+fn sidecar_source(src: &Path) -> Option<PathBuf> {
+    let stem = src.file_stem()?.to_string_lossy().to_string();
+    let full = src.file_name()?.to_string_lossy().to_string();
+    let dir = src.parent()?;
+    [format!("{}.xmp", stem), format!("{}.xmp", full)]
+        .into_iter()
+        .map(|n| dir.join(n))
+        .find(|p| p.is_file())
+}
+
+/// 边车目标 = **照片最终目标路径**换扩展名。
+///
+/// 关键: 不重新跑命名模板, 也不对边车独立跑唯一化后缀逻辑 —— 照片被改名成
+/// `0007_IMG_1234_1.arw` 时, 边车必须跟着变成 `0007_IMG_1234_1.xmp`;
+/// 若对边车自己跑一遍 `_n` 逻辑, 会出现"照片叫 `_1`、边车还叫原名"这种配错对。
+fn sidecar_dest(photo_dest: &Path) -> PathBuf {
+    photo_dest.with_extension("xmp")
+}
+
+/// 复制边车。返回:
+///   `Ok(Some(dest))` = 复制了; `Ok(None)` = 没有源边车 / 目标已一致(不重复复制);
+///   `Err(...)` = 归档里已有同名但内容不同(**绝不覆盖**, 用户自己的东西优先)或复制失败。
+/// 三种结果都不影响照片本身的导入结果。
+fn copy_sidecar(
+    photo_src: &Path,
+    photo_dest: &Path,
+    base_dir: &Path,
+) -> Result<Option<PathBuf>, String> {
+    let Some(src) = sidecar_source(photo_src) else {
+        return Ok(None);
+    };
+    let dest = sidecar_dest(photo_dest);
+    // 纵深防御: 边车目标必须落在归档目录内(它由目标路径派生, 理论上必然)
+    if !dest.starts_with(base_dir) {
+        return Err("边车目标越出归档目录".into());
+    }
+    if dest.exists() {
+        let sh = file_md5(&src).unwrap_or_default();
+        let dh = file_md5(&dest).unwrap_or_default();
+        if !sh.is_empty() && sh == dh {
+            return Ok(None);
+        }
+        return Err("归档中已有同名 .xmp(内容不同), 未覆盖".into());
+    }
+    if let Some(parent) = dest.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("创建目录失败: {}", e))?;
+    }
+    std::fs::copy(&src, &dest).map_err(|e| format!("边车复制失败: {}", e))?;
+    let sh = file_md5(&src).unwrap_or_default();
+    let dh = file_md5(&dest).unwrap_or_default();
+    if sh.is_empty() || sh != dh {
+        return Err("边车校验失败".into());
+    }
+    Ok(Some(dest))
+}
+
+/// 边车结果作为一行进度透出(状态 "sidecar": import-bar 对未知状态走默认样式,
+/// 不会渲染出错)。Rust 侧进度文案本来就是中文, 与既有 checking/copying 一致。
+fn report_sidecar(ch: &tauri::ipc::Channel<ImportProgress>, f: &ImportedFile) {
+    if let Some(p) = &f.sidecar {
+        ch.send(ImportProgress {
+            file_name: f.file_name.clone(),
+            status: "sidecar".into(),
+            message: format!("边车 → {}", p.display()),
+            percent: 0,
+        })
+        .ok();
+    }
+    if let Some(e) = &f.sidecar_error {
+        ch.send(ImportProgress {
+            file_name: f.file_name.clone(),
+            status: "sidecar".into(),
+            message: format!("边车未复制: {}", e),
+            percent: 0,
+        })
+        .ok();
+    }
+}
+
 /// 复制单个文件到目标（spawn_blocking 中执行阻塞 I/O）
 /// 覆盖策略（防数据丢失）:
 ///   - 目标存在且内容相同 → skipped（不覆盖、不计数）
@@ -178,6 +268,8 @@ fn copy_one(
                 hash: src_hash,
                 size: std::fs::metadata(&full_dest).map(|m| m.len()).unwrap_or(0),
                 skipped: true,
+                sidecar: None,
+                sidecar_error: None,
             });
         }
         // 内容不同 → 生成唯一文件名, 不覆盖已有文件
@@ -234,6 +326,8 @@ fn copy_one(
         hash: src_hash,
         size,
         skipped: false,
+        sidecar: None,
+        sidecar_error: None,
     })
 }
 
@@ -293,7 +387,21 @@ pub async fn import_photos(
                     percent: 0,
                 })
                 .ok();
-            copy_one(&src_owned, &base_owned, &dest_path)
+            let mut f = copy_one(&src_owned, &base_owned, &dest_path)?;
+            // Phase 5: 边车一并复制(docs §5.3)。**照片 skipped 时也要走这一步** ——
+            // 目标照片已存在且相同, 但归档里可能还没有边车, 不补就把决策丢了。
+            // copy_one 在 skipped 分支返回的是**相对**路径, 所以这里先归一成绝对路径。
+            let photo_dest_abs = if f.dest_path.is_absolute() {
+                f.dest_path.clone()
+            } else {
+                base_owned.join(&f.dest_path)
+            };
+            match copy_sidecar(&src_owned, &photo_dest_abs, &base_owned) {
+                Ok(Some(p)) => f.sidecar = Some(p),
+                Ok(None) => {}
+                Err(e) => f.sidecar_error = Some(e),
+            }
+            Ok::<ImportedFile, String>(f)
         })
         .await
         {
@@ -331,8 +439,11 @@ pub async fn import_photos(
                     percent: 0,
                 })
                 .ok();
+            report_sidecar(&on_progress, &outcome);
             continue; // 不计数
         }
+
+        report_sidecar(&on_progress, &outcome);
 
         // 校验通过 → 记录导入历史 (SQLite)
         if let Err(e) = sqlx::query(
@@ -495,6 +606,93 @@ mod tests {
 
         // 路径逃逸必须在触碰文件系统之前被拒绝
         assert!(copy_one(&src, &dest_dir, Path::new("../escape.ARW")).is_err());
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // ── Phase 5 · XMP 边车 ──────────────────────────────────────────
+
+    /// 源候选与 xmp.rs 的 sidecar_candidates 必须一致: stem 优先, full-name 兜底
+    #[test]
+    fn sidecar_source_prefers_stem_then_full_name() {
+        let root = test_root("sidecar_src");
+        let src_dir = root.join("src");
+        std::fs::create_dir_all(&src_dir).unwrap();
+        let photo = src_dir.join("IMG_1.ARW");
+        std::fs::write(&photo, b"raw").unwrap();
+
+        assert!(sidecar_source(&photo).is_none());
+        let stem = src_dir.join("IMG_1.xmp");
+        let full = src_dir.join("IMG_1.ARW.xmp");
+        std::fs::write(&full, b"full").unwrap();
+        assert_eq!(sidecar_source(&photo).unwrap(), full);
+        std::fs::write(&stem, b"stem").unwrap();
+        assert_eq!(sidecar_source(&photo).unwrap(), stem);
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 边车目标必须跟着**照片最终名字**走(照片被唯一化改名时也要跟)
+    #[test]
+    fn sidecar_dest_follows_photo_dest_name() {
+        let dest = Path::new("2026-08-10")
+            .join("Sony_A7M4")
+            .join("0007_IMG_1234.arw");
+        assert_eq!(
+            sidecar_dest(&dest),
+            Path::new("2026-08-10")
+                .join("Sony_A7M4")
+                .join("0007_IMG_1234.xmp")
+        );
+        assert_eq!(
+            sidecar_dest(Path::new("0007_IMG_1234_1.arw")),
+            Path::new("0007_IMG_1234_1.xmp")
+        );
+    }
+
+    /// 数据安全契约: 缺则复制; 已一致则跳过; 内容不同**绝不覆盖**
+    #[test]
+    fn copy_sidecar_copies_skips_and_never_overwrites() {
+        let root = test_root("sidecar_copy");
+        let src_dir = root.join("src");
+        let dest_dir = root.join("dest");
+        std::fs::create_dir_all(&src_dir).unwrap();
+        std::fs::create_dir_all(&dest_dir).unwrap();
+
+        let photo = src_dir.join("IMG_1.ARW");
+        std::fs::write(&photo, b"raw").unwrap();
+        std::fs::write(src_dir.join("IMG_1.xmp"), b"rating-4").unwrap();
+        let dest_photo = dest_dir.join("0001_IMG_1.arw");
+        std::fs::write(&dest_photo, b"raw").unwrap();
+
+        // 首次 → 复制, 并按照片的名字改名
+        let copied = copy_sidecar(&photo, &dest_photo, &dest_dir)
+            .unwrap()
+            .unwrap();
+        assert_eq!(copied, dest_dir.join("0001_IMG_1.xmp"));
+        assert_eq!(std::fs::read(&copied).unwrap(), b"rating-4");
+
+        // 内容相同 → 跳过(不重复复制)
+        assert!(copy_sidecar(&photo, &dest_photo, &dest_dir)
+            .unwrap()
+            .is_none());
+
+        // 归档里已有同名但内容不同 → 报错且**一个字都不改**(用户的东西优先)
+        std::fs::write(&copied, b"user-edited").unwrap();
+        std::fs::write(src_dir.join("IMG_1.xmp"), b"rating-5").unwrap();
+        assert!(copy_sidecar(&photo, &dest_photo, &dest_dir).is_err());
+        assert_eq!(std::fs::read(&copied).unwrap(), b"user-edited");
+
+        // 源没有边车 → None(照片照常导入)
+        let other = src_dir.join("IMG_2.ARW");
+        std::fs::write(&other, b"raw").unwrap();
+        assert!(copy_sidecar(&other, &dest_dir.join("0002_IMG_2.arw"), &dest_dir)
+            .unwrap()
+            .is_none());
+
+        // 目标越出归档目录 → 拒绝(纵深防御)
+        let outside = root.join("elsewhere").join("0001_IMG_1.arw");
+        assert!(copy_sidecar(&photo, &outside, &dest_dir).is_err());
 
         let _ = std::fs::remove_dir_all(&root);
     }
