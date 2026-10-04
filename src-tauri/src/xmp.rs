@@ -214,9 +214,9 @@ struct Attr {
 #[derive(Debug, Clone)]
 struct Tag {
     name: String,
-    /// '>' 的下标; self_closing 时是 '/' 的下标(插入点)
+    /// 插入点: 非自闭合时是 `>` 的下标, 自闭合时是 `/` 的下标 —— 两种都在语法上合法,
+    /// 所以**不需要**单独的 self_closing 标记(插在它之前都对)。
     end: usize,
-    self_closing: bool,
     attrs: Vec<Attr>,
     /// 本标签声明了 xmlns:xmp
     declares_xmp_ns: bool,
@@ -246,14 +246,14 @@ fn parse_start_tag(text: &str, start: usize) -> Option<(Tag, usize)> {
         }
         if b[i] == b'>' {
             return Some((
-                Tag { name, end: i, self_closing: false, attrs, declares_xmp_ns: false, declares_default_xmp: false },
+                Tag { name, end: i, attrs, declares_xmp_ns: false, declares_default_xmp: false },
                 i + 1,
             ));
         }
         if b[i] == b'/' {
             if i + 1 < b.len() && b[i + 1] == b'>' {
                 return Some((
-                    Tag { name, end: i, self_closing: true, attrs, declares_xmp_ns: false, declares_default_xmp: false },
+                    Tag { name, end: i, attrs, declares_xmp_ns: false, declares_default_xmp: false },
                     i + 2,
                 ));
             }
