@@ -41,6 +41,16 @@ export default {
     xmpStatusWritable: "{dir} 可写",
     xmpStatusUnwritable: "{dir} 不可写：{reason}",
     xmpStatusDegraded: "（不支持原子覆盖，已直接写入）",
+    // Phase 7 · Lightroom 衔接(设置里的发送模式; 状态文案同样拼进 desc, 不新增行)
+    lrcMode: "Lightroom 衔接",
+    lrcModeDialog: "打开导入",
+    lrcModeSilent: "静默导入",
+    lrcModeSilentWhy: "需先在 Lightroom 里配置“自动导入”的监听文件夹，尚未支持",
+    lrcReprobe: "重新检测",
+    lrcProbing: "检测中…",
+    lrcNotFound: "未检测到 Lightroom Classic",
+    lrcRunning: "运行中",
+    lrcNotRunning: "未运行",
     transparentBg: "透明毛玻璃背景",
     transparentBgDesc: "用 Windows Mica 玻璃背景",
     transparentBgOpacity: "标题栏玻璃透明度",
@@ -318,6 +328,27 @@ export default {
       tooLarge: ".xmp 超过 1 MB 上限（未修改）",
       encoding: ".xmp 不是 UTF-8 编码（未修改）",
       pathTooLong: "路径过长",
+      unknown: "未知错误",
+    },
+  },
+
+  // ── Phase 7 · Lightroom 衔接 ──
+  // 错误码与 src-tauri/src/lightroom.rs 的 LrcError::code() 一一对应
+  // (前端白名单校验后拼 `lrc.err.<code>`, 未知码落到 unknown)。单括号插值。
+  lrc: {
+    send: "发送到 LrC",
+    sendTip: "打开 Lightroom Classic 的导入对话框并定位到选中照片所在文件夹",
+    sending: "启动中…",
+    sent: "已交给 Lightroom：{dir}（选中 {n} 张）",
+    sentActiveFolder: "已交给 Lightroom：{dir}（当前文件夹）",
+    sentPartial: "另有 {n} 个文件夹里的选中照片未发送（一次只能发一个文件夹）",
+    toastFailed: "发送到 Lightroom 失败：{reason}",
+    err: {
+      notFound: "未找到 Lightroom，请在设置里点“重新检测”",
+      noFolder: "没有可发送的文件夹",
+      launchFailed: "启动 Lightroom 失败",
+      notSupported: "该平台暂不支持",
+      notImplemented: "静默导入尚未实现（需先在 Lightroom 里配置自动导入）",
       unknown: "未知错误",
     },
   },

@@ -39,6 +39,16 @@ export default {
     xmpStatusWritable: "{dir} is writable",
     xmpStatusUnwritable: "{dir} is not writable: {reason}",
     xmpStatusDegraded: " (no atomic replace; wrote directly)",
+    // Phase 7 · Lightroom handoff (send mode in Settings; status text is appended to desc)
+    lrcMode: "Lightroom handoff",
+    lrcModeDialog: "Open import",
+    lrcModeSilent: "Silent import",
+    lrcModeSilentWhy: "Requires a watched folder configured in Lightroom's Auto Import; not supported yet",
+    lrcReprobe: "Re-detect",
+    lrcProbing: "Detecting…",
+    lrcNotFound: "Lightroom Classic not detected",
+    lrcRunning: "running",
+    lrcNotRunning: "not running",
     transparentBg: "Transparent frosted background",
     transparentBgDesc: "Windows Mica glass background",
     transparentBgOpacity: "Title bar glass opacity",
@@ -302,6 +312,27 @@ export default {
       tooLarge: "the .xmp exceeds the 1 MB limit (left untouched)",
       encoding: "the .xmp is not UTF-8 encoded (left untouched)",
       pathTooLong: "the path is too long",
+      unknown: "unknown error",
+    },
+  },
+
+  // ── Phase 7 · Lightroom handoff ──
+  // Error codes mirror LrcError::code() in src-tauri/src/lightroom.rs (whitelisted on the
+  // front end, then used as the dynamic prefix `lrc.err.<code>`; unknown falls back).
+  lrc: {
+    send: "Send to LrC",
+    sendTip: "Open Lightroom Classic's Import dialog pointed at the folder of the selected photos",
+    sending: "Launching…",
+    sent: "Handed to Lightroom: {dir} ({n} selected)",
+    sentActiveFolder: "Handed to Lightroom: {dir} (current folder)",
+    sentPartial: "{n} other folder(s) hold selected photos that were not sent (one folder at a time)",
+    toastFailed: "Failed to send to Lightroom: {reason}",
+    err: {
+      notFound: "Lightroom was not found — use “Re-detect” in Settings",
+      noFolder: "no folder to send",
+      launchFailed: "failed to launch Lightroom",
+      notSupported: "not supported on this platform",
+      notImplemented: "silent import is not implemented yet (configure Auto Import in Lightroom first)",
       unknown: "unknown error",
     },
   },

@@ -1,8 +1,8 @@
-import { useState, useCallback, useRef, useMemo } from "react";
+import { useState, useCallback, useRef, useMemo, useEffect } from "react";
 import { invoke, convertFileSrc, Channel } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import i18n from "./i18n";
-import type { DriveInfo, ScannedPhoto, FolderEntry, FolderNode, ImportProgress, AnalysisResult, FlagFilter, DecisionRead, DecisionWrite, WriteSummary, XmpProbe, ImportHistoryItem, ImportRule, ImportSummary } from "./types";
+import type { DriveInfo, ScannedPhoto, FolderEntry, FolderNode, ImportProgress, AnalysisResult, FlagFilter, DecisionRead, DecisionWrite, WriteSummary, XmpProbe, ImportHistoryItem, ImportRule, ImportSummary, LightroomProbe } from "./types";
 import {
   EMPTY_HISTORY, applyLabelPatch, applyRatingPatch, applySelectionPatch, patchPath,
   popRedo, popUndo, pushPatch,
@@ -19,6 +19,10 @@ import {
   mergeRemoteLabels, mergeRemoteRatings, readXmpMode,
   type XmpField, type XmpMode, type XmpNotice, type XmpStatus,
 } from "./xmp";
+import {
+  lrcErrKey, pickFolderForLightroom, readLrcMode, writeLrcMode,
+  type LrcNotice, type LrcSendMode, type LrcSentInfo,
+} from "./lightroom";
 
 function entryToNode(entry: FolderEntry): FolderNode {
   return {
@@ -786,6 +790,98 @@ export function useScanner() {
     try { localStorage.setItem("imagefilter-label-modifier", v); } catch {}
   }, []);
 
+  // ═══ Phase 7 · Lightroom Classic 衔接(模式 2: 打开导入对话框) ═════════
+  //
+  // 只做两件事: 探测 LrC 装在哪(启动时一次), 把"选中照片所在的**那一个**文件夹"
+  // 交给 lightroom.exe。**不驱动 LrC、不等结果** —— 见 src-tauri/src/lightroom.rs。
+  //
+  // probe 结果决定 UI: found=false 时导入栏那个按钮整个隐藏(对没装 LrC 的用户
+  // 不该出现一个点了只会报错的按钮)。
+  const [lrcProbe, setLrcProbe] = useState<LightroomProbe | null>(null);
+  const [lrcMode, setLrcModeState] = useState<LrcSendMode>(readLrcMode);
+  const [lrcSending, setLrcSending] = useState(false);
+  /** 成功提示(带"漏了别的文件夹"的实话, 见 src/lightroom.ts 不变式 2) */
+  const [lrcSent, setLrcSent] = useState<LrcSentInfo | null>(null);
+  /** 失败提示的请求位 + state: 与 xmpNotice 同款(不在渲染期 setState) */
+  const lrcNoticeRef = useRef<LrcNotice | null>(null);
+  const lrcSeqRef = useRef(0);
+  const [lrcNotice, setLrcNotice] = useState<LrcNotice | null>(null);
+  // 渲染期搬运
+  if (lrcNoticeRef.current) {
+    const n = lrcNoticeRef.current;
+    lrcNoticeRef.current = null;
+    setLrcNotice(n);
+  }
+
+  const setLrcMode = useCallback((m: LrcSendMode) => {
+    setLrcModeState(m);
+    writeLrcMode(m);
+  }, []);
+
+  /** 启动时探一次。失败/找不到都不报错(功能整体隐藏), 只在控制台留一行。 */
+  const probeLightroom = useCallback(async () => {
+    try {
+      const p = await invoke<LightroomProbe>("probe_lightroom");
+      setLrcProbe(p);
+    } catch (err) {
+      console.error("probe_lightroom:", err);
+      setLrcProbe({ found: false, exe: null, source: null, running: false });
+    }
+  }, []);
+
+  const notifyLrc = useCallback((code: string) => {
+    lrcSeqRef.current += 1;
+    lrcNoticeRef.current = { seq: lrcSeqRef.current, code: lrcErrKey(code) };
+  }, []);
+
+  /**
+   * 把选中的照片所在文件夹交给 Lightroom。
+   *
+   * 为什么只发一个文件夹: 实测只验证过 `Lightroom.exe "<文件夹>"` 这一种形式,
+   * 多路径行为无证据(见 src/lightroom.ts 不变式 1)。跨文件夹时取"包含最多选中照片"
+   * 的那个, 并把"还有 N 个文件夹没发"如实回给 UI —— 不静默丢。
+   */
+  const sendToLightroom = useCallback(async () => {
+    if (lrcSending) return;
+    // 模式 1(送进 LrC 的自动导入监听文件夹)尚未实现: 设置里那一档是禁用的,
+    // 但档位可能来自旧版本写下的 localStorage, 所以这里再挡一次, 给出明确错误码。
+    if (lrcMode === "silent") {
+      notifyLrc("notImplemented");
+      return;
+    }
+    const pick = pickFolderForLightroom(
+      [...selectedPathsRef.current],
+      activeFolderRef.current,
+      dirOfPath
+    );
+    if (!pick.folder) {
+      notifyLrc("noFolder");
+      return;
+    }
+    setLrcSending(true);
+    setLrcSent(null);
+    try {
+      await invoke<string>("send_to_lightroom", { folderPath: pick.folder });
+      setLrcSent({
+        folder: pick.folder,
+        count: pick.count,
+        alsoInOtherFolders: pick.alsoInOtherFolders,
+        fromActiveFolder: pick.fromActiveFolder,
+      });
+    } catch (err) {
+      // Rust 侧返回的是闭集错误码字符串(xmp.rs 同款契约), 未知码由 lrcErrKey 兜底
+      console.error("send_to_lightroom:", err);
+      notifyLrc(String(err));
+    } finally {
+      setLrcSending(false);
+    }
+  }, [lrcSending, lrcMode, notifyLrc]);
+
+  // 探测一次即可: 装/卸 Lightroom 属于"下次启动才对"的变化, 不做轮询
+  useEffect(() => {
+    void probeLightroom();
+  }, [probeLightroom]);
+
   const detectDrives = useCallback(async () => {
     try {
       const list = await invoke<DriveInfo[]>("detect_drives");
@@ -1074,5 +1170,9 @@ export function useScanner() {
     // Phase 5: XMP 边车 —— 档位 / ask 弹窗 / 设置页状态行 / 一次性提示。
     // 队列、flush、探测都是内部实现, **不导出**(组件里不许直接 invoke write_decisions)
     xmpMode, setXmpMode, xmpAskPending, resolveXmpAsk, xmpStatus, xmpNotice,
+    // Phase 7: Lightroom 衔接 —— 探测结果 / 发送模式 / 发送动作 / 成功与失败提示。
+    // probeLightroom 也导出: 用户可能在应用运行期间才装/开 LrC, 设置页给一个"重新检测"。
+    lrcProbe, probeLightroom, lrcMode, setLrcMode,
+    lrcSending, lrcSent, lrcNotice, sendToLightroom,
   };
 }

@@ -29,6 +29,7 @@ import type { ScannedPhoto, AnalysisResult, FlagFilter } from "./types";
 import type { Patch } from "./undo";
 import { LABEL_ORDER, isLabelChord, type Label } from "./labels";
 import { xmpErrKey, type XmpNotice } from "./xmp";
+import { lrcErrKey, type LrcNotice } from "./lightroom";
 
 /**
  * 撤销/重做的 toast 文案。
@@ -61,6 +62,14 @@ function xmpNoticeText(t: TFunction, n: XmpNotice): string {
   if (n.kind === "downgraded") return t("xmp.toastDowngraded", { reason });
   if (n.kind === "overflow") return t("xmp.toastQueueOverflow", { n: n.n });
   return t("xmp.toastFailed", { reason });
+}
+
+/**
+ * Phase 7 · Lightroom 发送失败的一次性提示文案(同 xmpNoticeText 的纪律:
+ * 在 App 里用 i18n 拼, hook 只给闭集错误码)。
+ */
+function lrcNoticeText(t: TFunction, n: LrcNotice): string {
+  return t("lrc.toastFailed", { reason: t(`lrc.err.${lrcErrKey(n.code)}`) });
 }
 
 /**
@@ -221,6 +230,15 @@ function App() {
     resolveXmpAsk,
     xmpStatus,
     xmpNotice,
+    // Phase 7: Lightroom 衔接
+    lrcProbe,
+    probeLightroom,
+    lrcMode,
+    setLrcMode,
+    lrcSending,
+    lrcSent,
+    lrcNotice,
+    sendToLightroom,
   } = useScanner();
 
   // 图片查看器: viewerIndex=null 关闭, 数字=打开第N张
@@ -254,6 +272,13 @@ function App() {
     showToast(xmpNoticeText(t, xmpNotice), 4000);
     // 只依赖 notice 本身: seq 变了就是一次新提示
   }, [xmpNotice]);
+
+  // Phase 7: Lightroom 发送失败提示(成功提示走 ImportBar 里的常驻行, 不用 toast ——
+  // 它需要同时说明"发的是哪个文件夹"和"还有 N 个文件夹没发", 一句话 toast 装不下)。
+  useEffect(() => {
+    if (!lrcNotice) return;
+    showToast(lrcNoticeText(t, lrcNotice), 4000);
+  }, [lrcNotice]);
 
   // Disable browser default context menu
   useEffect(() => {
@@ -582,6 +607,10 @@ function App() {
         xmpMode={xmpMode}
         onXmpModeChange={setXmpMode}
         xmpStatus={xmpStatus}
+        lrcProbe={lrcProbe}
+        lrcMode={lrcMode}
+        onLrcModeChange={setLrcMode}
+        onReprobeLightroom={probeLightroom}
         transparentBg={transparentBg}
         onToggleTransparentBg={() => setTransparentBg((v) => !v)}
         backgroundOpacity={backgroundOpacity}
@@ -811,6 +840,11 @@ function App() {
           history={importHistory}
           scheme={importScheme}
           selectedCount={selectedPaths.size}
+          lrcCanUseActiveFolder={!!activeFolder}
+          lrcProbe={lrcProbe}
+          lrcSending={lrcSending}
+          lrcSent={lrcSent}
+          onSendToLightroom={sendToLightroom}
           onPickDestDir={pickDestDir}
           onOpenFolder={(dir) => invoke("open_folder", { path: dir })}
           onImport={() => startImport([...selectedPaths])}

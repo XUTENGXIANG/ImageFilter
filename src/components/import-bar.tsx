@@ -5,9 +5,10 @@ import { AdvancedOptions } from "./advanced-options";
 import { CollapsibleBar } from "./collapsible-bar";
 import { ImportHistoryDialog } from "./import-history-dialog";
 import { Tip } from "./tip";
-import type { ImportProgress, ImportSummary } from "../types";
+import type { ImportProgress, ImportSummary, LightroomProbe } from "../types";
 import type { ImportHistoryApi } from "../import-history";
 import type { ImportSchemeApi } from "../import-rules";
+import type { LrcSentInfo } from "../lightroom";
 
 interface Props {
   destDir: string | null;
@@ -30,6 +31,17 @@ interface Props {
   /** Phase 6 / 6.2: 命名方案(方案下拉 + 另存为) */
   scheme: ImportSchemeApi;
   selectedCount: number;
+  /**
+   * Phase 7: 是否允许在"一张都没勾"时也能发送 —— 此时发的是当前浏览的文件夹。
+   * 由 App 传 activeFolder 是否非空决定(没有浏览任何文件夹时这个入口没有意义)。
+   */
+  lrcCanUseActiveFolder: boolean;
+  /** Phase 7: LrC 探测结果。found=false 时整个"发送到 Lightroom"入口隐藏 */
+  lrcProbe: LightroomProbe | null;
+  lrcSending: boolean;
+  /** 上一次成功发送的信息(含"还有 N 个文件夹没发"的实话) */
+  lrcSent: LrcSentInfo | null;
+  onSendToLightroom: () => void;
   onPickDestDir: () => void;
   onOpenFolder: (dir: string) => void;
   onImport: () => void;
@@ -55,6 +67,11 @@ export function ImportBar({
   history,
   scheme,
   selectedCount,
+  lrcCanUseActiveFolder,
+  lrcProbe,
+  lrcSending,
+  lrcSent,
+  onSendToLightroom,
   onPickDestDir,
   onOpenFolder,
   onImport,
@@ -84,6 +101,21 @@ export function ImportBar({
           </Tip>
         )}
         <div className="flex-1" />
+        {/* Phase 7 · 一键交给 Lightroom Classic。
+            只发"选中照片所在的那一个文件夹"(实测只验证过这一种形式), 由 LrC
+            自己打开导入对话框 —— 所以本按钮的语义是"打开 LrC 并定位到这批照片",
+            不是"无声导入"。LrC 未安装时整块隐藏(不给一个点了只会报错的按钮)。 */}
+        {lrcProbe?.found && (
+          <Tip label={t("lrc.sendTip")}>
+          <button
+            disabled={lrcSending || (selectedCount === 0 && !lrcCanUseActiveFolder)}
+            onClick={onSendToLightroom}
+            className="text-[10px] px-2 py-1 rounded bg-zinc-800 hover:bg-zinc-700 text-sky-400 disabled:bg-zinc-800/50 disabled:text-zinc-600 shrink-0"
+          >
+            {lrcSending ? t("lrc.sending") : t("lrc.send")}
+          </button>
+          </Tip>
+        )}
         {/* 导入历史: 任务态入口, 贴着导入动作(不进设置对话框 —— 见 import-history-dialog.tsx 注释) */}
         <button
           onClick={() => setHistoryOpen(true)}
@@ -108,6 +140,23 @@ export function ImportBar({
       </div>
       {importError && (
         <div className="px-3 pb-1 text-[10px] text-red-400">{t("import.error", { msg: importError })}</div>
+      )}
+      {/* Phase 7 · 交给 LrC 之后的实话。
+          必须显式说出"发的是哪个文件夹"和"还有 N 个文件夹没发": 只发一个文件夹是
+          实测限制(见 src/lightroom.ts 不变式 2), 静默只发一部分会让用户以为全发了。 */}
+      {lrcSent && (
+        <div className="px-3 pb-1 text-[10px] text-sky-400 space-y-0.5">
+          <div>
+            {lrcSent.fromActiveFolder
+              ? t("lrc.sentActiveFolder", { dir: lrcSent.folder })
+              : t("lrc.sent", { n: lrcSent.count, dir: lrcSent.folder })}
+          </div>
+          {lrcSent.alsoInOtherFolders > 0 && (
+            <div className="text-amber-400">
+              {t("lrc.sentPartial", { n: lrcSent.alsoInOtherFolders })}
+            </div>
+          )}
+        </div>
       )}
       {importResult && (
         <div className="px-3 pb-1 text-[10px] space-y-0.5">

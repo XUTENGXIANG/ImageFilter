@@ -6,6 +6,8 @@ import {
 import { Toggle } from "@/components/ui/toggle";
 import type { Lang } from "../i18n";
 import { xmpErrKey, type XmpMode, type XmpStatus } from "../xmp";
+import { isLrcModeUsable, type LrcSendMode } from "../lightroom";
+import type { LightroomProbe } from "../types";
 
 interface Props {
   open: boolean;
@@ -25,6 +27,11 @@ interface Props {
   xmpMode: XmpMode;
   onXmpModeChange: (m: XmpMode) => void;
   xmpStatus: XmpStatus | null;
+  /** Phase 7: Lightroom 衔接(探测结果 / 发送模式 / 重新检测) */
+  lrcProbe: LightroomProbe | null;
+  lrcMode: LrcSendMode;
+  onLrcModeChange: (m: LrcSendMode) => void;
+  onReprobeLightroom: () => void;
   transparentBg: boolean;
   onToggleTransparentBg: () => void;
   glassOpacity: number;
@@ -74,6 +81,7 @@ export function SettingsDialog({
   autoAdvance, onToggleAutoAdvance,
   labelModifier, onLabelModifierChange,
   xmpMode, onXmpModeChange, xmpStatus,
+  lrcProbe, lrcMode, onLrcModeChange, onReprobeLightroom,
   glassOpacity, onGlassOpacityChange, backgroundOpacity, onBackgroundOpacityChange,
 }: Props) {
   const { t } = useTranslation();
@@ -103,7 +111,10 @@ export function SettingsDialog({
           <DialogTitle>{t("settings.title")}</DialogTitle>
           <DialogDescription>{t("settings.subtitle")}</DialogDescription>
         </DialogHeader>
-        <div className="space-y-3 py-2">
+        {/* Phase 7 加了第 10 行(Lightroom), 而那一段又比其他行高一档(三档按钮 + 重新检测)。
+            为守住"一屏放下、不出现滚动条"这条前置约束, 行距 3→2 并同步把这一行的
+            py-1.5 收到 py-1(见该行): 两处必须一起改, 只收其中一处仍会超。 */}
+        <div className="space-y-2 py-2">
           <SettingRow title={t("settings.language")} desc={t("settings.languageDesc")}>
             <div className="flex rounded-md border border-border overflow-hidden text-sm">
               {(["zh", "en"] as Lang[]).map((l) => (
@@ -177,6 +188,54 @@ export function SettingsDialog({
                   {label}
                 </button>
               ))}
+            </div>
+          </SettingRow>
+
+          {/* Phase 7: Lightroom 衔接。三段式与上面的 XMP 行同一套写法。
+              探不到 LrC → 整行显示"未检测到"并给一个"重新检测"(用户可能刚装上)。
+              "静默导入"这一档**刻意禁用**: 它需要用户先在 LrC 里配好自动导入的监听
+              文件夹(本机实测从未配过), 现在给个能点但会报错的选项是骗人。 */}
+          <SettingRow
+            title={t("settings.lrcMode")}
+            desc={(() => {
+              if (!lrcProbe) return t("settings.lrcProbing");
+              if (!lrcProbe.found) return t("settings.lrcNotFound");
+              const where = lrcProbe.running ? t("settings.lrcRunning") : t("settings.lrcNotRunning");
+              return `${lrcProbe.exe ?? ""} · ${where}`;
+            })()}
+          >
+            <div className="flex rounded-md border border-border overflow-hidden text-sm">
+              {([
+                ["dialog", t("settings.lrcModeDialog")],
+                ["silent", t("settings.lrcModeSilent")],
+              ] as [LrcSendMode, string][]).map(([m, label]) => {
+                const blocked = !isLrcModeUsable(m);
+                return (
+                  <button
+                    key={m}
+                    type="button"
+                    disabled={blocked}
+                    title={blocked ? t("settings.lrcModeSilentWhy") : undefined}
+                    onClick={() => onLrcModeChange(m)}
+                    className={`px-3 py-1 transition-colors ${
+                      blocked
+                        ? "text-muted-foreground/40 cursor-not-allowed"
+                        : lrcMode === m
+                          ? "bg-foreground text-background"
+                          : "hover:bg-muted text-muted-foreground"
+                    }`}
+                  >
+                    {label}
+                  </button>
+                );
+              })}
+              <button
+                type="button"
+                onClick={onReprobeLightroom}
+                className="px-2 py-1 border-l border-border hover:bg-muted text-muted-foreground"
+              >
+                {t("settings.lrcReprobe")}
+              </button>
             </div>
           </SettingRow>
 

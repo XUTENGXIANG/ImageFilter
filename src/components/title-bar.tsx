@@ -5,6 +5,8 @@ import { useTranslation } from "react-i18next";
 import { setLanguage, type Lang } from "../i18n";
 import { useLocalStorageNumber, useLocalStorageSetting } from "../hooks/use-local-storage-setting";
 import type { XmpMode, XmpStatus } from "../xmp";
+import type { LrcSendMode } from "../lightroom";
+import type { LightroomProbe } from "../types";
 import { SettingsDialog } from "./settings-dialog";
 import { HelpDialog } from "./help-dialog";
 import { Setting, Sun, Moon, Close, Help } from "@icon-park/react";
@@ -23,6 +25,10 @@ export function TitleBar({
   xmpMode,
   onXmpModeChange,
   xmpStatus,
+  lrcProbe,
+  lrcMode,
+  onLrcModeChange,
+  onReprobeLightroom,
   transparentBg,
   onToggleTransparentBg,
   backgroundOpacity,
@@ -38,6 +44,11 @@ export function TitleBar({
   xmpMode: XmpMode;
   onXmpModeChange: (m: XmpMode) => void;
   xmpStatus: XmpStatus | null;
+  /** Phase 7: Lightroom 衔接(只透传给设置对话框) */
+  lrcProbe: LightroomProbe | null;
+  lrcMode: LrcSendMode;
+  onLrcModeChange: (m: LrcSendMode) => void;
+  onReprobeLightroom: () => void;
   transparentBg: boolean;
   onToggleTransparentBg: () => void;
   backgroundOpacity: number;
@@ -147,6 +158,10 @@ export function TitleBar({
         xmpMode={xmpMode}
         onXmpModeChange={onXmpModeChange}
         xmpStatus={xmpStatus}
+        lrcProbe={lrcProbe}
+        lrcMode={lrcMode}
+        onLrcModeChange={onLrcModeChange}
+        onReprobeLightroom={onReprobeLightroom}
         transparentBg={transparentBg}
         onToggleTransparentBg={onToggleTransparentBg}
         glassOpacity={glassOpacity}

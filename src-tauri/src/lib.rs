@@ -2,6 +2,7 @@ mod analyzer;
 mod db;
 mod exif_common;
 mod importer;
+mod lightroom;
 mod scanner;
 mod tinydng;
 mod win_wic;
@@ -124,6 +125,10 @@ pub fn run() {
             xmp::read_decisions,
             xmp::write_decisions,
             xmp::probe_xmp_target,
+            // Phase 7 · Lightroom Classic 衔接(模式 2: 打开导入对话框)。
+            // 只探测与启动, 不驱动 LrC —— 见 src/lightroom.rs 文件头。
+            lightroom::probe_lightroom,
+            lightroom::send_to_lightroom,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

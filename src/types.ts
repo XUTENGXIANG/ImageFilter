@@ -176,3 +176,21 @@ export interface ImportRule {
   isDefault: number;
 }
 
+// ── Phase 7 · Lightroom Classic 衔接 ────────────────────────────────
+// 与 src-tauri/src/lightroom.rs 的 serde 结构一一对应(rename_all = "camelCase")。
+// 错误码闭集在 src/lightroom.ts(LRC_ERR_CODES)。
+
+/** probe_lightroom 的结果。found=false 时整个"发送到 Lightroom"入口隐藏 */
+export interface LightroomProbe {
+  found: boolean;
+  /** 找到的 Lightroom.exe 完整路径(found=false 时为 null) */
+  exe: string | null;
+  /**
+   * 命中的探测方式, 仅用于排查:
+   * "classUser" | "classMachine" | "uninstall" | "appPath" | "programFiles"
+   */
+  source: string | null;
+  /** Lightroom 是否正在运行。只影响提示文案(takes a while vs already open) */
+  running: boolean;
+}
+
