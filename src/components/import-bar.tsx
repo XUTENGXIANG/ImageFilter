@@ -83,7 +83,7 @@ export function ImportBar({
       <div className="flex items-center gap-2 px-3 py-1.5">
         <button
           onClick={onPickDestDir}
-          className="text-[10px] px-2 py-1 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-400 truncate max-w-[180px]"
+          className="text-[10px] leading-4 px-2 py-1 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-400 truncate min-w-6 max-w-[180px]"
         >
           {destDir ? `...${destDir.slice(-25)}` : t("import.pickDest")}
         </button>
@@ -91,7 +91,7 @@ export function ImportBar({
           <Tip label={t("import.openFolder")}>
           <button
             onClick={() => onOpenFolder(destDir)}
-            className="text-[10px] px-1.5 py-1 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-500"
+            className="inline-flex items-center justify-center min-w-6 min-h-6 px-1.5 py-1 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-500"
           >
             <FolderOpen theme="filled" size="12" strokeWidth={3} />
           </button>
@@ -107,7 +107,7 @@ export function ImportBar({
           <button
             disabled={lrcSending || selectedCount === 0}
             onClick={onSendToLightroom}
-            className="text-[10px] px-2 py-1 rounded bg-zinc-800 hover:bg-zinc-700 text-sky-400 disabled:bg-zinc-800/50 disabled:text-zinc-600 shrink-0"
+            className="text-[10px] leading-4 px-2 py-1 rounded bg-zinc-800 hover:bg-zinc-700 text-sky-400 disabled:bg-zinc-800/50 disabled:text-zinc-600 shrink-0"
           >
             {lrcSending ? t("lrc.sending") : t("lrc.send")}
           </button>
@@ -116,7 +116,7 @@ export function ImportBar({
         {/* 导入历史: 任务态入口, 贴着导入动作(不进设置对话框 —— 见 import-history-dialog.tsx 注释) */}
         <button
           onClick={() => setHistoryOpen(true)}
-          className="text-[10px] px-1.5 py-1 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-500 shrink-0"
+          className="text-[10px] leading-4 px-1.5 py-1 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-500 shrink-0"
         >
           {t("import.history")}
         </button>
@@ -137,7 +137,7 @@ export function ImportBar({
         <button
           disabled={!destDir || selectedCount === 0 || importing}
           onClick={onImport}
-          className="text-[10px] px-3 py-1 rounded bg-emerald-600 hover:bg-emerald-500 disabled:bg-zinc-700 disabled:text-zinc-500 text-white font-medium"
+          className="text-[10px] leading-4 px-3 py-1 rounded bg-emerald-600 hover:bg-emerald-500 disabled:bg-zinc-700 disabled:text-zinc-500 text-white font-medium"
         >
           {importing
             ? t("import.importingCount", { done: importDone, total: selectedCount })

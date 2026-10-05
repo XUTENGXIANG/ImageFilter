@@ -59,7 +59,9 @@ export const PhotoCard = memo(function PhotoCard({
       )}
       <button
         onClick={(e) => { e.stopPropagation(); onToggle(e); }}
-        className={`absolute top-1.5 right-1.5 w-5 h-5 rounded border-2 flex items-center justify-center transition-opacity z-10 ${
+        aria-label={isChecked ? t("grid.unselect") : t("grid.select")}
+        aria-pressed={isChecked}
+        className={`hit-24 absolute top-1.5 right-1.5 w-5 h-5 rounded border-2 flex items-center justify-center transition-opacity z-10 ${
           isChecked
             ? "bg-emerald-500 border-emerald-500 opacity-100"
             : "border-zinc-400 bg-black/40 opacity-0 group-hover:opacity-100"
@@ -94,7 +96,7 @@ export const PhotoCard = memo(function PhotoCard({
           <div className="flex gap-0.5 mt-0.5">
             {[1,2,3,4,5].map((s) => (
               <button key={s} onClick={(e) => { e.stopPropagation(); onRate(s); }}
-                className={`text-[10px] ${(rating ?? 0) >= s ? "text-amber-400" : "text-zinc-600 hover:text-amber-500"}`}
+                className={`w-6 h-6 flex items-center justify-center text-[10px] ${(rating ?? 0) >= s ? "text-amber-400" : "text-zinc-600 hover:text-amber-500"}`}
               >★</button>
             ))}
           </div>

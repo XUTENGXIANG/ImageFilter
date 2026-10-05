@@ -19,9 +19,11 @@ export function ThumbSizeSlider() {
     <input
       type="range" min={2} max={8} value={cols}
       onChange={(e) => setCols(Number(e.target.value))}
-      className="thumb-slider w-16 h-4 cursor-pointer shrink-0"
+      className="thumb-slider w-16 cursor-pointer shrink-0"
       style={{
-        background: `linear-gradient(to right,
+        /* 必须用 backgroundImage 而非 background 简写 —— 简写会把 .thumb-slider 上的
+           background-clip: content-box 重置掉, 渐变就会糊满整个 24px 命中区 */
+        backgroundImage: `linear-gradient(to right,
           var(--thumb-left) 0%, var(--thumb-left) ${pct}%,
           var(--thumb-right) ${pct}%, var(--thumb-right) 100%)`,
       }}

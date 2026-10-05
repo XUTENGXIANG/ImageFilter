@@ -77,8 +77,17 @@ img {
 .thumb-slider {
   -webkit-appearance: none;
   appearance: none;
-  height: 4px;
-  border-radius: 9999px;
+  /* 视觉轨道仍保持 4px: 用 border-box 的 24px 高度 + 上下 padding 把命中区做到
+     WCAG 2.5.8 要求的 24×24; background-clip 让渐变只画在 4px 的 content box 上
+     (所以调用方的行内样式必须用 backgroundImage 而不是 background 简写,
+     否则简写会把 background-clip 重置回 border-box)。 */
+  height: 24px;
+  padding: 10px 0;
+  background-clip: content-box;
+  /* 圆角必须按 4px 轨道给小值(2px), 不能用 9999px —— 在 24px 高的盒子上
+     9999px 会被钳到 12px, 把 4px 的 content box 裁成两端削尖的梭形(视觉回归)。
+     2px 时曲率完全落在 padding 区, content box 保持原版的圆头轨道。 */
+  border-radius: 2px;
   outline: none;
   /* 默认(深色): 左灰右浅灰 */
   --thumb-left: #52525b;
@@ -100,11 +109,35 @@ img {
   border: none;
   cursor: pointer;
 }
+/* 上面去掉了原生 outline, 必须给键盘用户留可见替代 (WCAG 2.4.7)。
+   用 :focus-visible 而非 :focus —— 鼠标拖动滑块不显示轮廓。 */
+.thumb-slider:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
 
 
 /* 照片 hover 描述渐变 — 统一黑色底（深浅主题一致） */
 .hover-overlay {
   background: linear-gradient(to top, rgba(0, 0, 0, 0.8), transparent);
+}
+
+/* WCAG 2.5.8 目标尺寸下限(24×24)。
+   紧凑控件的**视觉尺寸保持不变**, 只用伪元素把命中区补到 24px —— 桌面端保持信息密度,
+   键盘/鼠标用户又不用精确瞄准。要求: 元素自身是定位上下文(加 relative,
+   或本身已经是 absolute/fixed), 且祖先没有 overflow:hidden 裁掉它。
+   注意: 只对 <button>/<a> 这类可含子盒的元素有效; <input>/<select> 是替换元素,
+   伪元素不渲染, 那类控件需要直接用高度/行高做到 24px。 */
+.hit-24::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 100%;
+  height: 100%;
+  min-width: 24px;
+  min-height: 24px;
+  transform: translate(-50%, -50%);
 }
 
 /* 自定义圆角 tooltip — 替代浏览器默认方形提示
@@ -250,5 +283,20 @@ img {
   /* 点阵背景在浅色下用暗点 */
   .bg-grid {
     background-image: radial-gradient(rgba(0,0,0,0.04) 1px, transparent 1px);
+  }
+}
+
+/* ── 尊重"减少动效"偏好 (WCAG 2.3.3) ──
+   面板宽度、网格行高、折叠条的过渡都由 React 状态驱动(CSS transition, 无 JS 时基),
+   系统开启"减少动效"时应瞬切而不是播动画。项目内没有任何代码依赖 transitionend,
+   所以直接压掉时长是安全的。 */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
   }
 }

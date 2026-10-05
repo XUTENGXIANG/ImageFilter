@@ -71,7 +71,7 @@ export function AdvancedOptions({
           if (!open) scheme.load();
           setOpen(!open);
         }}
-        className="text-[10px] text-zinc-600 hover:text-zinc-400"
+        className="text-[10px] leading-4 py-1 inline-flex items-center text-zinc-600 hover:text-zinc-400"
       >
         {open ? `▾ ${t("import.advanced")}` : `▸ ${t("import.advanced")}`}
       </button>
@@ -107,7 +107,7 @@ export function AdvancedOptions({
                 <button
                   disabled={!newName.trim()}
                   onClick={saveAs}
-                  className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-700 hover:bg-emerald-600 disabled:bg-zinc-800 disabled:text-zinc-600 text-white shrink-0"
+                  className="text-[10px] leading-4 px-1.5 py-1 rounded bg-emerald-700 hover:bg-emerald-600 disabled:bg-zinc-800 disabled:text-zinc-600 text-white shrink-0"
                 >
                   {t("import.schemeSave")}
                 </button>

@@ -143,6 +143,8 @@ export default {
     noPhotos: "No photos in this folder",
     clickFolder: "Click a folder on the left to view photos",
     video: "Video",
+    select: "Select this photo",
+    unselect: "Deselect this photo",
     blurry: "Blurry",
     overexposed: "Overexposed",
     underexposed: "Underexposed",
@@ -279,6 +281,8 @@ export default {
   panel: {
     expandLeft: "Expand devices panel",
     expandRight: "Expand details panel",
+    collapseLeft: "Collapse devices panel",
+    collapseRight: "Collapse details panel",
   },
 
   // ── Toast ──

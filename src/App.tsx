@@ -640,7 +640,7 @@ function App() {
           //{ label: "刷新设备列表", action: detectDrives },
         ]}>
         <div className="px-3 pt-2 pb-1 flex items-center">
-          <button onClick={() => selectedDrive && browseDrive(selectedDrive!)} className="text-[10px] px-3 py-0.5 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-400 transition-colors">{t("devices.refresh")}</button>
+          <button onClick={() => selectedDrive && browseDrive(selectedDrive!)} className="text-[10px] leading-4 px-3 py-1 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-400 transition-colors">{t("devices.refresh")}</button>
         </div>
         {/* 设备列表 — 每个设备独立右键菜单, 可移动设备含"弹出设备" */}
         <div className="px-2.5 pb-1 space-y-0.5 max-h-36 overflow-auto no-scrollbar">

@@ -32,12 +32,14 @@ export function FloatingPanel({ side, title, defaultOpen = true, autoOpenKey, ch
             {/* Header with collapse button */}
             <div className="flex items-center justify-between px-3 py-2 border-b border-zinc-800/50 flex-shrink-0">
               <span className="text-xs font-semibold text-zinc-400 tracking-wider">{title}</span>
+              <Tip label={isLeft ? t("panel.collapseLeft") : t("panel.collapseRight")}>
               <button
                 onClick={() => setOpen(false)}
-                className="w-5 h-5 flex items-center justify-center rounded hover:bg-zinc-800 text-zinc-600 hover:text-zinc-400"
+                className="w-6 h-6 flex items-center justify-center rounded hover:bg-zinc-800 text-zinc-600 hover:text-zinc-400"
               >
                 <span className="text-[10px]">{isLeft ? "◀" : "▶"}</span>
               </button>
+              </Tip>
             </div>
             {/* Content */}
             <div className="flex-1 overflow-auto min-h-0 no-scrollbar">

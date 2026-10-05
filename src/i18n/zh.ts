@@ -148,6 +148,8 @@ export default {
     noPhotos: "此文件夹无照片",
     clickFolder: "点击左侧文件夹查看照片",
     video: "视频",
+    select: "勾选这张照片",
+    unselect: "取消勾选这张照片",
     blurry: "模糊",
     overexposed: "过曝",
     underexposed: "欠曝",
@@ -293,6 +295,8 @@ export default {
   panel: {
     expandLeft: "展开设备面板",
     expandRight: "展开信息面板",
+    collapseLeft: "收起设备面板",
+    collapseRight: "收起信息面板",
   },
 
   // ── 提示浮窗(toast) ──

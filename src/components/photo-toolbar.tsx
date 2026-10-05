@@ -78,13 +78,13 @@ export function PhotoToolbar({
               换行时右侧那组(AI 分析 + 收起箭头)整体落到下一行右端, 不会出现竖排文字;
             · min-h-9 + py-1: 单行时高度与原来的 h-9 完全一致。 */}
         <div className="flex flex-wrap items-center px-4 min-h-9 py-1 gap-2">
-          <button onClick={onSelectAll} className="shrink-0 whitespace-nowrap text-[10px] text-zinc-500 hover:text-zinc-300">{t("toolbar.selectAll")}</button>
-          <button onClick={onClearSelection} className="shrink-0 whitespace-nowrap text-[10px] text-zinc-500 hover:text-zinc-300">{t("toolbar.clear")}</button>
+          <button onClick={onSelectAll} className="relative hit-24 shrink-0 whitespace-nowrap text-[10px] text-zinc-500 hover:text-zinc-300">{t("toolbar.selectAll")}</button>
+          <button onClick={onClearSelection} className="relative hit-24 shrink-0 whitespace-nowrap text-[10px] text-zinc-500 hover:text-zinc-300">{t("toolbar.clear")}</button>
           <span className="shrink-0 whitespace-nowrap text-[10px] text-zinc-600">{t("toolbar.selected", { n: selectedCount, total: photosCount })}</span>
           <select
             value={sortBy}
             onChange={(e) => onSortByChange(e.target.value as "name" | "type" | "date")}
-            className="shrink-0 bg-zinc-800 text-[10px] text-zinc-400 px-1 py-0.5 rounded border border-zinc-700"
+            className="shrink-0 bg-zinc-800 text-[10px] leading-4 text-zinc-400 px-1 py-1 rounded border border-zinc-700"
           >
             <option value="name">{t("toolbar.sortName")}</option>
             <option value="type">{t("toolbar.sortType")}</option>
@@ -95,7 +95,7 @@ export function PhotoToolbar({
           <Tip label={t("toolbar.sortDir")} className="flex items-center shrink-0">
           <button
             onClick={onToggleSortDir}
-            className="shrink-0 w-5 h-5 flex items-center justify-center rounded text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800"
+            className="relative hit-24 shrink-0 w-5 h-5 flex items-center justify-center rounded text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800"
           >
             {sortDir === "asc"
               ? <SortAmountUp theme="outline" size="13" strokeWidth={3} />
@@ -108,7 +108,7 @@ export function PhotoToolbar({
           <select
             value={starFilter}
             onChange={(e) => onStarFilterChange(Number(e.target.value))}
-            className={`shrink-0 bg-zinc-800 text-[10px] px-1 py-0.5 rounded border ${
+            className={`shrink-0 bg-zinc-800 text-[10px] leading-4 px-1 py-1 rounded border ${
               starFilter > 0 ? "text-amber-400 border-amber-500/40" : "text-zinc-400 border-zinc-700"
             }`}
           >
@@ -120,7 +120,7 @@ export function PhotoToolbar({
           {/* Phase 4: 标签 + 分析结果收进这里(那一行本来就满, 硬塞会挤爆) */}
           <button
             onClick={() => setFilterOpen((v) => !v)}
-            className={`shrink-0 whitespace-nowrap text-[10px] px-2 py-0.5 rounded ${
+            className={`relative hit-24 shrink-0 whitespace-nowrap text-[10px] px-2 py-0.5 rounded ${
               filtersActive || filterOpen ? "bg-zinc-700 text-zinc-200" : "bg-zinc-800 text-zinc-500 hover:text-zinc-300"
             }`}
           >
@@ -134,7 +134,7 @@ export function PhotoToolbar({
           <button
             onClick={() => analyzing ? onStopAnalysis() : onAnalyzeAll()}
             title={!analyzing && analyzeCount > 0 ? t("toolbar.aiSelected", { n: analyzeCount }) : undefined}
-            className={`shrink-0 whitespace-nowrap text-[10px] px-2 py-0.5 rounded text-zinc-400 ${
+            className={`relative hit-24 shrink-0 whitespace-nowrap text-[10px] px-2 py-0.5 rounded text-zinc-400 ${
               analyzing
                 ? "bg-red-900/50 hover:bg-red-800/50 text-red-400"
                 : "bg-zinc-800 hover:bg-zinc-700"
