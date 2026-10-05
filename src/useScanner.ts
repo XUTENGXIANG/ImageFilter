@@ -2,7 +2,7 @@ import { useState, useCallback, useRef, useMemo } from "react";
 import { invoke, convertFileSrc, Channel } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import i18n from "./i18n";
-import type { DriveInfo, ScannedPhoto, FolderEntry, FolderNode, ImportProgress, AnalysisResult, FlagFilter, DecisionRead, DecisionWrite, WriteSummary, XmpProbe, ImportHistoryItem, ImportRule } from "./types";
+import type { DriveInfo, ScannedPhoto, FolderEntry, FolderNode, ImportProgress, AnalysisResult, FlagFilter, DecisionRead, DecisionWrite, WriteSummary, XmpProbe, ImportHistoryItem, ImportRule, ImportSummary } from "./types";
 import {
   EMPTY_HISTORY, applyLabelPatch, applyRatingPatch, applySelectionPatch, patchPath,
   popRedo, popUndo, pushPatch,
@@ -672,7 +672,7 @@ export function useScanner() {
   const [destDir, setDestDir] = useState<string | null>(null);
   const [customFolder, setCustomFolder] = useState("");
   const [useCustomFolder, setUseCustomFolder] = useState(false);
-  const [importResult, setImportResult] = useState<{ok: number; fail: number} | null>(null);
+  const [importResult, setImportResult] = useState<ImportSummary | null>(null);
 
   // ── Phase 6 / 6.2 · 命名方案(import_rules) ──────────────────────────
   // 模板 + 方案名**同一次提交**更新(半更新会写出"名字对不上模板"的假状态)。
@@ -946,7 +946,9 @@ export function useScanner() {
     };
 
     try {
-      const count = await invoke<number>("import_photos", {
+      // Phase 6 / 6.3: 返回值是 ImportSummary(契约变更)。计数口径**归 Rust**,
+      // 前端不再做 `paths.length - count` —— 那个算法把"跳过"错算成了"失败"。
+      const summary = await invoke<ImportSummary>("import_photos", {
         filePaths: paths,
         destDir,
         folderTemplate: scheme.folder,
@@ -955,8 +957,7 @@ export function useScanner() {
         onProgress,
       });
       setImportError(null);
-      const failed = paths.length - count;
-      setImportResult({ ok: count, fail: failed });
+      setImportResult(summary);
       setTimeout(() => setImportResult(null), 5000);
     } catch (err: any) {
       console.error("import failed:", err);

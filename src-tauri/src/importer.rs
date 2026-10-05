@@ -5,7 +5,10 @@ use std::path::{Component, Path, PathBuf};
 #[serde(rename_all = "camelCase")]
 pub struct ImportProgress {
     pub file_name: String,
-    pub status: String, // "checking", "copying", "verifying", "done", "skipped", "error"
+    /// "checking"(检查) / "copying"(复制) / "renamed"(重名改名) / "verifying"(MD5 校验)
+    /// / "done" / "skipped" / "error" / "sidecar"(Phase 5 的边车行)
+    /// —— 前端 import-bar 对未知状态走默认样式, 所以新增状态不会渲染出错
+    pub status: String,
     pub message: String,
     pub percent: u32,
 }
@@ -17,11 +20,80 @@ struct ImportedFile {
     hash: String,
     size: u64,
     skipped: bool, // 目标已存在且内容相同 → 跳过
+    /// Phase 6: 目标同名但内容不同 → 走了 `_1/_2/...` 唯一名(照片**确实导入成功**了,
+    /// 所以它是 `ImportSummary::imported` 的**子集**, 与 skipped/failed 并列互斥)。
+    /// 只有 [`copy_one_reporting`] 知道这件事 —— 别在外面拿"计划名 != 实际名"反推:
+    /// copy_one 在 skipped 分支返回的是**相对**路径、成功分支返回**绝对**路径。
+    renamed: bool,
     /// Phase 5: 一并复制过来的 XMP 边车(没有源边车/目标已一致 → None)
     sidecar: Option<PathBuf>,
     /// Phase 5: 边车没复制成功的原因。**不是致命的** —— 照片已经复制好了,
     /// 只作为一行进度透出(边车冲突/失败不该让整张照片算导入失败)。
     sidecar_error: Option<String>,
+}
+
+/// Phase 6 · 导入结果统计(契约变更: `import_photos` 从 `u32` 改成这个结构体)。
+///
+/// 口径(前端直接显示, **不许再自己算**, 老前端就是用 `paths.len() - count` 把"跳过"
+/// 算成了"失败"):
+///   · `imported` = 真的复制进归档的张数(**含** `renamed`);
+///   · `renamed`  = 其中"目标同名但内容不同、被改名成 `_1`"的张数(⊆ imported);
+///   · `skipped`  = 目标已存在且内容相同(既不覆盖也不计数, 但**不是失败**);
+///   · `failed`   = 复制/校验/任务失败;
+///   · 不变式: `imported + skipped + failed == file_paths.len()`。
+#[derive(Debug, Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportSummary {
+    pub imported: u32,
+    pub skipped: u32,
+    pub renamed: u32,
+    pub failed: u32,
+}
+
+/// 导入过程中的计数累积。单独成结构是为了能单测(命令体拿不到 Channel/State):
+/// 最要紧的两条 —— "跳过不算失败" 与 "renamed 是 imported 的子集"。
+#[derive(Default)]
+struct ImportTally {
+    imported: u32,
+    skipped: u32,
+    renamed: u32,
+    failed: u32,
+}
+
+impl ImportTally {
+    /// 一次"没报错"的结果: skipped 记跳过, 其余记成功(renamed 时再记一次改名)
+    fn record(&mut self, f: &ImportedFile) {
+        if f.skipped {
+            self.skipped += 1;
+            return;
+        }
+        self.imported += 1;
+        if f.renamed {
+            self.renamed += 1;
+        }
+    }
+
+    /// 一次失败(复制/校验/任务失败)
+    fn record_error(&mut self) {
+        self.failed += 1;
+    }
+
+    fn summary(self) -> ImportSummary {
+        ImportSummary {
+            imported: self.imported,
+            skipped: self.skipped,
+            renamed: self.renamed,
+            failed: self.failed,
+        }
+    }
+}
+
+/// `{seq}` 的编号 = **输入顺序位次**(1-based), 与这一张成功/跳过/失败**无关**。
+///
+/// 老实现传 `imported + 1`: 跳过或失败会让后面的编号整体前移, 编号与拍摄顺序错位
+/// (比"跳号"更糟)。做成函数而不是内联 `i + 1`, 是为了让"跳过也递增"有一条单测钉住。
+fn seq_for(index: usize) -> u32 {
+    index as u32 + 1
 }
 
 /// Build destination path from template.
@@ -236,14 +308,39 @@ fn report_sidecar(ch: &tauri::ipc::Channel<ImportProgress>, f: &ImportedFile) {
     }
 }
 
+/// copy_one 内部值得单独透出的两个步骤。用枚举而不是字符串 —— 状态名写错是编译期能拦住的。
+#[derive(Debug, PartialEq, Clone, Copy)]
+enum CopyStep {
+    /// 目标同名但内容不同 → 正在生成 `_1/_2/...` 唯一名(绝不覆盖)
+    Renamed,
+    /// 复制已完成, 正在做双端 MD5 校验("校验中"这一步在 UI 上要看得见 —— 它是卖点,
+    /// 也是大文件时唯一能解释"为什么卡住"的进度)
+    Verifying,
+}
+
 /// 复制单个文件到目标（spawn_blocking 中执行阻塞 I/O）
 /// 覆盖策略（防数据丢失）:
 ///   - 目标存在且内容相同 → skipped（不覆盖、不计数）
 ///   - 目标存在但内容不同 → 追加 _1/_2/... 唯一后缀, 绝不静默覆盖
+///
+/// 签名保持不动(单测与既有调用点零改动), 需要进度的一方走 [`copy_one_reporting`]。
 fn copy_one(
     src: &Path,
     base_dir: &Path,
     dest_path: &Path,
+) -> Result<ImportedFile, String> {
+    copy_one_reporting(src, base_dir, dest_path, &mut |_| {})
+}
+
+/// [`copy_one`] 的带步骤回调版本。
+///
+/// 为什么用回调而不是把 `Channel` 传进来: 这样 `copy_one` 的签名与它那三条数据安全
+/// 单测(跳过/不覆盖/防逃逸)一个字都不用改, 而"步骤顺序"本身变成可单测的。
+fn copy_one_reporting(
+    src: &Path,
+    base_dir: &Path,
+    dest_path: &Path,
+    on_step: &mut dyn FnMut(CopyStep),
 ) -> Result<ImportedFile, String> {
     let file_name = src
         .file_name()
@@ -256,6 +353,7 @@ fn copy_one(
     }
 
     let mut full_dest = base_dir.join(dest_path);
+    let mut renamed = false;
 
     // 目标已存在 → 哈希比对, 相同跳过 / 不同唯一命名
     if full_dest.exists() {
@@ -268,6 +366,7 @@ fn copy_one(
                 hash: src_hash,
                 size: std::fs::metadata(&full_dest).map(|m| m.len()).unwrap_or(0),
                 skipped: true,
+                renamed: false,
                 sidecar: None,
                 sidecar_error: None,
             });
@@ -302,6 +401,8 @@ fn copy_one(
                 return Err("无法生成唯一文件名".into());
             }
         }
+        renamed = true;
+        on_step(CopyStep::Renamed);
     }
 
     // 创建父目录
@@ -312,7 +413,9 @@ fn copy_one(
     // 复制
     std::fs::copy(src, &full_dest).map_err(|e| format!("复制失败: {}", e))?;
 
-    // 校验 (MD5 全量比对)
+    // 校验 (MD5 全量比对) —— **先报步骤再算**: 一张 60MB RAW 的双端 MD5 约 1 秒,
+    // 算完再报等于没报
+    on_step(CopyStep::Verifying);
     let src_hash = file_md5(src).map_err(|e| format!("校验失败: {}", e))?;
     let dest_hash = file_md5(&full_dest).map_err(|e| format!("校验失败: {}", e))?;
     if src_hash != dest_hash {
@@ -326,6 +429,7 @@ fn copy_one(
         hash: src_hash,
         size,
         skipped: false,
+        renamed,
         sidecar: None,
         sidecar_error: None,
     })
@@ -341,13 +445,13 @@ pub async fn import_photos(
     custom_folder: String,
     on_progress: tauri::ipc::Channel<ImportProgress>,
     state: tauri::State<'_, crate::db::DbState>,
-) -> Result<u32, String> {
+) -> Result<ImportSummary, String> {
     let base_dir = if custom_folder.is_empty() {
         PathBuf::from(&dest_dir)
     } else {
         PathBuf::from(&dest_dir).join(sanitize_path(&custom_folder))
     };
-    let mut imported: u32 = 0;
+    let mut tally = ImportTally::default();
     let total = file_paths.len().max(1);
 
     for (i, path_str) in file_paths.iter().enumerate() {
@@ -367,9 +471,9 @@ pub async fn import_photos(
             })
             .ok();
 
-        // Build destination path
+        // Build destination path。序号 = 输入顺序位次(见 seq_for): 跳过/失败也递增
         let (dest_path, dest_name) = build_dest_path(
-            &folder_template, &file_template, src, imported + 1,
+            &folder_template, &file_template, src, seq_for(i),
         );
 
         // 阻塞 I/O (复制 + 双端 MD5) 移入 spawn_blocking, 不占 tokio worker
@@ -387,7 +491,22 @@ pub async fn import_photos(
                     percent: 0,
                 })
                 .ok();
-            let mut f = copy_one(&src_owned, &base_owned, &dest_path)?;
+            // 步骤回调: 把 copy_one 内部"改了什么名 / 开始校验"透成进度消息
+            let mut on_step = |step: CopyStep| {
+                let (status, message) = match step {
+                    CopyStep::Renamed => ("renamed", format!("重名, 改名 → {}", dest_name)),
+                    CopyStep::Verifying => ("verifying", "校验中...".to_string()),
+                };
+                on_progress_copy
+                    .send(ImportProgress {
+                        file_name: fname_for_progress.clone(),
+                        status: status.into(),
+                        message,
+                        percent: 0,
+                    })
+                    .ok();
+            };
+            let mut f = copy_one_reporting(&src_owned, &base_owned, &dest_path, &mut on_step)?;
             // Phase 5: 边车一并复制(docs §5.3)。**照片 skipped 时也要走这一步** ——
             // 目标照片已存在且相同, 但归档里可能还没有边车, 不补就把决策丢了。
             // copy_one 在 skipped 分支返回的是**相对**路径, 所以这里先归一成绝对路径。
@@ -415,6 +534,7 @@ pub async fn import_photos(
                         percent: 0,
                     })
                     .ok();
+                tally.record_error();
                 continue;
             }
             Err(e) => {
@@ -426,6 +546,7 @@ pub async fn import_photos(
                         percent: 0,
                     })
                     .ok();
+                tally.record_error();
                 continue;
             }
         };
@@ -440,7 +561,8 @@ pub async fn import_photos(
                 })
                 .ok();
             report_sidecar(&on_progress, &outcome);
-            continue; // 不计数
+            tally.record(&outcome); // 记"跳过" —— 老前端把这一档算成了失败
+            continue;
         }
 
         report_sidecar(&on_progress, &outcome);
@@ -459,7 +581,7 @@ pub async fn import_photos(
             eprintln!("import_history 写入失败: {}", e);
         }
 
-        imported += 1;
+        tally.record(&outcome); // 成功(含"改过名"的子集)
         on_progress
             .send(ImportProgress {
                 file_name: outcome.file_name.clone(),
@@ -470,7 +592,7 @@ pub async fn import_photos(
             .ok();
     }
 
-    Ok(imported)
+    Ok(tally.summary())
 }
 
 #[cfg(test)]
@@ -611,7 +733,6 @@ mod tests {
     }
 
     // ── Phase 5 · XMP 边车 ──────────────────────────────────────────
-
     /// 源候选与 xmp.rs 的 sidecar_candidates 必须一致: stem 优先, full-name 兜底
     #[test]
     fn sidecar_source_prefers_stem_then_full_name() {
@@ -693,6 +814,96 @@ mod tests {
         // 目标越出归档目录 → 拒绝(纵深防御)
         let outside = root.join("elsewhere").join("0001_IMG_1.arw");
         assert!(copy_sidecar(&photo, &outside, &dest_dir).is_err());
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // ── Phase 6 · 导入结果统计 / {seq} 计数 / 进度步骤 ────────────────
+
+    fn fake_imported(skipped: bool, renamed: bool) -> ImportedFile {
+        ImportedFile {
+            dest_path: PathBuf::from("a.jpg"),
+            file_name: "a.jpg".into(),
+            hash: "h".into(),
+            size: 1,
+            skipped,
+            renamed,
+            sidecar: None,
+            sidecar_error: None,
+        }
+    }
+
+    /// 三条最要紧的计数口径:
+    ///   ① **跳过不算失败**(老前端用 `paths.len() - count` 就是这么算错的);
+    ///   ② renamed 是 imported 的**子集**(不能被当成第四类重复计数);
+    ///   ③ imported + skipped + failed == 输入张数(前端不许再自己算)。
+    #[test]
+    fn import_tally_separates_skipped_renamed_and_failed() {
+        let mut tally = ImportTally::default();
+        tally.record(&fake_imported(false, false)); // 普通成功
+        tally.record(&fake_imported(false, true)); // 改名成功
+        tally.record(&fake_imported(true, false)); // 已存在且相同 → 跳过
+        tally.record_error(); // 失败
+
+        let s = tally.summary();
+        assert_eq!(
+            (s.imported, s.skipped, s.renamed, s.failed),
+            (2, 1, 1, 1),
+            "计数口径变了: imported 含 renamed, skipped 绝不算 failed"
+        );
+        assert!(s.renamed <= s.imported, "renamed 必须是 imported 的子集");
+        assert_eq!(
+            s.imported + s.skipped + s.failed,
+            4,
+            "三类必须覆盖全部输入(renamed 不另算一类)"
+        );
+    }
+
+    /// `{seq}` = 输入顺序位次: 中间那张跳过/失败, 后面的编号**不前进**
+    /// (老实现传 `imported + 1`, 第 3 张会拿到 0002, 与拍摄顺序错位)
+    #[test]
+    fn seq_follows_input_order_even_when_middle_is_skipped() {
+        let src = Path::new("photos").join("IMG_1234.ARW");
+        let names: Vec<String> = (0..3)
+            .map(|i| build_dest_path("", "{seq}.{ext}", &src, seq_for(i)).1)
+            .collect();
+        assert_eq!(names, vec!["0001.arw", "0002.arw", "0003.arw"]);
+        assert_eq!(seq_for(2), 3, "第 3 张的位次必须是 3, 与成功数无关");
+    }
+
+    /// 进度步骤: 首次复制只报"校验中"; 同名不同内容先报"改名"再报"校验中";
+    /// 内容相同(跳过)不报步骤 —— 跳过判定的双端 MD5 **刻意不报**, 免得一次导入
+    /// 出现两行"校验中"而被当成 bug。
+    #[test]
+    fn copy_one_reports_renamed_then_verifying() {
+        let root = test_root("steps");
+        let src_dir = root.join("src");
+        let dest_dir = root.join("dest");
+        std::fs::create_dir_all(&src_dir).unwrap();
+        std::fs::create_dir_all(&dest_dir).unwrap();
+
+        let src = src_dir.join("IMG_9.ARW");
+        std::fs::write(&src, b"one").unwrap();
+        let rel = PathBuf::from("IMG_9.ARW");
+
+        let mut steps = Vec::new();
+        copy_one_reporting(&src, &dest_dir, &rel, &mut |s| steps.push(s)).unwrap();
+        assert_eq!(steps, vec![CopyStep::Verifying], "首次复制不该报改名");
+
+        std::fs::write(&src, b"two").unwrap();
+        let mut steps2 = Vec::new();
+        copy_one_reporting(&src, &dest_dir, &rel, &mut |s| steps2.push(s)).unwrap();
+        assert_eq!(
+            steps2,
+            vec![CopyStep::Renamed, CopyStep::Verifying],
+            "同名不同内容必须按 改名 → 校验 的顺序报"
+        );
+        assert!(dest_dir.join("IMG_9_1.ARW").exists());
+
+        std::fs::write(&src, b"one").unwrap();
+        let mut steps3 = Vec::new();
+        copy_one_reporting(&src, &dest_dir, &rel, &mut |s| steps3.push(s)).unwrap();
+        assert!(steps3.is_empty(), "跳过时不该报步骤(否则会出现两行校验中)");
 
         let _ = std::fs::remove_dir_all(&root);
     }

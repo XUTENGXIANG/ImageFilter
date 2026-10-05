@@ -5,7 +5,7 @@ import { AdvancedOptions } from "./advanced-options";
 import { CollapsibleBar } from "./collapsible-bar";
 import { ImportHistoryDialog } from "./import-history-dialog";
 import { Tip } from "./tip";
-import type { ImportProgress } from "../types";
+import type { ImportProgress, ImportSummary } from "../types";
 import type { ImportHistoryApi } from "../import-history";
 import type { ImportSchemeApi } from "../import-rules";
 
@@ -23,7 +23,8 @@ interface Props {
   importProgress: ImportProgress[];
   importDone: number;
   importError: string | null;
-  importResult: { ok: number; fail: number } | null;
+  /** Phase 6 / 6.3: 导入结果统计(契约: ImportSummary —— 直接显示, 前端不再自己算) */
+  importResult: ImportSummary | null;
   /** Phase 6 / 6.1: 导入历史(列表 + 总数 + 加载入口), 由 useScanner 组装 */
   history: ImportHistoryApi;
   /** Phase 6 / 6.2: 命名方案(方案下拉 + 另存为) */
@@ -109,8 +110,20 @@ export function ImportBar({
         <div className="px-3 pb-1 text-[10px] text-red-400">{t("import.error", { msg: importError })}</div>
       )}
       {importResult && (
-        <div className="px-3 pb-1 text-[10px] text-emerald-400">
-          {t("import.doneOk", { n: importResult.ok })}{importResult.fail > 0 ? t("import.doneFail", { n: importResult.fail }) : ""}
+        <div className="px-3 pb-1 text-[10px] space-y-0.5">
+          {/* 四行明细(Phase 6 / 6.3): 成功 / 改名 ⊂ 成功 / 跳过 / 失败。
+              数字全部来自 Rust 的 ImportSummary —— 前端不许再做 paths.length - count
+              那种算术(它会把"跳过"算成"失败")。为 0 的行不显示, 老路径观感不变。 */}
+          <div className="text-emerald-400">{t("import.doneOk", { n: importResult.imported })}</div>
+          {importResult.renamed > 0 && (
+            <div className="text-amber-400">{t("import.doneRenamed", { n: importResult.renamed })}</div>
+          )}
+          {importResult.skipped > 0 && (
+            <div className="text-zinc-500">{t("import.doneSkipped", { n: importResult.skipped })}</div>
+          )}
+          {importResult.failed > 0 && (
+            <div className="text-red-400">{t("import.doneFail", { n: importResult.failed })}</div>
+          )}
         </div>
       )}
       <ImportHistoryDialog
@@ -137,12 +150,14 @@ export function ImportBar({
               <span className={
                 p.status === "error" ? "text-red-400" :
                 p.status === "done" ? "text-emerald-400" :
+                p.status === "renamed" ? "text-amber-400" :
+                p.status === "verifying" ? "text-sky-400" :
                 p.status === "skipped" ? "text-zinc-600" : "text-zinc-500"
               }>
                 {p.status === "done" ? <Check theme="filled" size="10" strokeWidth={4} /> :
                  p.status === "error" ? <Close theme="filled" size="10" strokeWidth={4} /> :
                  p.status === "skipped" ? <Right theme="filled" size="10" strokeWidth={4} /> :
-                 <More theme="filled" size="10" strokeWidth={4} />}
+                 <More theme="filled" size={10} strokeWidth={4} />}
               </span>
               <span className="truncate flex-1">{p.fileName}</span>
               <span className="flex-shrink-0">{p.message}</span>

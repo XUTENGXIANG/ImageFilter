@@ -152,7 +152,11 @@ export default {
     importCount: "Import {n}",
     error: "Error: {msg}",
     doneOk: "Import complete ✓ {n} succeeded",
-    doneFail: ", {n} failed",
+    // Phase 6 / 6.3 · four-line breakdown. "of which" makes clear renamed ⊆ imported;
+    // skipped and failed are deliberately separate lines.
+    doneRenamed: "of which {n} renamed to avoid a clash",
+    doneSkipped: "{n} already present, skipped",
+    doneFail: "{n} failed",
     advanced: "Advanced options",
     dateFolder: "Organize by date folders",
     dateFolderEx: "e.g. 2024-08-08/photo.jpg",

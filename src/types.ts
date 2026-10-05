@@ -40,9 +40,32 @@ export interface FolderEntry {
 /** 导入进度事件（Rust import_photos 经 Channel 推送） */
 export interface ImportProgress {
   fileName: string;
-  status: string; // "checking" | "copying" | "verifying" | "done" | "skipped" | "error"
+  /**
+   * "checking" 检查 / "copying" 复制 / "renamed" 重名改名 / "verifying" MD5 校验 /
+   * "done" 完成 / "skipped" 已存在且相同 / "error" 失败 / "sidecar" 边车那一行(Phase 5)。
+   * 未知状态在 import-bar 里走默认样式, 不会渲染出错。
+   */
+  status: string;
   message: string;
   percent: number;
+}
+
+/**
+ * Phase 6 / 6.3 · `import_photos` 的返回值（**契约变更**: 原来是 `u32`）。
+ *
+ * 口径(前端**直接显示, 不许再自己算** —— 老前端用 `paths.length - count` 把"跳过"
+ * 算成了"失败"):
+ *   · imported = 真的复制进归档的张数(**含** renamed);
+ *   · renamed  = 其中"目标同名但内容不同、被改名成 `_1`"的张数(⊆ imported);
+ *   · skipped  = 目标已存在且内容相同(不覆盖、不计数, 但**不是失败**);
+ *   · failed   = 复制/校验/任务失败;
+ *   · 不变式: imported + skipped + failed == 本次传入的张数。
+ */
+export interface ImportSummary {
+  imported: number;
+  skipped: number;
+  renamed: number;
+  failed: number;
 }
 
 /**

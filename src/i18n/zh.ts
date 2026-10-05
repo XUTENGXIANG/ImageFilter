@@ -159,7 +159,11 @@ export default {
     importCount: "导入 {n} 张",
     error: "错误: {msg}",
     doneOk: "导入完成 ✓ {n} 张成功",
-    doneFail: "，{n} 张失败",
+    // Phase 6 / 6.3 · 四行明细。renamed 那句以"其中"开头 —— 它是 imported 的**子集**,
+    // 不是并列的第五类(否则四段相加对不上)。跳过必须与失败分开显示。
+    doneRenamed: "其中 {n} 张重名，改名导入",
+    doneSkipped: "{n} 张已存在相同，跳过",
+    doneFail: "{n} 张失败",
     advanced: "高级选项",
     dateFolder: "按拍摄日期分文件夹",
     dateFolderEx: "如 2024-08-08/照片.jpg",
