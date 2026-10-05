@@ -137,3 +137,19 @@ export interface ImportHistoryItem {
   importedAt: string;
 }
 
+/** 一条命名方案(import_rules 表)。模板变量见 importer.rs 的 build_dest_path */
+export interface ImportRule {
+  id: number;
+  name: string;
+  /** 目录模板, 如 "{date}/{camera}"; 空 = 平铺 */
+  folderTemplate: string;
+  /** 文件名模板, 如 "{seq}_{original}.{ext}"; 空 = 保留原名 */
+  fileTemplate: string;
+  /**
+   * 1 = `init_db` 播种的"默认"方案(`{date}` / `{original}`)。
+   * 前端**绝不在启动时自动套用它** —— 套上会让老用户的归档结构突变(docs 6.2)。
+   * 它只是下拉里的一个可选项, 要用得用户自己点。
+   */
+  isDefault: number;
+}
+

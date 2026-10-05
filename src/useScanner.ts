@@ -2,7 +2,7 @@ import { useState, useCallback, useRef, useMemo } from "react";
 import { invoke, convertFileSrc, Channel } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import i18n from "./i18n";
-import type { DriveInfo, ScannedPhoto, FolderEntry, FolderNode, ImportProgress, AnalysisResult, FlagFilter, DecisionRead, DecisionWrite, WriteSummary, XmpProbe, ImportHistoryItem } from "./types";
+import type { DriveInfo, ScannedPhoto, FolderEntry, FolderNode, ImportProgress, AnalysisResult, FlagFilter, DecisionRead, DecisionWrite, WriteSummary, XmpProbe, ImportHistoryItem, ImportRule } from "./types";
 import {
   EMPTY_HISTORY, applyLabelPatch, applyRatingPatch, applySelectionPatch, patchPath,
   popRedo, popUndo, pushPatch,
@@ -10,6 +10,10 @@ import {
 } from "./undo";
 import { LABELS_STORAGE_KEY, readLabels, type Label } from "./labels";
 import { HISTORY_MAX, DEFAULT_HISTORY_LIMIT } from "./import-history";
+import {
+  EMPTY_SCHEME, readScheme, writeScheme,
+  type ImportScheme, type ImportSchemeApi,
+} from "./import-rules";
 import {
   XMP_MODE_STORAGE_KEY, XMP_QUEUE_LIMIT, buildDecisionWrite, dirOfPath, isDowngradeCandidate,
   mergeRemoteLabels, mergeRemoteRatings, readXmpMode,
@@ -666,11 +670,79 @@ export function useScanner() {
   const canRedo = useMemo(() => history.redo.length > 0, [history]);
 
   const [destDir, setDestDir] = useState<string | null>(null);
-  const [folderRule, setFolderRule] = useState("");
-  const [fileRule, setFileRule] = useState("");
   const [customFolder, setCustomFolder] = useState("");
   const [useCustomFolder, setUseCustomFolder] = useState(false);
   const [importResult, setImportResult] = useState<{ok: number; fail: number} | null>(null);
+
+  // ── Phase 6 / 6.2 · 命名方案(import_rules) ──────────────────────────
+  // 模板 + 方案名**同一次提交**更新(半更新会写出"名字对不上模板"的假状态)。
+  // 初始值来自 localStorage: 没有键 → ""/""(平铺 + 原名) = 升级前的既有行为。
+  // **不套用 DB 里 is_default=1 的"默认"方案**: 那条是 {date}, 套上会让老用户
+  // 的归档结构突变(与"按序号重命名"不得改默认行为是同一条红线, docs 6.2)。
+  const [scheme, setScheme] = useState<ImportScheme>(() => readScheme() ?? EMPTY_SCHEME);
+  const [rules, setRules] = useState<ImportRule[]>([]);
+  const [schemeError, setSchemeError] = useState<string | null>(null);
+
+  const commitScheme = useCallback((next: ImportScheme) => {
+    writeScheme(next);
+    setScheme(next);
+  }, []);
+
+  /** 手改模板 = 自定义(名字清空): 方案名必须诚实反映"现在这套模板来自哪" */
+  const setFolderRule = useCallback(
+    (v: string) => commitScheme({ name: null, folder: v, file: scheme.file }),
+    [commitScheme, scheme.file]
+  );
+  const setFileRule = useCallback(
+    (v: string) => commitScheme({ name: null, folder: scheme.folder, file: v }),
+    [commitScheme, scheme.folder]
+  );
+
+  /** 拉方案列表(惰性: 首次展开高级选项时调)。失败只记提示, 不抛。 */
+  const loadRules = useCallback(async () => {
+    try {
+      setRules(await invoke<ImportRule[]>("get_rules"));
+      setSchemeError(null);
+    } catch (err) {
+      console.error("loadRules failed:", err);
+      setSchemeError(String(err));
+    }
+  }, []);
+
+  /**
+   * 选中方案: 只写两个模板。`customFolder`/`useCustomFolder` **不动** —— 子文件夹是
+   * 正交的开关, 而 import_rules 表里也没有这一列(save_rule 只有两个模板参数)。
+   */
+  const pickScheme = useCallback((name: string | null) => {
+    if (!name) {
+      commitScheme(EMPTY_SCHEME); // "自定义(不套用方案)" = 回到平铺 + 原名
+      return;
+    }
+    const rule = rules.find((r) => r.name === name);
+    if (!rule) return; // 理论上到不了(schemeOptions 会补上当前名); 宁可什么都不做
+    commitScheme({ name: rule.name, folder: rule.folderTemplate, file: rule.fileTemplate });
+  }, [commitScheme, rules]);
+
+  /** 另存为: 把当前两个模板存成一个具名方案(同名 = 原地覆盖, 见 db.rs 的 upsert_rule) */
+  const saveScheme = useCallback(async (name: string) => {
+    const trimmed = name.trim();
+    if (!trimmed) return false;
+    try {
+      await invoke<number>("save_rule", {
+        name: trimmed,
+        folderTemplate: scheme.folder,
+        fileTemplate: scheme.file,
+      });
+      setRules(await invoke<ImportRule[]>("get_rules")); // 权威: 重拉(含新 id 与顺序)
+      commitScheme({ name: trimmed, folder: scheme.folder, file: scheme.file });
+      setSchemeError(null);
+      return true;
+    } catch (err) {
+      console.error("saveScheme failed:", err);
+      setSchemeError(String(err));
+      return false;
+    }
+  }, [commitScheme, scheme.folder, scheme.file]);
 
   // 可见区域全图预加载开关（App 中由 IntersectionObserver 触发）
   const [preloadFull, setPreloadFull] = useState(() => {
@@ -877,8 +949,8 @@ export function useScanner() {
       const count = await invoke<number>("import_photos", {
         filePaths: paths,
         destDir,
-        folderTemplate: folderRule,
-        fileTemplate: fileRule,
+        folderTemplate: scheme.folder,
+        fileTemplate: scheme.file,
         customFolder: useCustomFolder ? customFolder : "",
         onProgress,
       });
@@ -892,7 +964,7 @@ export function useScanner() {
     } finally {
       setImporting(false);
     }
-  }, [destDir, folderRule, fileRule, customFolder, useCustomFolder]);
+  }, [destDir, scheme.folder, scheme.file, customFolder, useCustomFolder]);
 
   /** Stop ongoing analysis */
   const stopAnalysis = useCallback(() => {
@@ -979,7 +1051,14 @@ export function useScanner() {
     // Phase 6 / 6.1: 导入历史(列表 + 总数 + 加载入口)。组件只读它, 不许自己 invoke。
     importHistory: { items: historyItems, total: historyTotal, loading: historyLoading, error: historyError, load: loadImportHistory },
     selectedPaths, handlePhotoClick, selectAll, clearSelection,
-    folderRule, fileRule, setFolderRule, setFileRule,
+    // Phase 6 / 6.2: folderRule/fileRule 现在住在 scheme 里(名字 + 两个模板一起提交),
+    // 导出名不变以免动 import-bar / advanced-options 的既有 props。
+    folderRule: scheme.folder, fileRule: scheme.file, setFolderRule, setFileRule,
+    // 命名方案面板要的一切(列表/当前名/错误/加载/选中/另存为) —— 一个对象传下去
+    importScheme: {
+      rules, name: scheme.name, error: schemeError,
+      load: loadRules, pick: pickScheme, save: saveScheme,
+    } satisfies ImportSchemeApi,
     customFolder, setCustomFolder, useCustomFolder, setUseCustomFolder,
     analyzing, analysis, runAnalysis, stopAnalysis,
     ratings, setRating, sortBy, setSortBy, starFilter, setStarFilter,

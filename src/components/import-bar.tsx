@@ -7,6 +7,7 @@ import { ImportHistoryDialog } from "./import-history-dialog";
 import { Tip } from "./tip";
 import type { ImportProgress } from "../types";
 import type { ImportHistoryApi } from "../import-history";
+import type { ImportSchemeApi } from "../import-rules";
 
 interface Props {
   destDir: string | null;
@@ -25,6 +26,8 @@ interface Props {
   importResult: { ok: number; fail: number } | null;
   /** Phase 6 / 6.1: 导入历史(列表 + 总数 + 加载入口), 由 useScanner 组装 */
   history: ImportHistoryApi;
+  /** Phase 6 / 6.2: 命名方案(方案下拉 + 另存为) */
+  scheme: ImportSchemeApi;
   selectedCount: number;
   onPickDestDir: () => void;
   onOpenFolder: (dir: string) => void;
@@ -49,6 +52,7 @@ export function ImportBar({
   importError,
   importResult,
   history,
+  scheme,
   selectedCount,
   onPickDestDir,
   onOpenFolder,
@@ -124,6 +128,7 @@ export function ImportBar({
         setCustomFolder={setCustomFolder}
         useCustomFolder={useCustomFolder}
         setUseCustomFolder={setUseCustomFolder}
+        scheme={scheme}
       />
       {importing && importProgress.length > 0 && (
         <div className="px-3 pb-1.5 max-h-16 overflow-auto no-scrollbar">

@@ -180,6 +180,19 @@ export default {
     historyColSource: "原文件",
     historyColDest: "归档",
     historyOpenFolder: "打开所在文件夹",
+    // Phase 6 / 6.2 · 命名方案(import_rules)
+    // 注意: 任何值里都不许出现裸的 {seq} / {ext} —— i18n/index.ts 把 prefix/suffix 设成了
+    // { }, 值里的花括号会被当成插值变量解析掉(既有 key 一律只写"具体例子", 如 0001.ARW)
+    scheme: "命名方案",
+    schemeCustom: "自定义",
+    schemeSaveAs: "另存为",
+    schemeNamePlaceholder: "方案名",
+    schemeSave: "保存",
+    schemeError: "命名方案出错：{msg}",
+    seqKeepOriginal: "保留原文件名",
+    seqKeepEx: "如 0001_IMG_1234.ARW",
+    fileRuleNowLabel: "当前文件名：",
+    fileRuleOriginal: "原名",
   },
 
   // ── 颜色标签(Phase 4) ──

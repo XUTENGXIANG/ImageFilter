@@ -69,11 +69,14 @@ pub struct ImportHistory {
 }
 
 #[derive(Debug, Serialize, Deserialize, sqlx::FromRow)]
+#[serde(rename_all = "camelCase")]
 pub struct ImportRule {
     pub id: i64,
     pub name: String,
     pub folder_template: String,
     pub file_template: String,
+    /// 1 = `init_db` 播种的"默认"方案。前端**不**在启动时自动套用它(见 docs 6.2):
+    /// 那条是 `{date}`, 套上会让老用户的归档结构突变。
     pub is_default: i64,
 }
 
@@ -81,6 +84,9 @@ pub struct ImportRule {
 pub enum Error {
     #[error(transparent)]
     Sqlx(#[from] sqlx::Error),
+    /// 方案名为空: 前端会把"保存"按钮置灰, 这里只是兜底
+    #[error("方案名不能为空")]
+    EmptyName,
 }
 
 impl serde::Serialize for Error {
@@ -130,14 +136,63 @@ pub async fn count_import_history(state: tauri::State<'_, DbState>) -> Result<i6
 }
 
 #[tauri::command]
-pub async fn get_rules(
-    state: tauri::State<'_, DbState>,
-) -> Result<Vec<ImportRule>, Error> {
-    let rules =
-        sqlx::query_as::<_, ImportRule>("SELECT * FROM import_rules ORDER BY id")
-            .fetch_all(&state.pool)
-            .await?;
-    Ok(rules)
+pub async fn get_rules(state: tauri::State<'_, DbState>) -> Result<Vec<ImportRule>, Error> {
+    Ok(fetch_rules(&state.pool).await?)
+}
+
+/// 列出全部命名方案(按 id, 即"先建的在前")
+async fn fetch_rules(pool: &SqlitePool) -> Result<Vec<ImportRule>, sqlx::Error> {
+    sqlx::query_as::<_, ImportRule>("SELECT * FROM import_rules ORDER BY id")
+        .fetch_all(pool)
+        .await
+}
+
+/// 新增或**原地更新**一条命名方案(按 name 唯一)。
+///
+/// 这里是 Phase 6 修掉的 bug 现场: 原来的 `INSERT OR REPLACE` 命中 `name` 的 UNIQUE 冲突时
+/// 是 **DELETE + INSERT** ——
+///   · `is_default` 不在列清单里 → 掉回 DEFAULT 0;
+///   · `created_at` 被重置成"现在";
+///   · `id` 变新值, 而 `get_rules` 是 `ORDER BY id` → 保存过的方案会**跳到下拉列表末尾**。
+/// 改成 `ON CONFLICT(name) DO UPDATE` 后是原地 UPDATE, 三者全部留住。
+///
+/// 返回值必须用 `RETURNING id`: 走 DO UPDATE 分支时 `last_insert_rowid()` **不会被更新**,
+/// 会返回这条连接上更早那次 INSERT 的陈旧 rowid(曾经的实现正是这么写的)。
+/// 若某些环境的 SQLite 不支持 RETURNING(需要 >= 3.35), 退化成 `SELECT id ... WHERE name = ?`。
+async fn upsert_rule(
+    pool: &SqlitePool,
+    name: &str,
+    folder_template: &str,
+    file_template: &str,
+) -> Result<i64, sqlx::Error> {
+    sqlx::query_scalar::<_, i64>(
+        "INSERT INTO import_rules (name, folder_template, file_template)
+         VALUES (?, ?, ?)
+         ON CONFLICT(name) DO UPDATE SET
+             folder_template = excluded.folder_template,
+             file_template = excluded.file_template
+         RETURNING id",
+    )
+    .bind(name)
+    .bind(folder_template)
+    .bind(file_template)
+    .fetch_one(pool)
+    .await
+}
+
+/// 保存方案的命令体(不碰 `tauri::State`, 单测直接调它)
+async fn save_rule_inner(
+    pool: &SqlitePool,
+    name: &str,
+    folder_template: &str,
+    file_template: &str,
+) -> Result<i64, Error> {
+    // 方案名来自输入框: 只 trim; 空名正常路径上由前端置灰拦住, 这里是兜底
+    let name = name.trim();
+    if name.is_empty() {
+        return Err(Error::EmptyName);
+    }
+    Ok(upsert_rule(pool, name, folder_template, file_template).await?)
 }
 
 #[tauri::command]
@@ -147,16 +202,7 @@ pub async fn save_rule(
     folder_template: String,
     file_template: String,
 ) -> Result<i64, Error> {
-    let result = sqlx::query(
-        "INSERT OR REPLACE INTO import_rules (name, folder_template, file_template)
-         VALUES (?, ?, ?)",
-    )
-    .bind(&name)
-    .bind(&folder_template)
-    .bind(&file_template)
-    .execute(&state.pool)
-    .await?;
-    Ok(result.last_insert_rowid())
+    save_rule_inner(&state.pool, &name, &folder_template, &file_template).await
 }
 
 #[cfg(test)]
@@ -229,6 +275,53 @@ mod tests {
         assert_eq!(page[1].source_path, "E:/src/b.jpg");
 
         assert_eq!(fetch_history(&pool, 100).await.unwrap().len(), 3);
+
+        cleanup(pool, dir).await;
+    }
+
+    /// Phase 6 / 6.2 的核心护栏: 同名保存**原地更新** —— id / is_default / created_at
+    /// 三者都要留住(老实现 `INSERT OR REPLACE` 会把它们全抹掉, 方案还会跳到列表末尾)。
+    #[tokio::test]
+    async fn upsert_rule_updates_in_place_and_keeps_is_default() {
+        let (pool, dir) = fresh_pool("upsert").await;
+
+        // 播种的"默认"方案: is_default=1
+        let before = sqlx::query_as::<_, ImportRule>("SELECT * FROM import_rules WHERE name = ?")
+            .bind("默认")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(before.is_default, 1);
+
+        // 覆盖它两次: id / created_at / is_default 必须全不动
+        let id1 = upsert_rule(&pool, "默认", "{date}/{camera}", "{seq}.{ext}")
+            .await
+            .unwrap();
+        let id2 = upsert_rule(&pool, "默认", "", "{seq}_{original}.{ext}")
+            .await
+            .unwrap();
+        assert_eq!(id1, before.id, "同名保存换了 rowid(说明是 DELETE+INSERT)");
+        assert_eq!(id2, before.id, "同名保存换了 rowid(说明是 DELETE+INSERT)");
+
+        let after = sqlx::query_as::<_, ImportRule>("SELECT * FROM import_rules WHERE name = ?")
+            .bind("默认")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(after.folder_template, "");
+        assert_eq!(after.file_template, "{seq}_{original}.{ext}", "模板没被更新");
+        assert_eq!(after.is_default, 1, "is_default 被重置了(INSERT OR REPLACE 的老 bug)");
+        assert_eq!(
+            fetch_rules(&pool).await.unwrap().len(),
+            1,
+            "同名保存凭空多出一行"
+        );
+
+        // 空名必须被拒(前端也会置灰, 这里是兜底)
+        assert!(matches!(
+            save_rule_inner(&pool, "   ", "", "").await,
+            Err(Error::EmptyName)
+        ));
 
         cleanup(pool, dir).await;
     }

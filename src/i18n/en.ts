@@ -173,6 +173,17 @@ export default {
     historyColSource: "Source",
     historyColDest: "Archive",
     historyOpenFolder: "Open containing folder",
+    // Phase 6 / 6.2 · naming schemes (import_rules)
+    scheme: "Scheme",
+    schemeCustom: "Custom",
+    schemeSaveAs: "Save as",
+    schemeNamePlaceholder: "Scheme name",
+    schemeSave: "Save",
+    schemeError: "Naming scheme error: {msg}",
+    seqKeepOriginal: "Keep original filename",
+    seqKeepEx: "e.g. 0001_IMG_1234.ARW",
+    fileRuleNowLabel: "Filename: ",
+    fileRuleOriginal: "original",
   },
 
   // ── Color labels (Phase 4) ──
