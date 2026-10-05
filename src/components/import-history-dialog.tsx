@@ -42,8 +42,11 @@ export function ImportHistoryDialog({ open, onOpenChange, history, onOpenFolder 
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      {/* no-scrollbar: 通用约定(共同前置约束 9)。500 行的列表必须能滚, 但不显示侧边滚动条 */}
-      <DialogContent className="w-[620px] max-h-[80vh] overflow-auto no-scrollbar">
+      {/* no-scrollbar: 通用约定(共同前置约束 9)。列表必须能滚, 但不显示侧边滚动条。
+          max-w 必须**带 sm: 变体**: ui/dialog.tsx 的基础类里有 `sm:max-w-sm`(384px),
+          同一个类组里 unprefixed 的 max-w 压不过它 —— 只写 max-w-[620px] 实测仍是 384px 宽,
+          长路径会被截掉半截。 */}
+      <DialogContent className="w-[620px] max-w-[620px] sm:max-w-[620px] max-h-[80vh] overflow-auto no-scrollbar">
         <DialogHeader>
           <DialogTitle>{t("import.history")}</DialogTitle>
           <DialogDescription>{t("import.historyHint")}</DialogDescription>
@@ -65,7 +68,9 @@ export function ImportHistoryDialog({ open, onOpenChange, history, onOpenFolder 
             <div key={h.id} className="rounded-md border border-border px-2 py-1.5">
               <div className="flex items-baseline gap-2">
                 <span className="text-[9px] text-muted-foreground shrink-0">{t("import.historyColSource")}</span>
-                <span className="text-[11px] truncate flex-1" title={h.sourcePath}>{h.sourcePath}</span>
+                {/* min-w-0 是必需的: flex 子项默认 min-width:auto, 不加就不会收缩,
+                    长路径会把右边的时间/大小挤出弹窗(而不是打省略号) */}
+                <span className="text-[11px] truncate flex-1 min-w-0" title={h.sourcePath}>{h.sourcePath}</span>
               </div>
               <div className="flex items-baseline gap-2 mt-0.5">
                 <span className="text-[9px] text-muted-foreground shrink-0">{t("import.historyColDest")}</span>
@@ -73,7 +78,7 @@ export function ImportHistoryDialog({ open, onOpenChange, history, onOpenFolder 
                   type="button"
                   onClick={() => onOpenFolder(dirOfPath(h.destPath))}
                   title={`${h.destPath}\n${t("import.historyOpenFolder")}`}
-                  className="text-[11px] truncate flex-1 text-left text-emerald-500/90 hover:text-emerald-400 hover:underline"
+                  className="text-[11px] truncate flex-1 min-w-0 text-left text-emerald-500/90 hover:text-emerald-400 hover:underline"
                 >
                   {h.destPath}
                 </button>

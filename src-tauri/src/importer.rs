@@ -309,10 +309,12 @@ fn report_sidecar(ch: &tauri::ipc::Channel<ImportProgress>, f: &ImportedFile) {
 }
 
 /// copy_one 内部值得单独透出的两个步骤。用枚举而不是字符串 —— 状态名写错是编译期能拦住的。
-#[derive(Debug, PartialEq, Clone, Copy)]
+#[derive(Debug, PartialEq, Clone)]
 enum CopyStep {
-    /// 目标同名但内容不同 → 正在生成 `_1/_2/...` 唯一名(绝不覆盖)
-    Renamed,
+    /// 目标同名但内容不同 → 正在生成 `_1/_2/...` 唯一名(绝不覆盖)。
+    /// **带上真正生成的那个名字**: 计划名(`0002.jpg`)正是被占用的那个, 报给人看只会误导
+    /// —— 实机首测就是因此显示成"重名, 改名 → 0002.jpg"而磁盘上是 `0002_1.jpg`。
+    Renamed(String),
     /// 复制已完成, 正在做双端 MD5 校验("校验中"这一步在 UI 上要看得见 —— 它是卖点,
     /// 也是大文件时唯一能解释"为什么卡住"的进度)
     Verifying,
@@ -394,6 +396,8 @@ fn copy_one_reporting(
             };
             if !base_dir.join(&cand).exists() {
                 full_dest = base_dir.join(&cand);
+                renamed = true;
+                on_step(CopyStep::Renamed(cand_name));
                 break;
             }
             n += 1;
@@ -401,8 +405,6 @@ fn copy_one_reporting(
                 return Err("无法生成唯一文件名".into());
             }
         }
-        renamed = true;
-        on_step(CopyStep::Renamed);
     }
 
     // 创建父目录
@@ -494,7 +496,8 @@ pub async fn import_photos(
             // 步骤回调: 把 copy_one 内部"改了什么名 / 开始校验"透成进度消息
             let mut on_step = |step: CopyStep| {
                 let (status, message) = match step {
-                    CopyStep::Renamed => ("renamed", format!("重名, 改名 → {}", dest_name)),
+                    // 用 copy_one 真正生成的那个名字(不是被占用的计划名)
+                    CopyStep::Renamed(new_name) => ("renamed", format!("重名, 改名 → {}", new_name)),
                     CopyStep::Verifying => ("verifying", "校验中...".to_string()),
                 };
                 on_progress_copy
@@ -895,8 +898,11 @@ mod tests {
         copy_one_reporting(&src, &dest_dir, &rel, &mut |s| steps2.push(s)).unwrap();
         assert_eq!(
             steps2,
-            vec![CopyStep::Renamed, CopyStep::Verifying],
-            "同名不同内容必须按 改名 → 校验 的顺序报"
+            vec![
+                CopyStep::Renamed("IMG_9_1.ARW".to_string()),
+                CopyStep::Verifying
+            ],
+            "同名不同内容必须按 改名 → 校验 的顺序报, 且改名带的是**真正生成的名字**"
         );
         assert!(dest_dir.join("IMG_9_1.ARW").exists());
 
