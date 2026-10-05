@@ -56,6 +56,13 @@
 | `verify-collapse-anim.mjs` | 高级选项 / 筛选面板展开动画的高度轨迹（双向 + 收起时 inert） | 同上 |
 | `verify-dropdown.mjs` | 4 个自定义下拉：无原生 select、圆角 10px、入场过渡、能选中、可访问名称、关闭后不可达、**弹层没被盖住** | 同上；`APP_URL` 可覆盖地址、`SHOT=<path>` 按需截图 |
 | `verify-floating-bars.mjs` | 上下两条栏"真浮窗"布局：网格铺满高度、CSS 变量与栏真实高度一致（折叠/展开）、两端留白 ≥24px 且末行不在控件下面 | 同上 |
+| `update-check.test.ts` | `src/updater.ts` 的纯逻辑断言（40 条：版本号解析、比大小的边界、五态与失败分队、真超时） | 两行见文件头注释（esbuild + node，产物落 `.design-audit/_probe/`，不入库） |
+| `verify-update-check.mjs` | 设置面板「版本号 + 检查更新」：版本号取自二进制（`getVersion`）/ 放弃兜底、行几何与 24px 命中区、五态字面与悬停、文字对比度、键盘焦点环、点「有新版本」真的把 URL 交给系统浏览器、英文长文案不折行 | `node verify-update-check.mjs`，需先跑 dev server |
+
+> ⚠️ **检查更新依赖 CSP 放行**：它走 WebView 自己的 `fetch` 打 `api.github.com`，
+> 所以 `src-tauri/tauri.conf.json` 的 `connect-src` 里必须有 `https://api.github.com`。
+> 少了这一条**不会报错**，只会永远显示"检查失败"（浏览器控制台里才看得到 CSP 拦截）。
+> 改完这个文件要重启 `npm run tauri dev`（CSP 在 Rust 侧生效，HMR 不管它）。
 
 跑浏览器脚本时注意路径：它们把 `playwright-core` 按本机 DSH profile 解析，换机器用 `PW_BASE` 环境变量覆盖。
 

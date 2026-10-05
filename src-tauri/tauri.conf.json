@@ -23,7 +23,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' asset: http://asset.localhost https://asset.localhost data:; font-src 'self' data:; connect-src ipc: http://ipc.localhost; media-src 'self' asset: http://asset.localhost https://asset.localhost",
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' asset: http://asset.localhost https://asset.localhost data:; font-src 'self' data:; connect-src ipc: http://ipc.localhost https://api.github.com; media-src 'self' asset: http://asset.localhost https://asset.localhost",
       "freezePrototype": true,
       "dangerousDisableAssetCspModification": false,
       "assetProtocol": {

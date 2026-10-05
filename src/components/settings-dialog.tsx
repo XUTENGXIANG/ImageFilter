@@ -1,12 +1,17 @@
+import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Moon, Sun } from "@icon-park/react";
+import { getVersion } from "@tauri-apps/api/app";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription,
 } from "@/components/ui/dialog";
 import { Toggle } from "@/components/ui/toggle";
+import { Button } from "@/components/ui/button";
 import type { Lang } from "../i18n";
 import { xmpErrKey, type XmpMode, type XmpStatus } from "../xmp";
 import { isLrcModeUsable, type LrcSendMode } from "../lightroom";
+import { checkForUpdate, type UpdateDetail, type UpdateState } from "../updater";
 import type { LightroomProbe } from "../types";
 
 interface Props {
@@ -87,6 +92,68 @@ export function SettingsDialog({
   glassOpacity, onGlassOpacityChange, backgroundOpacity, onBackgroundOpacityChange,
 }: Props) {
   const { t } = useTranslation();
+
+  // 版本号从**二进制**里读(getVersion), 不再写死在源码里 —— 原先那行字面量 "1.1.0"
+  // 在 1.1.1 发布之后就变成了假话。__APP_VERSION__ 是构建期注入的兜底, 只为
+  // 浏览器里(纯 vite / 探针)也能显示出版本, 真机上永远走 getVersion()。
+  const [version, setVersion] = useState<string>(__APP_VERSION__);
+  const [update, setUpdate] = useState<UpdateState>({ kind: "idle" });
+
+  useEffect(() => {
+    let alive = true;
+    getVersion()
+      .then((v) => { if (alive && v) setVersion(v); })
+      .catch(() => { /* 拿不到就留兜底值, 不打扰用户 */ });
+    return () => { alive = false; };
+  }, []);
+
+  function updateDetailText(d: UpdateDetail): string {
+    switch (d.code) {
+      case "network": return t("settings.updateErrNetwork");
+      case "timeout": return t("settings.updateErrTimeout");
+      case "http": return t("settings.updateErrHttp", { code: d.status });
+      default: return t("settings.updateErrUnexpected");
+    }
+  }
+
+  // 五种状态 → 同一个按钮的字面与悬停说明。
+  // 刻意**不新增行、不换布局**: 结果替换按钮自己的字面, 这一行的几何和原来那行
+  // 版本号逐像素相同 —— 否则设置面板会多出一条滚动条(见下方 max-h 的注释)。
+  const { updateLabel, updateHint } = (() => {
+    switch (update.kind) {
+      case "checking":
+        return { updateLabel: t("settings.checkingUpdate"), updateHint: undefined };
+      case "latest":
+        return { updateLabel: t("settings.updateLatest"), updateHint: t("settings.updateLatestHint") };
+      case "available":
+        return {
+          updateLabel: t("settings.updateAvailable", { v: update.version }),
+          updateHint: t("settings.updateAvailableHint"),
+        };
+      case "error":
+        return {
+          updateLabel: t("settings.updateFailed"),
+          updateHint: t("settings.updateFailedHint", { reason: updateDetailText(update.detail) }),
+        };
+      default:
+        return { updateLabel: t("settings.checkUpdate"), updateHint: t("settings.checkUpdateHint") };
+    }
+  })();
+
+  const updateBusy = update.kind === "checking";
+
+  // 有新版时这一下是"去下载页", 其余情况是"查一次"。
+  // openUrl 走系统默认浏览器(不引第二个 http 权限, 也不在 webview 里开新窗口);
+  // 兜底的 window.open 只在 non-Tauri 上下文(浏览器探针)里会被用到。
+  const onUpdateClick = () => {
+    if (updateBusy) return;
+    if (update.kind === "available") {
+      openUrl(update.url).catch(() => { window.open(update.url, "_blank", "noopener"); });
+      return;
+    }
+    setUpdate({ kind: "checking" });
+    checkForUpdate(version).then(setUpdate);
+  };
 
   // 边车状态: 拼进上面那一行的 desc, **不新增整行** —— 加行要让对话框重新算总高(会话 ③ 第 28 项)。
   // 注意顺序: "不可写"的判断必须排在档位判断**之前** —— 自动降级会把档位改回 off,
@@ -262,11 +329,35 @@ export function SettingsDialog({
             </div>
           </SettingRow>
 
-          {/* 版本信息 */}
+          {/* 版本信息 + 检查更新。
+              只比对版本号: 本机版本(二进制里的) vs GitHub 最新正式版的 tag。
+              不下载、不静默安装 —— 有新版时按钮变成"去发布页", 剩下的交给浏览器。
+              按钮 h-6(24px) 是点击目标下限, -my-1 把多出来的 8px 从行高里扣掉,
+              所以这一行仍然只有 16px 高。 */}
           <div className="border-t border-border pt-3">
-            <p className="text-xs text-muted-foreground text-center pt-2">
-              {t("settings.version", { v: "1.1.0" })}
-            </p>
+            <div className="flex items-center justify-center gap-1.5 pt-2 text-xs">
+              <span className="text-muted-foreground">{t("settings.version", { v: version })}</span>
+              <span aria-hidden="true" className="text-muted-foreground/40">·</span>
+              {/* role="status" 包着按钮: 字面一变(检查中 → 已是最新 / 有新版本),
+                  读屏会把新状态念出来。可视文案就是可访问名, 不再另加 aria-label
+                  (WCAG 2.5.3 名字里要含可见文本)。 */}
+              <span role="status">
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="xs"
+                  onClick={onUpdateClick}
+                  disabled={updateBusy}
+                  title={updateHint}
+                  aria-busy={updateBusy || undefined}
+                  className={`-my-1 text-muted-foreground hover:text-foreground ${
+                    update.kind === "available" ? "text-foreground font-medium underline underline-offset-2" : ""
+                  }`}
+                >
+                  {updateLabel}
+                </Button>
+              </span>
+            </div>
           </div>
         </div>
       </DialogContent>
