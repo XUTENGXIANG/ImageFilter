@@ -136,7 +136,8 @@ console.log("可访问名:", JSON.stringify({ DCIM: nameDCIM, "100CANON": nameLe
 check(!/[▶▼]/.test(nameDCIM + nameLeaf), "箭头字形不在可访问名里", JSON.stringify({ nameDCIM, nameLeaf }));
 check(nameDCIM.startsWith("DCIM"), "可访问名以行文本开头", nameDCIM);
 
-await page.screenshot({ path: resolve(HERE, "\tree-row-after.png" });
+// 截图按需: SHOT=<path> node verify-tree-row-geometry.mjs
+if (process.env.SHOT) await page.screenshot({ path: process.env.SHOT });
 console.log("page errors:", errs.length ? errs : "none");
 check(errs.length === 0, "无页面错误", JSON.stringify(errs));
 await browser.close();

@@ -761,8 +761,14 @@ function App({ osCapabilities }: { osCapabilities: OsCapabilities }) {
       </FloatingPanel>
 
       {/* === Center === */}
-      <main className="flex-1 flex flex-col min-w-0 bg-grid">
+      {/* 这两条栏长得像浮窗, 那就让它真的浮起来: 网格铺满整个高度、照片从它们底下滚过去。
+          之前它们是正常占位的兄弟节点 —— 实测工具栏吃掉 70px、导入栏吃掉 97px,
+          766px 的内容高度里有 167px 是被两条实心带子占掉的。
+          内边距由 CollapsibleBar 写的 --top-bar-h / --bottom-bar-h 决定, 所以展开/收起
+          时网格的可滚动范围会跟着变, 首行末行始终滚得出来。 */}
+      <main className="relative flex-1 min-w-0 bg-grid">
         {/* 顶部工具栏 — 可折叠圆角浮窗 */}
+        <div className="absolute left-0 right-0 top-0 z-40">
         <PhotoToolbar
           selectedDrive={selectedDrive}
           photosCount={photos.length}
@@ -787,11 +793,12 @@ function App({ osCapabilities }: { osCapabilities: OsCapabilities }) {
           expanded={toolbarOpen}
           onToggle={() => setToolbarOpen((v) => !v)}
         />
+        </div>
 
         <PixelMenu items={emptyMenuItems}>
         {/* 中心主区域 — 照片网格/空状态/加载中 */}
-        <ScrollFadeZone glass={transparentBg}>
-<div className="h-full overflow-auto p-3 no-scrollbar">
+        <ScrollFadeZone glass={transparentBg} className="absolute inset-0">
+<div className="h-full overflow-auto px-3 pt-[calc(var(--top-bar-h,0px)+0.75rem)] pb-[calc(var(--bottom-bar-h,0px)+0.75rem)] no-scrollbar">
           {browsing || loadingFolder ? (
             <div className="flex items-center justify-center h-full">
               <div className="flex flex-col items-center gap-3">
@@ -877,6 +884,7 @@ function App({ osCapabilities }: { osCapabilities: OsCapabilities }) {
         </PixelMenu>
 
         {/* ═══ 底部导入栏 — 可折叠圆角浮窗 ═══ */}
+        <div className="absolute left-0 right-0 bottom-0 z-40">
         <ImportBar
           destDir={destDir}
           folderRule={folderRule}
@@ -906,6 +914,7 @@ function App({ osCapabilities }: { osCapabilities: OsCapabilities }) {
           expanded={importBarOpen}
           onToggle={() => setImportBarOpen((v) => !v)}
         />
+        </div>
       </main>
 
       {/* ═══ 右侧面板 — EXIF详细信息浮窗 ═══ */}
