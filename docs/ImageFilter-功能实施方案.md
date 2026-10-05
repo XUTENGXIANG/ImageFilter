@@ -5,6 +5,8 @@
 > 基线：HEAD `6cad676` · 版本 `1.0.1` · 工作区干净 · `npx tsc --noEmit` exit 0 · `npx vite build` exit 0 · `cargo test --lib` 58 活跃 + 3 忽略 · i18n zh/en 各 241 叶子 key。**Phase 1–6 已全部落地**（会话 ①–⑤），本文现在同时是施工图与决策记录：正文各节已回填成"实现后的样子"，**符号名是权威**（写文时的行号早已漂移）。
 >
 > 每个 Phase 都是**可独立提交、可独立回归**的最小单元；建议一次只做一个 Phase，做完跑一次验收清单再进下一个。
+>
+> **Phase 7（与 Lightroom Classic 衔接）不在本文内**，已单独成文：[ImageFilter-Phase7-Lightroom衔接.md](ImageFilter-Phase7-Lightroom衔接.md)（含实机探路结论、决策日志、手测清单、被否决方案）。
 
 ---
 
