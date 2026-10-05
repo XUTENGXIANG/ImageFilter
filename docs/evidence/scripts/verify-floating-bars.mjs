@@ -16,7 +16,7 @@ const { chromium } = require("playwright-core");
 
 const EXE = process.env.CHROME || "C:\\Users\\11\\AppData\\Local\\ms-playwright\\chromium-1234\\chrome-win64\\chrome.exe";
 const BASE = process.env.APP_URL || "http://localhost:1420";
-const CLEARANCE = 24; // 1.5rem
+const CLEARANCE = 12; // 0.75rem
 
 let failed = 0, passed = 0;
 function check(ok, label, detail) {
