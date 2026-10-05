@@ -201,12 +201,15 @@ process.exitCode = failed === 0 ? 0 : 1;
 - [ ] **Step 2: 跑探针，确认它现在失败**
 
 Run: `node .design-audit\_probe\verify-tree-row-geometry.mjs`
-Expected: **退出码 1**，末行 `FAILURES: N passed, 8 failed` 里至少有这五条：
-- `FAIL 所有行高 24px  100CANON=20.5, …`
+Expected: **退出码 1**，末行 `FAILURES: 2 passed, 6 failed`，其中这六条是 FAIL：
+- `FAIL 所有行高 24px  ▼DCIM874=20.5, 100CANON12=20.5, …`
 - `FAIL 两个状态是同一个字形 "▶"  "▶" → "▼"`
 - `FAIL 靠 transform: rotate(90deg) 旋转  收起 none / 展开 none`
 - `FAIL 可展开行都有 aria-expanded（true 或 false）  []` —— 旧代码里根本没有 `.tree-caret`，按"有没有箭头元素"分类时一个可展开行都认不出来
-- `FAIL 箭头字形不在可访问名里  {"DCIM":"▶DCIM874",…}` —— 加 `aria-hidden` 之前，箭头确实在可访问名里
+- `FAIL 箭头字形不在可访问名里  {"nameDCIM":"▼DCIM874",…}` —— 加 `aria-hidden` 之前，箭头确实在可访问名里
+- `FAIL 可访问名以行文本开头  ▼DCIM874` —— 与上一条同源（名字字面上以箭头开头），它跟着失败是对的
+
+另有两条**本来就成立**、RED 阶段就会 `ok`：`叶子行完全没有 aria-expanded 属性`（旧代码叶子也没这属性）与 `无页面错误`。所以 RED 的分布是 2 通过 / 6 失败，不是 0/8。
 
 先决条件：`npm run tauri dev` 已在跑，Vite 在 `localhost:1420`（只绑 IPv6，不能用 `127.0.0.1`）。
 
