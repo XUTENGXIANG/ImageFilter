@@ -18,6 +18,12 @@
 export const LRC_ERR_CODES = [
   "notFound",
   "noFolder",
+  /**
+   * Lightroom 已在运行 —— Adobe 会**忽略**这时传进去的路径参数, 导入对话框停在
+   * 上一次的源上。所以必须冷启动: 让用户先关掉 LrC, 或由用户明确选择"强制关闭"。
+   * 依据见 src-tauri/src/lightroom.rs 的 LrcError::AlreadyRunning。
+   */
+  "alreadyRunning",
   "launchFailed",
   "notSupported",
   "notImplemented",

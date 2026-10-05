@@ -129,6 +129,7 @@ pub fn run() {
             // 只探测与启动, 不驱动 LrC —— 见 src/lightroom.rs 文件头。
             lightroom::probe_lightroom,
             lightroom::send_to_lightroom,
+            lightroom::force_close_lightroom,
             lightroom::is_dir_empty,
         ])
         .run(tauri::generate_context!())

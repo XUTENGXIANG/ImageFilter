@@ -37,6 +37,18 @@ pub enum LrcError {
     NotFound,
     /// 要发送的文件夹不存在或不是目录
     NoFolder,
+    /// **Lightroom 已经在运行** —— 这时把路径当参数传给它, Adobe 会**忽略**该参数,
+    /// 导入对话框停在它上一次的源上。
+    ///
+    /// 依据: 实机实测(本机 LrC 15.2.1) + FastRawViewer 作者的说明
+    /// (https://www.fastrawviewer.com/comment/5354): "'R' runs Lightroom.exe with
+    /// selected files passed as application command line arguments … if Lightroom is
+    /// already opened: opens import dialog, no files selected. The second case worked
+    /// in previous Lr version, but broken in the latest update (by Adobe)."
+    ///
+    /// 冷启动(进程不存在时)传**文件夹**路径是有效的 —— 实测传空文件夹时对话框报
+    /// "没有找到照片 / 0 张照片 / 0 字节", 传含 1 张图的文件夹时报 "1 张照片 / 120 KB"。
+    AlreadyRunning,
     /// 启动失败(权限、文件损坏等)
     LaunchFailed,
     /// 非 Windows 平台(macOS 走 `open`, 尚未验证, 所以先明确报"不支持")
@@ -59,6 +71,7 @@ impl LrcError {
         match self {
             LrcError::NotFound => "notFound",
             LrcError::NoFolder => "noFolder",
+            LrcError::AlreadyRunning => "alreadyRunning",
             LrcError::LaunchFailed => "launchFailed",
             LrcError::NotSupported => "notSupported",
             LrcError::NotImplemented => "notImplemented",
@@ -83,6 +96,7 @@ fn detail_of(e: LrcError) -> &'static str {
     match e {
         LrcError::NotFound => "未找到 Lightroom.exe(文件关联与常见安装目录都落空)",
         LrcError::NoFolder => "目标文件夹不存在或不是目录",
+        LrcError::AlreadyRunning => "Lightroom 已在运行(传路径会被忽略), 需先关闭它",
         LrcError::LaunchFailed => "启动 Lightroom 失败",
         LrcError::NotSupported => "该平台暂不支持与 Lightroom 衔接",
         LrcError::NotImplemented => "该模式尚未实现",
@@ -496,6 +510,99 @@ mod win {
     }
 }
 
+// ── 跨平台的"能不能用 / 关没关" ─────────────────────────────────────
+//
+// 这里把 `#[cfg]` 收在一处, 让下面的命令体保持平台无关(命令体里散落 cfg 很容易漏一边)。
+
+/// 定位 Lightroom.exe。按**实测确认过的优先级**依次尝试(本机只有第一条命中):
+/// `.lrcat` 文件关联 → 卸载项 InstallLocation(再探一层) → App Paths → Program Files。
+/// 非 Windows 返回 None(衔接本身也不支持)。
+pub fn find_exe() -> Option<String> {
+    #[cfg(target_os = "windows")]
+    {
+        win::find_exe().map(|(exe, _)| exe)
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        None
+    }
+}
+
+/// 同时拿到 exe 与**命中的探测方式**(只给单测/排查用)。
+///
+/// 非测试构建里没有调用方(命令只需要路径), 但它是"哪条策略命中"的唯一观测点,
+/// 排查"找不到 Lightroom"时很有用, 所以保留并显式允许 dead_code。
+#[cfg(target_os = "windows")]
+#[allow(dead_code)]
+pub fn find_exe_with_source() -> Option<(String, String)> {
+    win::find_exe()
+}
+
+/// LrC 是否正在运行。
+pub fn lightroom_is_running() -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        win::is_running()
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        // 非 Windows 暂不支持衔接, 一律报"没在运行" → 由 is_supported() 挡住
+        false
+    }
+}
+
+/// 本平台是否支持与 LrC 衔接(macOS 未实机验证, 先明确不支持)。
+pub fn lightroom_supported() -> bool {
+    cfg!(target_os = "windows")
+}
+
+/// 强制结束 Lightroom(供用户明确选择"强制关闭并继续"时调用)。
+///
+/// **为什么只能强制**: 实机试过三种"礼貌"的关闭方式, LrC 15.2.1 全都不吃 ——
+/// `CloseMainWindow()`(等价点关闭按钮)、`taskkill /IM`(不带 /F)、给主窗口发
+/// `WM_CLOSE`, 三种都报成功但 30 秒后进程仍在。所以这里直接用最强的信号,
+/// 并且**只有用户在界面上明确选择"强制关闭"时才会走到这里** ——
+/// 未保存的调整会丢, 这个决定必须由用户做, 不能由程序擅自做。
+fn force_close_sync() -> Result<(), LrcError> {
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt as _;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        let mut cmd = std::process::Command::new("taskkill");
+        cmd.args(["/IM", "lightroom.exe", "/F"]);
+        cmd.stdin(std::process::Stdio::null());
+        cmd.stdout(std::process::Stdio::null());
+        cmd.stderr(std::process::Stdio::null());
+        cmd.creation_flags(CREATE_NO_WINDOW);
+        match cmd.status() {
+            Ok(_) => Ok(()),
+            Err(e) => {
+                eprintln!("force_close_lightroom: taskkill 启动失败: {}", e);
+                Err(LrcError::LaunchFailed)
+            }
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        Err(LrcError::NotSupported)
+    }
+}
+
+/// 等在途的 Lightroom 进程真正消失(最多 `timeout`)。
+///
+/// 为什么必须等: 刚 `taskkill` 完立刻启动, 新进程可能被尚未退干净的旧实例吞掉
+/// (Windows 的单实例机制), 于是路径参数又白传了。
+fn wait_until_exited(timeout: std::time::Duration) -> bool {
+    let start = std::time::Instant::now();
+    while start.elapsed() < timeout {
+        if !lightroom_is_running() {
+            return true;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(300));
+    }
+    !lightroom_is_running()
+}
+
 // ── 命令 ────────────────────────────────────────────────────────────
 
 /// 探测 Lightroom 是否可用。前端启动时调一次, 失败/找不到都不报错(功能整体隐藏)。
@@ -540,68 +647,87 @@ pub async fn probe_lightroom() -> LightroomProbe {
     }
 }
 
-/// 把"照片所在文件夹"交给 Lightroom: 启动 `Lightroom.exe "<文件夹>"`,
-/// 由 LrC 打开导入对话框。**不 import、不驱动、不等结果**。
+/// 把"照片所在文件夹"交给 Lightroom。
+///
+/// **必须冷启动**: 实机确认(本机 LrC 15.2.1)在 Lightroom 已在运行时, 传进去的路径
+/// 会被 Adobe **忽略**, 导入对话框停在它上一次的源上。所以:
+///   · 进程存在 → 直接返回 [`LrcError::AlreadyRunning`], 由前端问用户
+///     "关掉 Lightroom 重试" / "强制关闭并继续" —— **绝不擅自杀用户的进程**;
+///   · 进程不存在 → 启动 `Lightroom.exe "<文件夹>"`, 导入对话框的源就是该文件夹
+///     (实测: 传空文件夹报"没有找到照片 / 0 张照片 / 0 字节")。
 ///
 /// 返回 exe 路径(前端只用于文案/排查)。
 #[tauri::command]
-pub async fn send_to_lightroom(folder_path: String) -> Result<String, String> {    if folder_path.trim().is_empty() {
+pub async fn send_to_lightroom(folder_path: String) -> Result<String, String> {
+    if folder_path.trim().is_empty() {
         return Err(LrcError::NoFolder.to_string());
+    }
+    if !lightroom_supported() {
+        return Err(LrcError::NotSupported.to_string());
     }
     let folder = PathBuf::from(&folder_path);
 
-    #[cfg(target_os = "windows")]
-    {
-        let probe_folder = folder.clone();
-        let exe = tokio::task::spawn_blocking(move || {
-            // 先校验文件夹, 再找 exe —— 这样"文件夹不存在"能给出更准确的错误码
-            if !probe_folder.is_dir() {
-                return Err(LrcError::NoFolder);
-            }
-            match win::find_exe() {
-                Some((exe, _)) => Ok(exe),
-                None => Err(LrcError::NotFound),
-            }
-        })
-        .await
-        .map_err(|_| LrcError::Unknown.to_string())?
-        .map_err(|e: LrcError| e.to_string())?;
+    tokio::task::spawn_blocking(move || {
+        // 顺序有讲究: 先查"已运行", 再校验文件夹, 最后找 exe。
+        // "已运行"放第一位是因为它是用户最容易踩、且提示最具体的一个失败原因;
+        // 若先报"文件夹不存在", 用户会去改路径, 而真正的问题是另一个。
+        if lightroom_is_running() {
+            return Err(LrcError::AlreadyRunning);
+        }
+        if !folder.is_dir() {
+            return Err(LrcError::NoFolder);
+        }
+        let exe = match find_exe() {
+            Some(e) => e,
+            None => return Err(LrcError::NotFound),
+        };
 
-        // 启动本身也要放进 blocking(CreateProcess 会短暂阻塞)
-        let exe_for_spawn = exe.clone();
-        let folder_for_spawn = folder.clone();
-        tokio::task::spawn_blocking(move || {
-            let mut cmd = std::process::Command::new(&exe_for_spawn);
-            cmd.arg(&folder_for_spawn);
-            // 不要继承本进程的 stdin/stdout 管道; 也不弹控制台窗口
-            cmd.stdin(std::process::Stdio::null());
-            cmd.stdout(std::process::Stdio::null());
-            cmd.stderr(std::process::Stdio::null());
-            #[cfg(target_os = "windows")]
-            {
-                use std::os::windows::process::CommandExt as _;
-                const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-                cmd.creation_flags(CREATE_NO_WINDOW);
+        let mut cmd = std::process::Command::new(&exe);
+        cmd.arg(&folder);
+        // 不继承本进程的 stdio; 也不弹控制台窗口
+        cmd.stdin(std::process::Stdio::null());
+        cmd.stdout(std::process::Stdio::null());
+        cmd.stderr(std::process::Stdio::null());
+        #[cfg(target_os = "windows")]
+        {
+            use std::os::windows::process::CommandExt as _;
+            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+            cmd.creation_flags(CREATE_NO_WINDOW);
+        }
+        match cmd.spawn() {
+            Ok(_child) => Ok(exe),
+            Err(e) => {
+                eprintln!("send_to_lightroom: spawn 失败: {}", e);
+                Err(LrcError::LaunchFailed)
             }
-            match cmd.spawn() {
-                Ok(_child) => Ok(()),
-                Err(e) => {
-                    eprintln!("send_to_lightroom: spawn 失败: {}", e);
-                    Err(LrcError::LaunchFailed)
-                }
-            }
-        })
-        .await
-        .map_err(|_| LrcError::Unknown.to_string())?
-        .map_err(|e: LrcError| e.to_string())?;
+        }
+    })
+    .await
+    .map_err(|_| LrcError::Unknown.to_string())?
+    .map_err(|e: LrcError| e.to_string())
+}
 
-        Ok(exe)
-    }
-    #[cfg(not(target_os = "windows"))]
-    {
-        let _ = folder;
-        Err(LrcError::NotSupported.to_string())
-    }
+/// 强制结束 Lightroom, 并**等到它真的退出**才返回。
+///
+/// 只在用户于界面上明确选择"强制关闭并继续"时调用 —— 未保存的调整会丢。
+/// 等到退出是必须的: 旧实例没退干净时启动新实例, 路径参数会被单实例机制吞掉。
+#[tauri::command]
+pub async fn force_close_lightroom() -> Result<(), String> {
+    tokio::task::spawn_blocking(|| {
+        if !lightroom_is_running() {
+            return Ok(()); // 已经不在了: 幂等, 不报错
+        }
+        force_close_sync()?;
+        if wait_until_exited(std::time::Duration::from_secs(20)) {
+            Ok(())
+        } else {
+            // 等不到就别假装成功 —— 前端会把 alreadyRunning 变成一句"还没关掉"
+            Err(LrcError::AlreadyRunning)
+        }
+    })
+    .await
+    .map_err(|_| LrcError::Unknown.to_string())?
+    .map_err(|e: LrcError| e.to_string())
 }
 
 // ── "这个文件夹是不是空的" ─────────────────────────────────────────────
@@ -709,6 +835,7 @@ mod tests {
         // 前端 src/lightroom.ts 的 LRC_ERR_CODES 必须与此完全一致(改这里就要改那边)
         assert_eq!(LrcError::NotFound.code(), "notFound");
         assert_eq!(LrcError::NoFolder.code(), "noFolder");
+        assert_eq!(LrcError::AlreadyRunning.code(), "alreadyRunning");
         assert_eq!(LrcError::LaunchFailed.code(), "launchFailed");
         assert_eq!(LrcError::NotSupported.code(), "notSupported");
         assert_eq!(LrcError::NotImplemented.code(), "notImplemented");
@@ -716,12 +843,32 @@ mod tests {
         assert_eq!(LrcError::Unknown.code(), "unknown");
     }
 
+    /// `is_dir_empty` 与"等进程退出"这两个辅助函数的边界。
+    #[test]
+    fn wait_until_exited_returns_fast_when_not_running() {
+        // 本机测试环境里 LrC 通常没开; 即便开着也只验证"它不 panic 且返回 bool"
+        let start = std::time::Instant::now();
+        let _ = wait_until_exited(std::time::Duration::from_millis(50));
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(5),
+            "wait_until_exited 不应超出给定超时太多"
+        );
+    }
+
+    #[test]
+    fn lightroom_supported_matches_platform() {
+        assert_eq!(lightroom_supported(), cfg!(target_os = "windows"));
+        if !lightroom_supported() {
+            assert!(find_exe().is_none(), "非 Windows 不应找到 Lightroom.exe");
+        }
+    }
+
     #[cfg(target_os = "windows")]
     #[test]
     fn find_exe_returns_an_existing_file_when_it_hits() {
         // 本机装有 LrC(实测), 所以这里应当命中; 但 CI/无 LrC 的机器上允许落空,
         // 因此只断言"命中时路径必须真实存在" —— 不把"必须找到"写成硬断言。
-        if let Some((exe, source)) = win::find_exe() {
+        if let Some((exe, source)) = find_exe_with_source() {
             assert!(
                 Path::new(&exe).is_file(),
                 "find_exe 命中了不存在的路径: {} (source={})",

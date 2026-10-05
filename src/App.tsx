@@ -240,6 +240,9 @@ function App() {
     lrcSent,
     lrcNotice,
     importToLightroom,
+    lrcAlreadyRunning,
+    setLrcAlreadyRunning,
+    forceCloseLightroomAndRetry,
   } = useScanner();
 
   // 图片查看器: viewerIndex=null 关闭, 数字=打开第N张
@@ -912,6 +915,39 @@ function App() {
               className="px-3 py-1.5 rounded-md bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-medium"
             >
               {t("xmp.askYes")}
+            </button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Phase 7 · "Lightroom 已在运行"。
+          实测(本机 LrC 15.2.1) + FastRawViewer 作者的说明: Lightroom 已经在运行时,
+          Adobe 会**忽略**命令行传进去的路径, 导入对话框停在它上一次的源上 —— 也就是说
+          "跳转到这批照片"不会发生。唯一可靠的办法是**冷启动**(先关掉 LrC 再带路径启动)。
+          LrC 15.2.1 不接受任何"礼貌"的关闭请求(实测 CloseMainWindow / taskkill 不带 /F /
+          WM_CLOSE 三种都无效), 所以"强制关闭"会丢掉未保存的调整 ——
+          这个决定只能由用户做, 因此这里给两个按钮, 而不是程序擅自杀进程。 */}
+      <Dialog open={lrcAlreadyRunning} onOpenChange={(o) => { if (!o) setLrcAlreadyRunning(false); }}>
+        <DialogContent className="w-[460px]">
+          <DialogHeader>
+            <DialogTitle>{t("lrc.runningTitle")}</DialogTitle>
+            <DialogDescription>{t("lrc.runningBody")}</DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <button
+              type="button"
+              onClick={() => setLrcAlreadyRunning(false)}
+              className="px-3 py-1.5 rounded-md border border-border text-sm hover:bg-muted"
+            >
+              {t("lrc.runningRetry")}
+            </button>
+            <button
+              type="button"
+              disabled={lrcSending}
+              onClick={forceCloseLightroomAndRetry}
+              className="px-3 py-1.5 rounded-md bg-red-600 hover:bg-red-500 disabled:bg-zinc-700 text-white text-sm font-medium"
+            >
+              {lrcSending ? t("lrc.sending") : t("lrc.runningForce")}
             </button>
           </DialogFooter>
         </DialogContent>

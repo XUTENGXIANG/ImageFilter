@@ -811,6 +811,12 @@ export function useScanner() {
   const lrcImportingRef = useRef(false);
   /** 成功提示(含"是否另建了子文件夹") */
   const [lrcSent, setLrcSent] = useState<LrcSentInfo | null>(null);
+  /**
+   * true = 上次尝试时 Lightroom 正在运行, 于是路径参数被 Adobe 忽略。
+   * 前端据此弹一个对话框, 让用户在"关掉 LrC 再试"与"强制关闭并继续"之间选 ——
+   * **绝不擅自杀用户的进程**(未保存的调整会丢, 这个决定必须由用户做)。
+   */
+  const [lrcAlreadyRunning, setLrcAlreadyRunning] = useState(false);
   /** 失败提示的请求位 + state: 与 xmpNotice 同款(不在渲染期 setState) */
   const lrcNoticeRef = useRef<LrcNotice | null>(null);
   const lrcSeqRef = useRef(0);
@@ -1113,17 +1119,51 @@ export function useScanner() {
       }
 
       // 5. 交给 LrC(目录里此刻正好是这批)
+      //    **必须冷启动**: LrC 已在运行时 Adobe 会忽略路径参数(实测 + FastRawViewer
+      //    作者的说明), 此时不当作错误闪一下 toast 就算, 而是弹对话框让用户决定。
       await invoke<string>("send_to_lightroom", { folderPath: plan.destDir });
       setLrcSent({ folder: plan.destDir, count: summary.imported, staged: plan.staged });
     } catch (err) {
       // Rust 侧返回的是闭集错误码字符串(xmp.rs 同款契约), 未知码由 lrcErrKey 兜底
       console.error("importToLightroom:", err);
-      notifyLrc(String(err));
+      const code = lrcErrKey(String(err));
+      if (code === "alreadyRunning") {
+        // 不弹 toast: 这个状态需要用户做选择, 一句话提示装不下
+        setLrcAlreadyRunning(true);
+      } else {
+        notifyLrc(String(err));
+      }
     } finally {
       lrcImportingRef.current = false;
       setLrcSending(false);
     }
   }, [destDir, scheme.folder, pickDestDir, runImport, notifyLrc]);
+
+  /**
+   * 用户在"Lightroom 已在运行"的对话框里选择「强制关闭 Lightroom 并继续」。
+   *
+   * 这是**唯一**会结束用户 Lightroom 进程的路径, 且只有用户明确点了才会走到 ——
+   * 未保存的调整会丢, 这个决定必须由用户做。
+   * 关掉之后立刻重跑整条链(导入会走 skipped, 很快) —— 只有冷启动时路径参数才生效。
+   */
+  const forceCloseLightroomAndRetry = useCallback(async () => {
+    if (lrcImportingRef.current) return;
+    lrcImportingRef.current = true;
+    setLrcSending(true);
+    try {
+      await invoke("force_close_lightroom");
+      setLrcAlreadyRunning(false);
+      lrcImportingRef.current = false; // 让 importToLightroom 能进来
+      await importToLightroom();
+      return;
+    } catch (err) {
+      console.error("force_close_lightroom:", err);
+      notifyLrc(String(err));
+    } finally {
+      lrcImportingRef.current = false;
+      setLrcSending(false);
+    }
+  }, [importToLightroom, notifyLrc]);
 
   /** Stop ongoing analysis */
   const stopAnalysis = useCallback(() => {
@@ -1236,5 +1276,7 @@ export function useScanner() {
     // probeLightroom 也导出: 用户可能在应用运行期间才装/开 LrC, 设置页给一个"重新检测"。
     lrcProbe, probeLightroom, lrcMode, setLrcMode,
     lrcSending, lrcSent, lrcNotice, importToLightroom,
+    // Phase 7 · "Lightroom 已在运行"的处理: 弹窗标志 + 关闭它并重试
+    lrcAlreadyRunning, setLrcAlreadyRunning, forceCloseLightroomAndRetry,
   };
 }
