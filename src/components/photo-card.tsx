@@ -11,20 +11,24 @@ function formatBadge(fileName: string): string {
   return ext || "?";
 }
 
-function Badge({ color, label }: { color: string; label: string }) {
-  return <span className={`text-[9px] px-1.5 py-0.5 rounded ${color} text-white font-medium`}>{label}</span>;
+/** 徽章色调 — 语义化取值, 具体颜色由 CSS 的 .badge-glass[data-tone] 决定,
+ *  调用点不再拼 Tailwind 类名(材质/配色集中在 index.css 的令牌层)。 */
+export type BadgeTone = "raw" | "jpg" | "video" | "blurry" | "over" | "under" | "dup" | "best";
+
+/** 照片卡片徽章。材质=毛玻璃, 见 index.css 的 .badge-glass(含 alpha 的实测依据)。 */
+function Badge({ tone, label }: { tone: BadgeTone; label: string }) {
+  return (
+    <span className="badge-glass text-[9px] px-1.5 py-0.5 rounded font-medium" data-tone={tone}>
+      {label}
+    </span>
+  );
 }
 
 /** 照片类型徽标 — 三种互斥状态折叠为单一逻辑 */
 function TypeBadge({ photo }: { photo: ScannedPhoto }) {
   const { t } = useTranslation();
-  if (photo.isVideo) return <Badge color="bg-blue-600/80" label={t("grid.video")} />;
-  return (
-    <Badge
-      color={photo.isRaw ? "bg-amber-600/80" : "bg-zinc-600/80"}
-      label={formatBadge(photo.fileName)}
-    />
-  );
+  if (photo.isVideo) return <Badge tone="video" label={t("grid.video")} />;
+  return <Badge tone={photo.isRaw ? "raw" : "jpg"} label={formatBadge(photo.fileName)} />;
 }
 
 export const PhotoCard = memo(function PhotoCard({
@@ -71,11 +75,11 @@ export const PhotoCard = memo(function PhotoCard({
       </button>
       <div className="absolute top-1.5 left-1.5 flex gap-1">
         <TypeBadge photo={photo} />
-        {analysis?.isBlurry && <Badge color="bg-red-600/80" label={t("grid.blurry")} />}
-        {analysis?.isOverexposed && <Badge color="bg-yellow-600/80" label={t("grid.overexposed")} />}
-        {analysis?.isUnderexposed && <Badge color="bg-indigo-600/80" label={t("grid.underexposed")} />}
-        {analysis?.duplicateGroup !== undefined && !analysis?.isBestInGroup && <Badge color="bg-gray-600/80" label={t("grid.duplicate")} />}
-        {analysis?.isBestInGroup && <Badge color="bg-emerald-600/80" label={t("grid.best")} />}
+        {analysis?.isBlurry && <Badge tone="blurry" label={t("grid.blurry")} />}
+        {analysis?.isOverexposed && <Badge tone="over" label={t("grid.overexposed")} />}
+        {analysis?.isUnderexposed && <Badge tone="under" label={t("grid.underexposed")} />}
+        {analysis?.duplicateGroup !== undefined && !analysis?.isBestInGroup && <Badge tone="dup" label={t("grid.duplicate")} />}
+        {analysis?.isBestInGroup && <Badge tone="best" label={t("grid.best")} />}
         {/* Phase 4: 颜色标签 —— **只读**展示(卡片不新增可点区域: 免得又多一个
             "点了会不会勾选"的交互面)。鼠标入口是右键"颜色标签"子菜单,
             键盘是 Ctrl/Alt + 1-5(修饰键在设置里选)。用圆点而不是图标/文字:

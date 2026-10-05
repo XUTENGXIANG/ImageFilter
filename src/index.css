@@ -122,6 +122,45 @@ img {
   background: linear-gradient(to top, rgba(0, 0, 0, 0.8), transparent);
 }
 
+/* ── 照片卡片徽章：毛玻璃材质 ──
+   关键取舍：**不要用平铺黑底**。盖一层 black/α 会把照片的颜色一起去饱和，模糊后的细节
+   被压成一块中性灰 —— 那正是"看不出毛玻璃效果"的原因。改用 backdrop-filter 的
+   brightness() 压暗背景：同样够暗，但照片的色相与明暗变化都留着，玻璃才像玻璃。
+   透光率实测（纯白底，最坏情况）：平铺 black/0.72 → 27%；本实现 → 38%（+42%）。
+   代价是文字必须够亮才撑得住对比度：底色用 oklch(...) 绝对色，不跟随界面主题
+   （浅色主题会反转 --color-zinc-*，用 zinc 会让徽章变白、文字立刻失效；而徽章压在
+    照片上，本就不该跟主题走）。文字色 = 色调混白，既够亮又保留一点色彩识别。 */
+.badge-glass {
+  /* 回退：不支持 backdrop-filter 的环境下，平铺黑保证可读 */
+  background: rgb(0 0 0 / 0.66);
+  --badge-hue: oklch(87.9% 0.169 91.605);
+  color: color-mix(in oklab, var(--badge-hue) 35%, white);
+  box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--badge-hue) 28%, transparent);
+}
+@supports (backdrop-filter: blur(4px)) {
+  .badge-glass {
+    background: transparent;
+    /* brightness(0.38) = 让 38% 的背景亮度透过来（旧实现平铺 black/0.72 只有 26.7%）。
+       扫描 brightness × 色相占比 的矩阵选出来的点：纯白照片底(最坏情况)下，
+       最差色调(under/靛)实测 4.94:1、raw 实测 5.49:1，都对 4.5:1 留有余量。
+       再透一档(0.40)最差色调降到 4.58，余量就太薄了。 */
+    backdrop-filter: blur(8px) brightness(0.38) saturate(1.6);
+  }
+}
+/* 色调只声明色相，文字色与描边都从它派生（文字混白提亮、描边混透明减弱）。
+   取值抄自 tailwindcss/theme.css，用绝对值是因为 Tailwind v4 只为"实际用到"的颜色
+   生成 --color-* 变量，且 zinc/emerald 在浅色主题下会被改写。 */
+.badge-glass[data-tone="raw"]    { --badge-hue: oklch(87.9% 0.169 91.605); }  /* amber-300 */
+.badge-glass[data-tone="jpg"]    { --badge-hue: oklch(87.1% 0.006 286.286); } /* zinc-300 */
+.badge-glass[data-tone="video"]  { --badge-hue: oklch(80.9% 0.105 251.813); } /* blue-300 */
+.badge-glass[data-tone="blurry"] { --badge-hue: oklch(80.8% 0.114 19.571); }  /* red-300 */
+.badge-glass[data-tone="over"]   { --badge-hue: oklch(90.5% 0.182 98.111); }  /* yellow-300 */
+.badge-glass[data-tone="under"]  { --badge-hue: oklch(78.5% 0.115 274.713); } /* indigo-300 */
+.badge-glass[data-tone="dup"]    { --badge-hue: oklch(86.9% 0.005 56.366); }  /* stone-300 */
+/* ↑ zinc-400 在纯白底上只有 3.54:1(未过 AA); stone-300 既达标又靠暖/冷灰与 JPG 徽章区分。
+   注意：颜色在这里只是装饰 —— "重复"和"CR3"的文字本身已经区分了含义(WCAG 1.4.1)。 */
+.badge-glass[data-tone="best"]   { --badge-hue: oklch(84.5% 0.143 164.978); } /* emerald-300 */
+
 /* WCAG 2.5.8 目标尺寸下限(24×24)。
    紧凑控件的**视觉尺寸保持不变**, 只用伪元素把命中区补到 24px —— 桌面端保持信息密度,
    键盘/鼠标用户又不用精确瞄准。要求: 元素自身是定位上下文(加 relative,
