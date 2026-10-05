@@ -245,15 +245,18 @@ cargo test --release --lib bench_analyze_cache -- --ignored --nocapture   # 生�
 
 ---
 
-## 9. 发版计划（下次发布 v1.0.2）
+## 9. 发版计划（当前：v1.1.0）
 
-`v1.0.1` 的 tag 已存在，而这批修复（模糊误报、重复误报、两轮 CPU 问题、JPEG 预览缓存损坏）**用户可感知度很高**，建议作为 **v1.0.2** 发布。以下步骤照做即可，暂无排期。
+> **本节已随 Phase 1–7 更新**。原计划里的 `v1.0.2`（那批模糊/重复/CPU 修复）与后续的 Phase 1–6（自动前进、撤销、1:1、颜色标签与三维筛选、XMP 边车、导入历史/命名方案/导入统计）、Phase 7（Lightroom 衔接）**合并为一次 `v1.1.0`** 发布。
+> 版本号已改为 `1.1.0`（4 处），见 [ImageFilter-Phase7-Lightroom衔接.md](ImageFilter-Phase7-Lightroom衔接.md) 与 [ImageFilter-功能实施方案.md](ImageFilter-功能实施方案.md)。
 
 ### 9.1 发布前检查
-- [ ] 在真实 SD 卡上跑一遍核心路径：浏览 → 缩略图 → 查看器（含**连续快速切换**）→ 星级筛选 → AI 分析（看 CPU 与模糊/重复标记是否符合预期）→ 导入（校验归档层级与"跳过/改名"行为）
+- [x] `cargo test --lib`（66 活跃 + 3 忽略）与 `npx tsc --noEmit` / `npx vite build` 全绿；i18n zh/en 各 273 叶子 key 对齐
+- [x] Phase 7 的完整链路已由使用者在真机验证（导入 → 打开 LrC 导入页 → 页面只含本批）
+- [ ] 在真实 SD 卡上跑一遍核心路径：浏览 → 缩略图 → 查看器（含**连续快速切换**）→ 星级筛选 → AI 分析 → 导入（校验归档层级与"跳过/改名"行为）
 - [ ] 复核两个阈值（见 §6 "未验证的假设"）：`BLUR_THRESHOLD = 75`、`DUPLICATE_MAX_DISTANCE = 5` 在更大样本上是否仍合适
-- [ ] `cargo test --lib`（26 活跃）与 `npx tsc --noEmit` 全绿
-- [ ] macOS 未实机验证 —— README 里保留"缺乏构建环境"的提示，别在 Release notes 里声称已支持
+- [ ] macOS 全链仍未实机验证 —— README 里保留"缺乏构建环境"的提示，别在 Release notes 里声称已支持
+- **Phase 7 只在 Windows 生效**：`lightroom.rs` 的所有 Windows 专属代码都在 `cfg(target_os = "windows")` 内，非 Windows 平台 `probe_lightroom` 直接返回"未找到"，功能入口自动隐藏。macOS 上"用 `open -a` 打开 LrC"未实现、也未验证。
 
 ### 9.2 改版本号（**必须 4 处**，只改一处会导致界面/安装包/包管理器版本不一致）
 
@@ -267,23 +270,40 @@ cargo test --release --lib bench_analyze_cache -- --ignored --nocapture   # 生�
 ### 9.3 打 tag 并推送
 
 ```bash
-git tag v1.0.2
+git tag v1.1.0
 git push origin master
-git push origin v1.0.2
+git push origin v1.1.0
 ```
 
 ### 9.4 产物与正式发布
-- 安装包由 `.github/workflows/build.yml` 在 tag 推送后构建（Windows：NSIS + MSI）
-- **必须人工到 GitHub 建 Release 并上传安装包**才算正式发布 —— 只推 tag 不算（这是本项目的既有约定）
+- 安装包由 `.github/workflows/build.yml` 在 tag 推送后构建：**Windows（NSIS `setup.exe` + MSI）与 macOS（universal）两平台并行**
+- 该工作流用 `tauri-action` **自动创建 draft release 并上传安装包**（`releaseDraft: true`）
+- **仍需人工到 GitHub 把那份 draft 点成 Publish** 才算正式发布 —— 只推 tag 只会得到一份草稿
 - Release notes 建议说明：`preview_v3 → v4` 的缓存升级会在**首次浏览 RAW 时重建预览缓存**，属预期行为
 
 ### 9.5 本次发布应包含的用户可见变化
+
+**v1.0.1 → 现在（原 v1.0.2 那批修复）：**
 - 大光圈虚化背景的照片**不再被误标"模糊"**
 - 连拍"最佳"改为兼顾曝光（不再选过曝/欠曝的那张）
 - 重复标记显著收敛（只归"几乎同一张"）
 - AI 分析 CPU 占用大幅下降（dev 下 29 张 **63s → 5.7s**）
 - 连续切换设备不再触发整盘遍历 / CPU 打满
 - 修复：查看器内评分会误改另一张照片、星级筛选下查看器崩溃或跳图、导入的文件夹层级被压平、浅色主题基础文字色、某类 RAW 预览空白且分析被静默跳过
+
+**v1.1.0 新增（Phase 1–6）：**
+- 评分后**自动前进**（打完分不用再按方向键）
+- `Ctrl+Z` / `Ctrl+Shift+Z` **撤销/重做**（评分与勾选）
+- 查看器 **`Z` 切 1:1 实际像素**（以鼠标位置为锚点）
+- **颜色标签**（`Ctrl+1`–`Ctrl+5`，修饰键可换 Ctrl/Alt）+ **星级/标签/分析三维叠加筛选**
+- **评分与色标写入 `.xmp` 边车**（三档开关，缺省"询问"），导入时连同边车一起复制
+- **导入历史**界面、**命名方案预设**、导入结果区分"成功/改名/跳过/失败"、`{seq}` 按输入顺序编号
+
+**v1.1.0 新增（Phase 7 · 仅 Windows）：**
+- 导入栏「**导入到 LrC**」：先把选中的照片导入目标文件夹，再打开 Lightroom 的导入页面，**页面上只有这一批**
+  （目标文件夹非空时自动建 `ImageFilter_YYYYMMDD_HHmm` 子文件夹，避免 LrC 列出整个目录）
+- 自动定位 Lightroom 安装位置（`.lrcat` 文件关联优先 —— 装在非标准目录时这是唯一能命中的方式）
+- Lightroom 已在运行时**不静默失败**：弹框让你选"关掉后重试"或"强制关闭并继续"（Adobe 会忽略已运行实例收到的路径参数）
 
 ---
 
@@ -293,6 +313,8 @@ git push origin v1.0.2
 |---|---|
 | **本文件** | 唯一权威交接文档：现状、机制、必守坑位、未修问题与优化建议、验证工具、**发版计划** |
 | [ImageFilter-架构与机制走查.md](ImageFilter-架构与机制走查.md) | 深度证据：D1–D14 逐条（含代码行号、复现数据）、§8 三轮修复的根因与社区调研来源 |
+| [ImageFilter-功能实施方案.md](ImageFilter-功能实施方案.md) | Phase 1–6 的施工图 + 各会话决策日志（含**被否决方案**）+ 手测清单 |
+| [ImageFilter-Phase7-Lightroom衔接.md](ImageFilter-Phase7-Lightroom衔接.md) | Phase 7 与 Lightroom Classic 衔接：实机探路结论、决策日志、手测清单、已知限制 |
 | [README.md](../README.md) / [README.en.md](../README.en.md) | 对外介绍、安装与快捷键 |
 | `PROJECT_LOG.md`、`HANDOFF.md`（本地，未入库） | **已过期**，保留仅作历史；以本文件为准 |
 | `docs/superpowers/` 下的 plans 与 specs | 落地页网站（另一个仓库）的计划与设计规格 |

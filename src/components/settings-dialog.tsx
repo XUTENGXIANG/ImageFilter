@@ -258,7 +258,7 @@ export function SettingsDialog({
           {/* 版本信息 */}
           <div className="border-t border-border pt-3">
             <p className="text-xs text-muted-foreground text-center pt-2">
-              {t("settings.version", { v: "1.0.1" })}
+              {t("settings.version", { v: "1.1.0" })}
             </p>
           </div>
         </div>
