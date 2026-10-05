@@ -100,6 +100,9 @@ function matchesFlag(a: AnalysisResult | undefined, flag: FlagFilter): boolean {
  * props 就等于"任何一次勾选都让所有卡片换 props" → 双层 memo 全废。
  * 现在整块网格共用一个菜单, 右键时由 onCtx(photo) 记下目标(见 App 里那层 PixelMenu)。
  */
+/** "扫描目录结构..." 的延迟阈值(ms)。见 App 里 showScanning 那段注释的实测依据。 */
+const SCAN_HINT_DELAY_MS = 150;
+
 const PhotoGridItem = memo(function PhotoGridItem({
   photo, thumbnail, isSelected, isChecked, analysis, rating, label,
   onToggle, onRate, onOpenViewer, onSelect, onCtx, loadThumb,
@@ -507,6 +510,21 @@ function App() {
     return Number.isFinite(v) ? Math.min(100, Math.max(0, v)) : 0;
   });
 
+  // "扫描目录结构..." 只在真的等了一会儿之后才出现。
+  //
+  // 为什么要这个: 实测(桩模拟 browse_directory 的往返延迟)这行字的可见帧数 ——
+  //   0ms 档 1 帧、32ms 档 2 帧  → 那不是"提示", 是闪一下
+  //   250ms 档 42 帧(233ms)、600ms 档 105 帧(585ms) → 那时它是必要的反馈
+  // 所以是**延迟出现**, 不是删掉: 等 SCAN_HINT_DELAY_MS 还没回来才显示。
+  // 不删的理由: 真实存储卡上 browse.rs 的 has_subdirectories 要对每个子目录各探一次,
+  // 等几秒是可能的 —— 那种时候面板不能一片空白什么反馈都没有。
+  const [showScanning, setShowScanning] = useState(false);
+  useEffect(() => {
+    if (!browsing) { setShowScanning(false); return; }
+    const timer = window.setTimeout(() => setShowScanning(true), SCAN_HINT_DELAY_MS);
+    return () => window.clearTimeout(timer);
+  }, [browsing]);
+
   useEffect(() => {
     document.documentElement.style.setProperty("--background-opacity", `${backgroundOpacity}%`);
     localStorage.setItem("imagefilter-background-opacity", String(backgroundOpacity));
@@ -680,7 +698,7 @@ function App() {
         </div>
 
         <div className="flex-1 overflow-auto px-1.5 py-1.5 no-scrollbar">
-          {browsing ? (
+          {showScanning ? (
             <p className="text-[11px] text-emerald-500 px-1 animate-pulse">
               {t("devices.scanning")}
             </p>
