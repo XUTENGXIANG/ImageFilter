@@ -137,6 +137,8 @@ export default {
     filter: "筛选",
     flags: "分析结果",
     sortDir: "切换排序方向",
+    sortBy: "排序方式",
+    starFilterLabel: "星级筛选",
     clearFilters: "清除筛选",
     cols: "{n} 列",
     empty: "打开照片文件夹后显示工具栏",

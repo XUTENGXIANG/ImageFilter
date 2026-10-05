@@ -1,4 +1,5 @@
 import * as ContextMenuPrimitive from "@radix-ui/react-context-menu";
+import { MENU_CONTENT, MENU_ITEM } from "./components/menu-styles";
 
 export interface MenuItem {
   label: string;
@@ -13,8 +14,9 @@ interface Props {
   children: React.ReactNode;
 }
 
-const itemClass = "group text-[11px] leading-none text-zinc-300 rounded-sm flex items-center h-7 px-2 relative select-none outline-none data-[disabled]:text-zinc-600 data-[disabled]:pointer-events-none data-[highlighted]:bg-zinc-700 data-[highlighted]:text-zinc-100 cursor-pointer";
-const contentClass = "min-w-[160px] bg-zinc-800 border border-zinc-700 rounded-lg p-1 shadow-2xl z-[100]";
+// 容器与项的视觉取自 menu-styles.ts —— 与下拉框共用同一份, 否则两种菜单会长得不一样
+const itemClass = MENU_ITEM;
+const contentClass = MENU_CONTENT;
 
 export function PixelMenu({ items, onOpenChange, children }: Props) {
   return (

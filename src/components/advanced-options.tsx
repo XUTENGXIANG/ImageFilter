@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Collapse } from "./collapse";
+import { Dropdown } from "./ui/select";
 import {
   isSeqRule, keepsOriginalWithSeq, schemeOptions, toggleKeepOriginalRule, toggleSeqRule,
   type ImportSchemeApi,
@@ -90,16 +91,16 @@ export function AdvancedOptions({
           {/* ── 命名方案(Phase 6 / 6.2) ── */}
           <div className="flex items-center gap-1.5 flex-wrap">
             <span className="text-[10px] text-zinc-400 shrink-0">{t("import.scheme")}</span>
-            <select
+            <Dropdown
               value={scheme.name ?? ""}
-              onChange={(e) => scheme.pick(e.target.value || null)}
-              className="bg-zinc-800 text-[10px] text-zinc-400 px-1 py-0.5 rounded border border-zinc-700 max-w-[150px]"
-            >
-              <option value="">{t("import.schemeCustom")}</option>
-              {schemeOptions(scheme.rules, scheme.name).map((n) => (
-                <option key={n} value={n}>{n}</option>
-              ))}
-            </select>
+              onValueChange={(v) => scheme.pick(v || null)}
+              ariaLabel={t("import.scheme")}
+              options={[
+                { value: "", label: t("import.schemeCustom") },
+                ...schemeOptions(scheme.rules, scheme.name).map((n) => ({ value: n, label: n })),
+              ]}
+              className="bg-zinc-800 text-[10px] text-zinc-400 border-zinc-700 px-1 py-0.5 max-w-[150px]"
+            />
             <button
               onClick={() => setSaveAsOpen((v) => !v)}
               className="text-[10px] px-1.5 py-0.5 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-500 shrink-0"

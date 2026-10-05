@@ -133,6 +133,8 @@ export default {
     filter: "Filters",
     flags: "Analysis",
     sortDir: "Toggle sort direction",
+    sortBy: "Sort by",
+    starFilterLabel: "Star filter",
     clearFilters: "Clear filters",
     cols: "{n} cols",
     empty: "Open a photo folder to show toolbar",

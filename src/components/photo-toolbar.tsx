@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import { UpOne, SortAmountUp, SortAmountDown } from "@icon-park/react";
 import { CollapsibleBar } from "./collapsible-bar";
 import { Collapse } from "./collapse";
+import { Dropdown } from "./ui/select";
 import { ThumbSizeSlider } from "./thumb-size-slider";
 import { Tip } from "./tip";
 import { LABEL_BG, LABEL_ORDER, type Label } from "../labels";
@@ -82,15 +83,17 @@ export function PhotoToolbar({
           <button onClick={onSelectAll} className="relative hit-24 shrink-0 whitespace-nowrap text-[10px] text-zinc-500 hover:text-zinc-300">{t("toolbar.selectAll")}</button>
           <button onClick={onClearSelection} className="relative hit-24 shrink-0 whitespace-nowrap text-[10px] text-zinc-500 hover:text-zinc-300">{t("toolbar.clear")}</button>
           <span className="shrink-0 whitespace-nowrap text-[10px] text-zinc-600">{t("toolbar.selected", { n: selectedCount, total: photosCount })}</span>
-          <select
+          <Dropdown
             value={sortBy}
-            onChange={(e) => onSortByChange(e.target.value as "name" | "type" | "date")}
-            className="shrink-0 bg-zinc-800 text-[10px] leading-4 text-zinc-400 px-1 py-1 rounded border border-zinc-700"
-          >
-            <option value="name">{t("toolbar.sortName")}</option>
-            <option value="type">{t("toolbar.sortType")}</option>
-            <option value="date">{t("toolbar.sortDate")}</option>
-          </select>
+            onValueChange={(v) => onSortByChange(v)}
+            ariaLabel={t("toolbar.sortBy")}
+            options={[
+              { value: "name" as const, label: t("toolbar.sortName") },
+              { value: "type" as const, label: t("toolbar.sortType") },
+              { value: "date" as const, label: t("toolbar.sortDate") },
+            ]}
+            className="bg-zinc-800 text-[10px] leading-4 text-zinc-400 border-zinc-700 px-1 py-1"
+          />
           {/* 排序方向: asc = "今天的观感"(name/type A→Z, date 新→旧), 见 docs 4.5 ——
               所以提示只写"切换方向", 不写"升序/降序"(否则与日期的字面含义打架) */}
           <Tip label={t("toolbar.sortDir")} className="flex items-center shrink-0">
@@ -106,18 +109,18 @@ export function PhotoToolbar({
           {/* 星级筛选收成一个下拉(实机反馈: 6 个 chip 一字排开占 ~250px, 窄窗口直接把那一行
               挤爆 —— 竖排或换行)。展开才呈现几星, 常态只占一个控件宽, 那一行因此能保持单行。
               语义没变: 仍是"至少 N 星"(0 = 全部); 选中态用琥珀色标出来, 免得忘了筛选还开着。 */}
-          <select
+          <Dropdown
             value={starFilter}
-            onChange={(e) => onStarFilterChange(Number(e.target.value))}
-            className={`shrink-0 bg-zinc-800 text-[10px] leading-4 px-1 py-1 rounded border ${
+            onValueChange={(v) => onStarFilterChange(v)}
+            ariaLabel={t("toolbar.starFilterLabel")}
+            options={[
+              { value: 0, label: t("toolbar.all") },
+              ...[1, 2, 3, 4, 5].map((s) => ({ value: s, label: t("toolbar.starFilter", { n: s }) })),
+            ]}
+            className={`bg-zinc-800 text-[10px] leading-4 px-1 py-1 ${
               starFilter > 0 ? "text-amber-400 border-amber-500/40" : "text-zinc-400 border-zinc-700"
             }`}
-          >
-            <option value={0}>{t("toolbar.all")}</option>
-            {[1, 2, 3, 4, 5].map((s) => (
-              <option key={s} value={s}>{t("toolbar.starFilter", { n: s })}</option>
-            ))}
-          </select>
+          />
           {/* Phase 4: 标签 + 分析结果收进这里(那一行本来就满, 硬塞会挤爆) */}
           <button
             onClick={() => setFilterOpen((v) => !v)}
@@ -177,18 +180,20 @@ export function PhotoToolbar({
               />
             ))}
             <span className="shrink-0 whitespace-nowrap ml-2 text-zinc-500">{t("toolbar.flags")}</span>
-            <select
+            <Dropdown
               value={flagFilter}
-              onChange={(e) => onFlagFilterChange(e.target.value as FlagFilter)}
-              className="shrink-0 bg-zinc-800 text-[10px] text-zinc-400 px-1 py-0.5 rounded border border-zinc-700"
-            >
-              <option value="all">{t("toolbar.all")}</option>
-              <option value="blurry">{t("grid.blurry")}</option>
-              <option value="over">{t("grid.overexposed")}</option>
-              <option value="under">{t("grid.underexposed")}</option>
-              <option value="duplicate">{t("grid.duplicate")}</option>
-              <option value="best">{t("grid.best")}</option>
-            </select>
+              onValueChange={(v) => onFlagFilterChange(v)}
+              ariaLabel={t("toolbar.flags")}
+              options={[
+                { value: "all" as const, label: t("toolbar.all") },
+                { value: "blurry" as const, label: t("grid.blurry") },
+                { value: "over" as const, label: t("grid.overexposed") },
+                { value: "under" as const, label: t("grid.underexposed") },
+                { value: "duplicate" as const, label: t("grid.duplicate") },
+                { value: "best" as const, label: t("grid.best") },
+              ]}
+              className="bg-zinc-800 text-[10px] px-1 py-0.5 text-zinc-400 border-zinc-700"
+            />
             <button
               onClick={onClearFilters}
               className="ml-auto shrink-0 whitespace-nowrap px-2 py-0.5 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-300"
