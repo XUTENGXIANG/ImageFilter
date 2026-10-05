@@ -116,3 +116,24 @@ export interface XmpProbe {
   detail: string | null;
   network: boolean;
 }
+
+// ── Phase 6 · 导入历史 / 命名方案 / 导入结果 ─────────────────────────
+// 与 src-tauri/src/db.rs、importer.rs 的 serde 结构一一对应(都带 rename_all = "camelCase")。
+
+/**
+ * 一条导入历史 = 一次**真的把文件复制进归档**的留痕。
+ * 注意: 目标已存在且内容相同(跳过)的**不写库**(见 importer.rs), 所以列表里的每一条
+ * 都对应归档里的一个真实文件。
+ */
+export interface ImportHistoryItem {
+  id: number;
+  /** 源文件完整路径 —— `{seq}` 改名后**原文件名唯一的补救**就在这一列 */
+  sourcePath: string;
+  /** 归档后的完整路径 */
+  destPath: string;
+  fileHash: string;
+  fileSize: number;
+  /** SQLite CURRENT_TIMESTAMP, **UTC**; 展示前必须走 formatImportedAt */
+  importedAt: string;
+}
+

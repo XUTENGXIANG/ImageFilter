@@ -1,9 +1,12 @@
+import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Check, Close, FolderOpen, More, Right } from "@icon-park/react";
 import { AdvancedOptions } from "./advanced-options";
 import { CollapsibleBar } from "./collapsible-bar";
+import { ImportHistoryDialog } from "./import-history-dialog";
 import { Tip } from "./tip";
 import type { ImportProgress } from "../types";
+import type { ImportHistoryApi } from "../import-history";
 
 interface Props {
   destDir: string | null;
@@ -20,6 +23,8 @@ interface Props {
   importDone: number;
   importError: string | null;
   importResult: { ok: number; fail: number } | null;
+  /** Phase 6 / 6.1: 导入历史(列表 + 总数 + 加载入口), 由 useScanner 组装 */
+  history: ImportHistoryApi;
   selectedCount: number;
   onPickDestDir: () => void;
   onOpenFolder: (dir: string) => void;
@@ -43,6 +48,7 @@ export function ImportBar({
   importDone,
   importError,
   importResult,
+  history,
   selectedCount,
   onPickDestDir,
   onOpenFolder,
@@ -51,6 +57,7 @@ export function ImportBar({
   onToggle,
 }: Props) {
   const { t } = useTranslation();
+  const [historyOpen, setHistoryOpen] = useState(false);
 
   return (
     <CollapsibleBar align="bottom" expanded={expanded} onToggle={onToggle}>
@@ -72,6 +79,13 @@ export function ImportBar({
           </Tip>
         )}
         <div className="flex-1" />
+        {/* 导入历史: 任务态入口, 贴着导入动作(不进设置对话框 —— 见 import-history-dialog.tsx 注释) */}
+        <button
+          onClick={() => setHistoryOpen(true)}
+          className="text-[10px] px-1.5 py-1 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-500 shrink-0"
+        >
+          {t("import.history")}
+        </button>
         <span className="text-[10px] text-zinc-600">
           {!destDir ? t("import.needDest") :
            selectedCount === 0 ? t("import.needSelect") :
@@ -95,6 +109,12 @@ export function ImportBar({
           {t("import.doneOk", { n: importResult.ok })}{importResult.fail > 0 ? t("import.doneFail", { n: importResult.fail }) : ""}
         </div>
       )}
+      <ImportHistoryDialog
+        open={historyOpen}
+        onOpenChange={setHistoryOpen}
+        history={history}
+        onOpenFolder={onOpenFolder}
+      />
       <AdvancedOptions
         folderRule={folderRule}
         fileRule={fileRule}

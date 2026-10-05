@@ -102,6 +102,7 @@ pub fn run() {
             allow_asset_dir,
             set_glass_bg,
             db::get_import_history,
+            db::count_import_history,
             db::get_rules,
             db::save_rule,
             scanner::drives::detect_drives,

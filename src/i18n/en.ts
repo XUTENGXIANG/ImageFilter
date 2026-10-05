@@ -162,6 +162,17 @@ export default {
     seqRenameEx: "e.g. 0001.ARW",
     subFolder: "Import into subfolder",
     subFolderPlaceholder: "Enter folder name",
+    // Phase 6 / 6.1 · import history (its own dialog, opened from the import bar)
+    history: "Import history",
+    historyHint: "Once renamed, the original filename can only be recovered here; click an archive path to open its folder",
+    historyTotal: "{n} records",
+    historyShown: "Showing {shown} / {total}",
+    historyEmpty: "No imports yet",
+    historyError: "Failed to read import history: {msg}",
+    historyLoadMore: "Load more",
+    historyColSource: "Source",
+    historyColDest: "Archive",
+    historyOpenFolder: "Open containing folder",
   },
 
   // ── Color labels (Phase 4) ──

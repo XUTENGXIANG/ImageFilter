@@ -2,13 +2,14 @@ import { useState, useCallback, useRef, useMemo } from "react";
 import { invoke, convertFileSrc, Channel } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import i18n from "./i18n";
-import type { DriveInfo, ScannedPhoto, FolderEntry, FolderNode, ImportProgress, AnalysisResult, FlagFilter, DecisionRead, DecisionWrite, WriteSummary, XmpProbe } from "./types";
+import type { DriveInfo, ScannedPhoto, FolderEntry, FolderNode, ImportProgress, AnalysisResult, FlagFilter, DecisionRead, DecisionWrite, WriteSummary, XmpProbe, ImportHistoryItem } from "./types";
 import {
   EMPTY_HISTORY, applyLabelPatch, applyRatingPatch, applySelectionPatch, patchPath,
   popRedo, popUndo, pushPatch,
   type History, type Patch,
 } from "./undo";
 import { LABELS_STORAGE_KEY, readLabels, type Label } from "./labels";
+import { HISTORY_MAX, DEFAULT_HISTORY_LIMIT } from "./import-history";
 import {
   XMP_MODE_STORAGE_KEY, XMP_QUEUE_LIMIT, buildDecisionWrite, dirOfPath, isDowngradeCandidate,
   mergeRemoteLabels, mergeRemoteRatings, readXmpMode,
@@ -493,6 +494,36 @@ export function useScanner() {
   const [importProgress, setImportProgress] = useState<ImportProgress[]>([]);
   const [importDone, setImportDone] = useState(0);
   const [importError, setImportError] = useState<string | null>(null);
+
+  // ── Phase 6 / 6.1 · 导入历史 ────────────────────────────────────────
+  // 状态放 hook 里(不是对话框里): 组件不许直接 invoke(会话 ④ 纪律), 且关掉对话框
+  // 不该把已读到的数据丢掉 —— 重开要能立刻显示, 而不是再白等一次 IPC。
+  // 只读列表, **不进撤销栈**(它反映磁盘既成事实, 不是用户操作)。
+  const [historyItems, setHistoryItems] = useState<ImportHistoryItem[]>([]);
+  const [historyTotal, setHistoryTotal] = useState(0);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyError, setHistoryError] = useState<string | null>(null);
+
+  /** 读导入历史: 列表与总数两条命令并排发。失败只记 error, 绝不抛进调用方。 */
+  const loadImportHistory = useCallback(async (limit: number) => {
+    const lim = Math.max(1, Math.min(HISTORY_MAX, Math.floor(limit) || DEFAULT_HISTORY_LIMIT));
+    setHistoryLoading(true);
+    try {
+      const [items, total] = await Promise.all([
+        invoke<ImportHistoryItem[]>("get_import_history", { limit: lim }),
+        invoke<number>("count_import_history"),
+      ]);
+      setHistoryItems(items);
+      setHistoryTotal(total);
+      setHistoryError(null);
+    } catch (err) {
+      console.error("loadImportHistory failed:", err);
+      setHistoryError(String(err));
+    } finally {
+      setHistoryLoading(false);
+    }
+  }, []);
+
   // AI analysis
   const [analyzing, setAnalyzing] = useState(false);
   const [analysis, setAnalysis] = useState<Record<string, AnalysisResult>>({});
@@ -945,6 +976,8 @@ export function useScanner() {
     selectedPhoto, thumbnails, browsing, loadingFolder, counting,
     detectDrives, browseDrive, loadFolder, loadThumbnail, loadExif, setSelectedPhoto,
     importing, importProgress, importDone, importError, importResult, destDir,
+    // Phase 6 / 6.1: 导入历史(列表 + 总数 + 加载入口)。组件只读它, 不许自己 invoke。
+    importHistory: { items: historyItems, total: historyTotal, loading: historyLoading, error: historyError, load: loadImportHistory },
     selectedPaths, handlePhotoClick, selectAll, clearSelection,
     folderRule, fileRule, setFolderRule, setFileRule,
     customFolder, setCustomFolder, useCustomFolder, setUseCustomFolder,

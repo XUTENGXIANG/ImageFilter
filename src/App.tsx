@@ -188,6 +188,8 @@ function App() {
     importDone,
     importError,
     importResult,
+    // Phase 6 / 6.1: 导入历史(列表 + 总数 + 加载入口), 只透传给 ImportBar 里的历史对话框
+    importHistory,
     customFolder,
     setCustomFolder,
     useCustomFolder,
@@ -804,6 +806,7 @@ function App() {
           importDone={importDone}
           importError={importError}
           importResult={importResult}
+          history={importHistory}
           selectedCount={selectedPaths.size}
           onPickDestDir={pickDestDir}
           onOpenFolder={(dir) => invoke("open_folder", { path: dir })}

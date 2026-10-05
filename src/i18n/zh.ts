@@ -169,6 +169,17 @@ export default {
     seqRenameEx: "如 0001.ARW",
     subFolder: "导入到子文件夹",
     subFolderPlaceholder: "输入文件夹名",
+    // Phase 6 / 6.1 · 导入历史(独立对话框, 入口在导入栏)
+    history: "导入历史",
+    historyHint: "归档后原文件名只能在这里找回；点归档路径可打开所在文件夹",
+    historyTotal: "共 {n} 条记录",
+    historyShown: "已显示 {shown} / {total}",
+    historyEmpty: "还没有导入记录",
+    historyError: "读取导入历史失败：{msg}",
+    historyLoadMore: "加载更多",
+    historyColSource: "原文件",
+    historyColDest: "归档",
+    historyOpenFolder: "打开所在文件夹",
   },
 
   // ── 颜色标签(Phase 4) ──
