@@ -14,6 +14,7 @@ import { FolderTreeItem } from "./components/folder-tree-item";
 import { PhotoCard } from "./components/photo-card";
 import { PhotoToolbar } from "./components/photo-toolbar";
 import { ImportBar } from "./components/import-bar";
+import { LrcProgressDialog } from "./components/lrc-progress-dialog";
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter,
 } from "./components/ui/dialog";
@@ -258,6 +259,15 @@ function App() {
   }, [activeFolder]);
 
   // 弹出提示浮窗
+  //
+  // Phase 7 · 「导入到 LrC」的模态进度框是否显示。
+  // 链一开始就自动弹出(chains 进入 importing/launching); 用户点"在后台继续"或按 Esc
+  // 只把这一层的 open 关掉 —— 下一次 phase 变化时 effect 会按当前 phase 重新算,
+  // 所以**手动关闭不会被这个 effect 又弹回来**(它只依赖 lrcPhase, 关闭不改变 lrcPhase)。
+  const [lrcProgressOpen, setLrcProgressOpen] = useState(false);
+  useEffect(() => {
+    setLrcProgressOpen(lrcPhase !== "idle");
+  }, [lrcPhase]);
   // (位置在 Ctrl+Z effect 之前: 那个 effect 的依赖数组会被急切求值, showToast 若是
   //  const 声明在后面就触发 TDZ — 与 viewerIndex 是同一条纪律)
   const [toast, setToast] = useState<string | null>(null);
@@ -954,6 +964,17 @@ function App() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Phase 7 · 「导入到 LrC」这条链的模态进度提示。
+          导入与启动 Lightroom 各自可能要几十秒, 期间必须有明确的"在干什么"。
+          用户关掉它(或按 Esc)之后, 导入栏那行脉冲文字照旧显示 —— 反馈只是从模态降级为常驻。 */}
+      <LrcProgressDialog
+        phase={lrcPhase}
+        imported={importDone}
+        total={selectedPaths.size}
+        open={lrcProgressOpen}
+        onOpenChange={setLrcProgressOpen}
+      />
 
       {/* 弹出提示浮窗 — 渐变出现停留1秒后消失 */}
       <div
