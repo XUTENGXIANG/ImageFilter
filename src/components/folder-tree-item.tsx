@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Folder } from "@icon-park/react";
+import { FolderClose } from "@icon-park/react";
 import type { FolderNode } from "../types";
 import {
   treePhase,
@@ -117,7 +117,7 @@ export function FolderTreeItem({
         style={{ paddingLeft: `${depth * 12 + 8}px`, paddingRight: "4px" }}
       >
         <span className="tree-caret text-[10px] w-3 flex-shrink-0 flex items-center justify-center" aria-hidden="true">
-          {canExpand ? <i>▶</i> : <Folder theme="filled" size={12} />}
+          {canExpand ? <i>▶</i> : <FolderClose theme="filled" size={12} />}
         </span>
         <span className="truncate">{node.name}</span>
         {!(counting && node.photoCount === 0) && (
