@@ -160,7 +160,11 @@ export function PhotoToolbar({
           </div>
         </div>
         <Collapse open={filterOpen}>
-          <div className="flex items-center flex-wrap gap-2 px-4 pb-2 -mt-1 text-[10px] text-zinc-600">
+          {/* 展开后这一行的呼吸空间(实机反馈: 挤在上一行控件下面, 像被压住)。
+              原来是 pb-2 + -mt-1 —— 负外边距把面板往上拽 4px, 实测第一行控件底边
+              离面板里的控件顶边只剩 2px。现在改成 pt-1.5 + pb-3(去掉负外边距):
+              上下各留 12px, 与内层边框那一圈 12px 内边距对齐, 面板成为独立的一条。 */}
+          <div className="flex items-center flex-wrap gap-2 px-4 pt-1.5 pb-3 text-[10px] text-zinc-600">
             <span className="shrink-0 whitespace-nowrap text-zinc-500">{t("label.title")}</span>
             <button
               onClick={() => onLabelFilterChange([])}
