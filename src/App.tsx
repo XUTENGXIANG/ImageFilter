@@ -798,7 +798,7 @@ function App({ osCapabilities }: { osCapabilities: OsCapabilities }) {
         <PixelMenu items={emptyMenuItems}>
         {/* 中心主区域 — 照片网格/空状态/加载中 */}
         <ScrollFadeZone glass={transparentBg} className="absolute inset-0">
-<div className="h-full overflow-auto px-3 pt-[calc(var(--top-bar-h,0px)+0.75rem)] pb-[calc(var(--bottom-bar-h,0px)+0.75rem)] no-scrollbar">
+<div className="h-full overflow-auto px-3 pt-[calc(var(--top-bar-h,0px)+1.5rem)] pb-[calc(var(--bottom-bar-h,0px)+1.5rem)] no-scrollbar">
           {browsing || loadingFolder ? (
             <div className="flex items-center justify-center h-full">
               <div className="flex flex-col items-center gap-3">

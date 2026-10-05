@@ -54,7 +54,8 @@
 | `os-default-glass.test.ts` | `src/os-capability.ts` 的纯逻辑断言（17 条：stored × 五种系统能力） | 见 `mica-os-default/EVIDENCE.md` §7 |
 | `verify-os-default.mjs` | 玻璃开关默认值的端到端（4 场景：Win11 / 模拟 Win10 / 老用户已存值 / 探测失败） | 同上，需先跑 `npm run tauri dev` |
 | `verify-collapse-anim.mjs` | 高级选项 / 筛选面板展开动画的高度轨迹（双向 + 收起时 inert） | 同上 |
-| `verify-dropdown.mjs` | 4 个自定义下拉：无原生 select、圆角 10px、入场过渡、能选中、可访问名称、关闭后不可达 | 同上；`APP_URL` 可覆盖地址、`SHOT=<path>` 按需截图 |
+| `verify-dropdown.mjs` | 4 个自定义下拉：无原生 select、圆角 10px、入场过渡、能选中、可访问名称、关闭后不可达、**弹层没被盖住** | 同上；`APP_URL` 可覆盖地址、`SHOT=<path>` 按需截图 |
+| `verify-floating-bars.mjs` | 上下两条栏"真浮窗"布局：网格铺满高度、CSS 变量与栏真实高度一致（折叠/展开）、两端留白 ≥24px 且末行不在控件下面 | 同上 |
 
 跑浏览器脚本时注意路径：它们把 `playwright-core` 按本机 DSH profile 解析，换机器用 `PW_BASE` 环境变量覆盖。
 
