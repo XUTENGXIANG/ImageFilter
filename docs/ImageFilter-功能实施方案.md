@@ -2,7 +2,7 @@
 
 > 定位：本文是**动手前的施工图**，不是交接文档。现状与机制见 [ImageFilter-交接与上手.md](ImageFilter-交接与上手.md)，深度证据见 [ImageFilter-架构与机制走查.md](ImageFilter-架构与机制走查.md)。
 >
-> 基线：HEAD `6996b11` · 版本 `1.0.1` · 工作区干净 · `npx tsc --noEmit` exit 0 · `cargo test --lib` 26 活跃 + 3 忽略。
+> 基线：HEAD `6cad676` · 版本 `1.0.1` · 工作区干净 · `npx tsc --noEmit` exit 0 · `npx vite build` exit 0 · `cargo test --lib` 58 活跃 + 3 忽略 · i18n zh/en 各 241 叶子 key。**Phase 1–6 已全部落地**（会话 ①–⑤），本文现在同时是施工图与决策记录：正文各节已回填成"实现后的样子"，**符号名是权威**（写文时的行号早已漂移）。
 >
 > 每个 Phase 都是**可独立提交、可独立回归**的最小单元；建议一次只做一个 Phase，做完跑一次验收清单再进下一个。
 
@@ -17,7 +17,7 @@
 | **3** | 1:1 像素查看（`Z`） | `viewer.tsx`、`i18n` | 0 | 半天 |
 | **4** | 颜色标签 + 可叠加筛选 | `useScanner.ts`、`App.tsx`、`viewer.tsx`、`photo-card.tsx`、`photo-toolbar.tsx`、`undo.ts`、新增 `labels.ts`、`title-bar.tsx`+`settings-dialog.tsx`（修饰键设置）、`help-content.tsx`、`i18n` | 0 | 2 天 |
 | **5** | 评分/色标写 XMP 边车（可选开关） | 新增 `src-tauri/src/xmp.rs`、`lib.rs`、`useScanner.ts`、`settings-dialog.tsx`、`i18n` | 2 | 2 天 |
-| **6** | 接上"后端已有但没界面"的三件事 | `useScanner.ts`、`import-bar.tsx`、`advanced-options.tsx`、`importer.rs`、`db.rs`、`i18n` | 0（复用 3 个） | 1.5 天 |
+| **6** | 接上"后端已有但没界面"的三件事 | `useScanner.ts`、`import-bar.tsx`、`advanced-options.tsx`、新增 `import-history.ts`/`import-rules.ts`/`import-history-dialog.tsx`、`importer.rs`、`db.rs`、`lib.rs`、`i18n` | 1（`count_import_history`；另复用 3 个并改 1 个签名） | 1.5 天 |
 
 **为什么是这个顺序**：1–4 是纯前端、零后端风险、每次 culling 都会用到；5 引入磁盘写入（要谨慎）放后面；6 改导入返回值属于**契约变更**，需要同步前端 + 可能同步落地页 demo 的 mock 层，所以放最后单独做。
 
@@ -35,7 +35,7 @@
 
 1. **不许简化查看器的四条加载分支**（交接文档 §5-1）。所有改动是在这四条之上加分支，不是替换。
 2. **评分目前是"单一事实源"**：`useScanner.setRating` 是唯一写入点（[useScanner.ts:179](../src/useScanner.ts:179)），任何新写入路径（撤销、XMP、标签）都必须汇流到这里或与它并列并被同一处序列化，否则会出现"查看器与网格不一致"这类回归（交接文档 §7 修过）。
-3. **i18n 双写**：zh 与 en 各 **192** 个 key 目前完全对齐（会话 ① 163 → 会话 ② +6 → 会话 ③ +23：22 个功能 key + 1 个`toolbar.starFilter`（星级下拉的文案）），**新增 key 必须两边同时加**，否则会踩 fallback。另注意插值写法见第 5 条。
+3. **i18n 双写**：zh 与 en 各 **241** 个 key 目前完全对齐（会话 ① 163 → ② +6 → ③ +23 → ④ +27 → ⑤ +22：6.1 十个 + 6.2 十个 + 6.3 两个），**新增 key 必须两边同时加**，否则会踩 fallback。另注意插值写法见第 5 条。
 4. **落地页 demo 的 mock 层**（另一仓库，见 [superpowers/specs](superpowers/specs/2026-08-11-imagefilter-website-design.md)）会 mock Tauri API：**Phase 5/6 一旦改命令签名，需要同步那份 mock**，否则官网迷你演示会白屏。
 5. **i18n 插值只能用单括号 `{n}`，不是 i18next 默认的双括号**（会话 ② 踩过、已修，见提交 `07b543a`）：[i18n/index.ts:26](../src/i18n/index.ts:26) 把 `prefix`/`suffix` 改成了 `{` 和 `}`，所以写成 `{{n}}` **既不报错也不翻译，而是把 `{{n}}` 原样显示出来**（会话 ② 首轮实机的 toast 就是 `已撤销：{{prev}}★ → {{next}}★`）。**动手加任何带占位符的文案前，先照 `toast.ratingChange` / `toolbar.selected` 这类既有 key 抄写法**，别照 i18next 官方文档写。
 6. **任何"会改数据"的新入口都必须能被 `Ctrl+Z` 撤回**（会话 ② 建立的补丁栈纪律）。当前记录点：评分的唯一写入点 `useScanner.setRating`，勾选的三条路径 `commitSelection` / `selectAll` / `clearSelection`（选择集的唯一写入口是 `selectPaths`），纯逻辑与三条不变式在 [undo.ts](../src/undo.ts) 文件头。新增写入路径（颜色标签、日后的 XMP 回填、**任何新勾选按钮**）**要么汇流到既有记录点，要么与它们并列并走同一个补丁栈**；直接调 `setXxx` 而不 `recordPatch` = 这一步撤销不到，用户按 `Ctrl+Z` 会**跳过它去撤更早的操作**。给 `Patch` 加新 `kind` 时，`tsc` 会把 `undo()` / `redo()` / `patchToast()` / `samePatch()` / `patchPath()` 这几个派发点全报出来 —— **逐个补齐，不许用 `any` / `as` 兜底**（"漏点由编译器发现"就是这条纪律的收益）。
@@ -424,52 +424,72 @@ XMP 边车是行业事实标准（`xmp:Rating` / `xmp:Label`），写了之后�
 
 ## Phase 6 · 接上"后端已有但没界面"的三件事
 
-这三件都是**后端已完成**，属于投入产出比最高的部分。建议拆成三个独立提交。
+这三件都是**后端已完成**，属于投入产出比最高的部分。**会话 ⑤ 已按三个独立提交落地**（`4cc29d6` / `01dcfd4` / `039b5e3`，另加实机首测修复 `6cad676`）；下面各节已回填成"实现后的样子"，正文里的**符号名**是权威（写文时的行号早已漂移，不要再按行号找）。
 
 ### 6.1 导入历史界面
 
-**现状**：`import_history` 每次成功导入都在写（[importer.rs:338](../src-tauri/src/importer.rs:338)），`get_import_history` 已注册（[db.rs:91](../src-tauri/src/db.rs:91)）但前端零调用。
+**现状（写文时）**：`import_history` 每次成功导入都在写（`importer.rs` 的 `import_photos` 成功分支），`get_import_history` 已注册（`db.rs`）但前端零调用。
+**落地后**：`db.rs` 里 SQL 下移到不依赖 `tauri::State` 的 `fetch_history` / `count_history`（单测才够得着），`ImportHistory` 补 `rename_all = "camelCase"`（此前前端零消费者，无破坏面）。
 
-**做法**：
-- `useScanner` 加 `importHistory` 状态 + `loadImportHistory(limit)`。
-- UI：设置对话框里加一个"导入历史"tab/区块，列出 `文件 → 目标 / 时间 / 大小`，支持**点击跳转到目标目录**（复用 `open_folder`）。默认读 100 条，加"加载更多"。
-- **顺手修 [db.rs:95](../src-tauri/src/db.rs:95)**：`limit` 默认 100 会截断大导入，建议改成 `limit: Option<u32>` 显式传 + 加一个 `count` 查询给 UI 显示总数。
-- **`{seq}` 改名后原文件名丢失**的问题，正是靠这个界面补救——列表里要同时显示 `source_path` 和 `dest_path`。
+**做法（已实现）**：
+- `useScanner` 加 `importHistory` 状态（列表 + 总数 + loading + error，**状态放 hook 里**：组件不许直接 invoke，且关掉对话框不该丢数据）+ `loadImportHistory(limit)`：`Promise.all([get_import_history{limit}, count_import_history])`。
+- UI：**独立对话框** `components/import-history-dialog.tsx`，入口是导入栏上的「导入历史」按钮。
+  **不再放设置对话框**：那里 9 行已顶到 `max-h-[88vh]`（会话 ③ 第 28 项就是"多加一行把滚动条顶出来"），再塞最多 500 行的列表必然超高；而且历史是**任务态**，入口该贴着导入动作。
+- `limit` 由 `Option<u32>`（默认 100 会静默截断大导入）改成**必传 `u32`**，新增 `count_import_history` 给 UI 显示"已显示 N / 共 M"；「加载更多」= 用 `items.length + 100` 重查（不做 offset 分页：单查询、无状态、与总数永远自洽）。
+- SQL 排序改成 `ORDER BY imported_at DESC, id DESC`：`CURRENT_TIMESTAMP` 只有秒精度，一次导入的几十行时间戳相同，只按时间排会让同批记录在页与页之间跳动。
+- **`{seq}` 改名后原文件名丢失**，正是靠这个界面补救 —— 列表每行**同时显示 `source_path` 与 `dest_path`**，点归档那一行 = `open_folder(父目录)`（`dirOfPath` 复用 `xmp.ts` 的，不重复实现；`open_folder` 传文件路径的语义取决于 shell，传父目录才是确定的）。
+- 上限 `HISTORY_MAX = 500`（无虚拟滚动、不引依赖），截断必须**可见**（头部同时显示 shown/total）。
+- 时间显示：SQLite 的 `CURRENT_TIMESTAMP` 是 **UTC**，V8 会把空格分隔串按本地时间解释 → `import-history.ts` 的 `formatImportedAt` 显式补 `T`/`Z` 再转本地，坏数据原样返回。
+- 弹窗宽度**必须写成 `max-w-[620px] sm:max-w-[620px]`**：`ui/dialog.tsx` 基础类里有 `sm:max-w-sm`(384px)，unprefixed 的 `max-w` 压不过带变体的那条（实机首测就是被压在 384px，长路径截半截）；行内 `truncate flex-1` 的子项还要 `min-w-0`，否则长路径会把兄弟节点（时间/大小）顶出容器。
 
 ### 6.2 命名模板预设（方案）管理
 
-**现状**：`import_rules` 表 + 默认规则 `('默认','{date}','{original}')` 已建好（[db.rs:32-51](../src-tauri/src/db.rs:32)），`get_rules`/`save_rule` 已注册，但前端零调用；UI 的 `folderRule`/`fileRule` 是内存态、每次开 App 重置（[useScanner.ts:135-136](../src/useScanner.ts:135)）。
+**现状（写文时）**：`import_rules` 表 + 默认规则 `('默认','{date}','{original}')` 已建好，`get_rules`/`save_rule` 已注册但前端零调用；UI 的 `folderRule`/`fileRule` 是内存态、每次开 App 重置。
 
-**做法**：
-- 启动时 `get_rules()` 拉一次；高级选项面板（[advanced-options.tsx](../src/components/advanced-options.tsx)）里加一个下拉"方案"，选中即写入 `folderRule`/`fileRule`/`customFolder`，另有"另存为…"调 `save_rule`。
-- **必须先修 [db.rs:123](../src-tauri/src/db.rs:123) 的 `save_rule` bug**：`INSERT OR REPLACE` 会分配新 rowid 并把 `is_default` 重置为 0。改为 `INSERT ... ON CONFLICT(name) DO UPDATE SET folder_template=excluded..., file_template=excluded...`。
-- 顺带修 `advanced-options.tsx:39` 的写死问题：勾"按序号重命名"现在把整条规则替换成 `{seq}.{ext}`，**默认行为保持不变**（否则老用户升级后归档结构突变），但勾选框旁边加一个"保留原文件名"子选项 → `{seq}_{original}.{ext}`。
+**做法（已实现）**：
+- **先修 `save_rule` 的 `INSERT OR REPLACE` bug**（`db.rs`）：它命中 `name` 的 UNIQUE 冲突时是 **DELETE + INSERT** → `is_default` 掉回 0、`created_at` 被重置、`id` 变新值（而 `get_rules` 是 `ORDER BY id` → 保存过的方案会跳到下拉末尾）。改成 `INSERT ... ON CONFLICT(name) DO UPDATE SET folder_template=excluded.folder_template, file_template=excluded.file_template`；
+  **返回值必须用 `RETURNING id`** —— 走 DO UPDATE 分支时 `last_insert_rowid()` **不会被更新**，会返回该连接上更早那次 INSERT 的陈旧 rowid。SQL 下移到 `upsert_rule` / `save_rule_inner` / `fetch_rules` 后有了单测（钉住"id / is_default / created_at 三者都留住"+"空名被拒"）。
+- **启动时绝不自动套用** `is_default=1` 的那条"默认"方案（它是 `{date}`）：那会让**所有老用户升级后归档结构突变**（平铺 → 多一层日期目录），与 6.2 自己那条"默认行为不变"的红线是同一条。做法是**持久化"上次用的选择"本身**：localStorage 键 `imagefilter-import-scheme` = `{name, folder, file}`，**没有这个键 = `""`/`""` = 平铺 + 原名**（升级零差异）；`readScheme()` 对任何脏数据一律回落 `null`。
+- `get_rules()` **惰性加载**（首次展开高级选项时才拉，不在启动白跑一次 IPC）；下拉选项 = `rules` 与"当前名"的**并集**（`schemeOptions`）—— 列表还没拉回来时 `<select value>` 找不到 `<option>` 会显示错项（等于说谎），方案在别处被删也不该让当前名凭空消失。
+- 方案下拉选中即写入 `folderRule`/`fileRule`；**`customFolder`/`useCustomFolder` 不随方案变** —— `save_rule` 只有两个模板参数、`import_rules` 也没有该列（要带就得加列 = schema 迁移 + mock 变更），子文件夹是正交开关。
+- 「另存为」= 输入框（**不用 `window.prompt`**，Tauri/WebView2 下不可靠）+ 保存 → `save_rule`（同名 = 原地覆盖）→ 重拉列表 → 新方案立刻被选中；失败只显示一行红字，不动当前模板。
+- 手改任一勾选 → 方案名清空成「自定义」（名字必须诚实反映"这套模板现在来自哪"）。
+- 勾「按序号重命名」写死 `{seq}.{ext}` 的问题：判定与切换收进 `import-rules.ts` 的纯函数（`isSeqRule` / `toggleSeqRule` / `toggleKeepOriginalRule`）。
+  **勾上仍然是 `{seq}.{ext}`（与改动前逐字节相同 → 老用户归档结构不变）**，旁边新增子选项「保留原文件名」才切到 `{seq}_{original}.{ext}`；取消勾选一律回到"原名"（预设控件不是自由编辑器，从方案带进来的非规范模板会被归一）。
+  面板里用 JSX 直接显示当前文件名模板（`当前文件名：{seq}.{ext}`）—— **绝不能把模板串塞进 i18n 的值里**，值中的裸花括号会被 i18next 当插值变量吃掉。
 
 ### 6.3 导入结果统计（跳过 vs 改名 vs 失败）
 
-**现状**：`import_photos` 只返回 `u32`（复制成功数，[importer.rs:250](../src-tauri/src/importer.rs:250)），前端用 `paths.length - count` 推"失败"（[useScanner.ts:286](../src/useScanner.ts:286)）→ **"跳过"被算成失败**；`_1` 改名只藏在进度消息里；`"verifying"` 状态声明了但从未发出（[importer.rs:8](../src-tauri/src/importer.rs:8)）。
+**现状（写文时）**：`import_photos` 只返回 `u32`，前端用 `paths.length - count` 推"失败" → **"跳过"被算成失败**；`_1` 改名只藏在进度消息里；`"verifying"` 状态声明了但从未发出。
 
-**做法**：
-- 返回类型改为结构体（**契约变更**）：
+**做法（已实现，契约变更）**：
 
 ```rust
-#[derive(Serialize)] #[serde(rename_all = "camelCase")]
+#[derive(Debug, Serialize, Default)] #[serde(rename_all = "camelCase")]
 pub struct ImportSummary { pub imported: u32, pub skipped: u32, pub renamed: u32, pub failed: u32 }
 ```
 
-- `ImportedFile` 增加 `renamed: bool`（[importer.rs:14-20](../src-tauri/src/importer.rs:14)），在 [importer.rs:204](../src-tauri/src/importer.rs:204) 成功生成唯一名时置位，进度里发一个新的 `"renamed"` 状态。
-- 真正发出 `"verifying"`：把"复制 + 校验"拆成两条进度消息（[importer.rs:221-228](../src-tauri/src/importer.rs:221)），让"MD5 校验"这个卖点**在 UI 上可见**。
-- `{seq}` 计数器改为**独立计数**：现在用 `imported + 1`（[importer.rs:278](../src-tauri/src/importer.rs:278)），跳过/失败会让编号整体前移（比"跳号"更糟：编号与拍摄顺序错位）。改为按输入顺序递增的 `seq_counter`，跳过也递增（保持"编号 = 拍摄顺序位次"）。
-- 前端：`importResult` 改为 `ImportSummary`，[import-bar.tsx:93-97](../src/components/import-bar.tsx:93) 显示四行明细 + **"导出清单"**（写一个 `manifest.txt`/CSV 到目标目录，复用 `copy_one` 时代的落盘思路；这条可选）。
-- **落地页 mock 同步**：`import_photos` 返回值变了，官网 demo 的 mock 层要一起改（见本文开头的共同约束 4）。
+- 口径钉死（单测 + 前端只显示不再自己算）：`skipped` **不是**失败；`renamed` 是 `imported` 的**子集**（改名的那张确实复制成功了，前端文案用"其中 N 张重名"表达）；不变式 `imported + skipped + failed == 传入张数`。计数收在 `ImportTally`（`record` / `record_error` / `summary`），因为它可单测。
+- `ImportedFile` 加 `renamed: bool`，**只在 `copy_one_reporting` 生成唯一名时置位**（别在外面拿"计划名 ≠ 实际名"反推：`copy_one` 在 skipped 分支返回相对路径、成功分支返回绝对路径，这个既有的不对称会读出假阳性）。
+- `verifying` 真正发出：`copy_one` 的签名**一字不改**（它的数据安全单测与 Phase 5 三条边车单测全部零改动），新增 `copy_one_reporting(..., &mut dyn FnMut(CopyStep))` + 枚举 `CopyStep::{Renamed(String), Verifying}`：
+  - `Renamed(new_name)` 带**真正生成的名字**（实机首测发现原来报的是被占用的计划名 `0002.jpg`，磁盘上却是 `0002_1.jpg`，已修）；
+  - `Verifying` 在 `std::fs::copy` 之后、双端 MD5 **之前**发（一张 60MB RAW 的双端 MD5 约 1 秒，算完再报等于没报）；
+  - **跳过路径刻意不报 `Verifying`**：跳过判定的双端 MD5 也会花时间，但一次导入出现两行"校验中"实机上极易被当成 bug，而它不在任何验收口径里。
+- `{seq}` 计数器改为**输入顺序位次**（`seq_for(i)` = `i + 1`，跳过/失败也递增）—— 老写法用 `imported + 1`，跳过第 2 张时第 3 张会拿到 `0002`，与拍摄顺序错位（比跳号更糟）。
+  ⚠️ 位次 = **传入数组顺序 = 勾选顺序**（`[...selectedPaths]`，`Set` 迭代序），不是文件名顺序；要"重复导入每次都判 skipped"，就得用同样的勾选顺序（或「全选」/右键「导入全部」，它们从 `photos` 顺序构造，天然稳定）。本 Phase **不做排序**（文档把 `{seq}` 定义为"输入顺序位次"，改排序属超范围行为变更）。
+- 前端：`importResult` 改 `ImportSummary`，`import-bar` 显示**四行明细**（成功 / 其中改名 ⊂ 成功 / 跳过 / 失败，为 0 的行不渲染）+ 进度行的状态配色补 `renamed`(琥珀) / `verifying`(天蓝)，`sidecar` 保持默认灰。
+- 进度文案仍是 **Rust 侧中文**（与既有 `检查中...`/`复制中` 一致，会话 ④ 已记录），"进度文案前端化"留作遗留项。
+- **「导出清单」不做**（文档里那条"可选"）：要么新增写文件的 Rust 命令、要么用 `tauri-plugin-fs` 的 `writeTextFile`（要加 `capabilities` 里的写权限 + 路径 scope，官网 mock 还得再补一条），对"区分跳过与失败"这个验收目标零贡献。
+- **落地页 mock 同步**：`import_photos` 返回值变了 → 官网 `src/demo/mock/tauri-mock.ts` 一起改（见共同约束 4 与会话 ⑤ 日志）。
 
-### 验收
-1. 重复导入同一批 → 提示"N 张成功、M 张已存在相同（跳过）"，**不再把跳过算成失败**。
-2. 目标已有同名但内容不同 → 提示里出现"改名"计数，且归档里是 `_1`。
-3. 能在进度里看到"校验中"这一步。
-4. 序号重命名：源目录里跳过第 2 张时，第 3 张得到 `0003`（不是 `0002`）。
-5. 重启 App → 上次用的命名方案仍在（来自 `import_rules`）。
-6. 历史界面能查到刚才那次导入，点目标路径能打开目录。
+### 验收（✅ = 会话 ⑤ 实机已验证，详见文末会话 ⑤ 手测清单）
+
+1. ✅ 重复导入同一批 → 提示"0 张成功 / 3 张已存在相同，跳过"，**不再把跳过算成失败**。
+2. ✅ 目标已有同名但内容不同 → 出现"其中 N 张重名，改名导入"，归档里是 `_1`（实测 `0002_1.jpg`）。
+3. ✅ 进度里能看到"校验中..."这一步（实机截图）。
+4. ✅ 序号重命名：第 2 张被改名、第 1/3 张被跳过时，归档里仍是 `0002_1.jpg`（不是 `0001_1.jpg`）。
+5. ✅ 重启（用 F5 重载 webview，等价于重启的 localStorage 路径）→ 上次用的命名方案仍在。
+6. ✅ 历史界面能查到刚才那次导入，点目标路径能打开所在目录。
 
 ---
 
@@ -478,19 +498,25 @@ pub struct ImportSummary { pub imported: u32, pub skipped: u32, pub renamed: u32
 ```bash
 cd A:\tenent
 npx tsc --noEmit                 # 前端类型
-cd src-tauri && cargo test --lib # 26 活跃必须全绿
+npx vite build                   # 打包（会话 ④ 起每次收尾都跑，报 exit code）
+cd src-tauri && cargo test --lib # 58 活跃必须全绿（会话 ⑤ 后；3 ignored 不变）
 cd src-tauri && cargo check --lib
 ```
+
+外加一条**静态 i18n 校验**（会话 ② 起每次收尾都做，临时脚本 + 仓库自带 esbuild 转译 + Node，用完即删）：zh/en 叶子 key 数一致、源码里每个字面 `t("…")` 都能解析、无死 key（字面引用 ∪ `label.`/`xmp.err.` 两个动态前缀）、任何值里不出现 `{{`、同一 key 的 zh/en 占位符集合一致。会话 ⑤ 收尾的结果：zh/en 各 **241**，字面 `t()` 225 个。
 
 手测（GUI）必查项——这些是历史上真实回归过的地方：
 
 1. 查看器内按 `1`–`5` 后，**网格里"被选中但没在看"的那张星级不能被改动**（§7 修过的双写 bug）。
-2. 开着 ≥2 星筛选，在查看器内把当前图打到 0 星 → 查看器**关闭**，不是跳到另一张（§7 重锚）。
+2. 开着 ≥2 星筛选，在查看器内把当前图打到 0 星 → **前进到下一张**（下一张仍在筛选结果里；§7 重锚）。
+   ⚠️ 会话 ④ 更正：这里原来写的是"查看器**关闭**"，与实现不符（实现是"前进到下一张"，见会话 ① 手测清单第 6 项、会话 ④ 已实机确认）。另外**打 0 星用 `X`** —— `0` 是"重置视图"。
 3. 连续快速切换设备 → 任务管理器 CPU 不飙升（§8.6 代次取消）。
 4. 大光圈虚化背景的照片**不出现**"模糊"红标（§8.1 分块最大）。
 5. 导入一次后检查归档层级没被压平（`{date}/{camera}` 必须是两级目录，§8/D14）。
 6. 浅色主题下新建的任何浮层/文字**不能出现近白字压近白底**（§D8 级联层）。
 7. i18n 切到英文，**新加的功能文案不能露出中文或 key**。
+   ⚠️ 例外：**导入进度行是 Rust 侧硬编码中文**（`检查中...`/`复制中`/`校验中...`/`重名, 改名 → …`/`边车 → …`，会话 ④ 记录过），别把它当回归。
+
 
 ## 附 · 建议的提交切分
 
@@ -501,7 +527,7 @@ cd src-tauri && cargo check --lib
 | `feat(viewer): 1:1 实际像素查看` | Phase 3 |
 | `feat(cull): 颜色标签与可叠加筛选` + `perf(grid): lastClicked 改 ref 恢复 memo` | Phase 4（可拆两个） |
 | `feat(xmp): 评分/色标写入边车文件` (+ 导入时一并复制 .xmp) | Phase 5 |
-| `feat(import): 导入历史界面` / `feat(import): 命名方案预设` / `fix(import): 区分跳过与失败, 修正序号计数` | Phase 6（三个独立提交） |
+| `feat(import): 导入历史界面` / `feat(import): 命名方案预设` / `fix(import): 区分跳过与失败, 修正序号计数` | Phase 6（三个独立提交）。会话 ⑤ 另加 `fix(import): 实机首测修 2 处`（历史弹窗宽度/溢出 + 改名进度行名字），每个提交都在官网仓库有 1:1 配对提交 |
 
 版本号：以上全部落地后建议作为 **v1.1.0**（用户可感知的功能新增），发布仍需同步 **4 处**版本号（`package.json`、`src-tauri/tauri.conf.json`、`src-tauri/Cargo.toml`、`src/components/settings-dialog.tsx:126`）。
 
@@ -781,6 +807,53 @@ cd src-tauri && cargo check --lib
 
 ---
 
+### 会话 ⑤ · Phase 6（2026-10-05）
+
+- **代码状态**：起点 HEAD `336c0c1` · 起点工作区干净（仅 `task-7-review-package.decoded.txt` 未跟踪，不属本项目；`src-tauri/Cargo.toml` 有非本会话的**行尾符噪音**，刻意不 add；`_probe/` 是会话 ④ 的实机证据目录，也不提交）· 主仓库提交 `4cc29d6 feat(import): 导入历史界面`、`01dcfd4 feat(import): 命名方案预设(import_rules 接上前端)`、`039b5e3 fix(import): 区分跳过与失败, 修正序号计数`、`6cad676 fix(import): 实机首测修 2 处(历史弹窗被压窄 + 改名进度行报了错名字)` · 官网仓库 1:1 配对 `b937a3d` / `32c285e` / `0350b79` / `2db7e64` · `npx tsc --noEmit` 每轮 exit 0 · `npx vite build` 每轮 exit 0 · `cargo test --lib` **52 → 58 活跃全绿**（+3 `db.rs`：建表播默认规则 / upsert 原地更新 / 历史的 limit+count+同秒内按插入序；+3 `importer.rs`：tally 口径 / 序号跟输入顺序 / copy_one 步骤顺序；3 ignored 不变）· i18n 静态校验 zh/en 各 **241** 叶子 key 完全对齐、225 个字面 `t()` 全部可解析、无死 key、无双括号、占位符一致 · 官网 `npm run build` exit 0、`npx vitest run` 3/3、**invoke 命令差集断言 23/23**、**mock 形状断言全通过**
+- **已定决定**：
+  - **6.1 的 UI 是"导入栏按钮 + 独立对话框"，不是设置对话框里的 tab**（文档原设计改了）：设置对话框 9 行已顶到 `max-h-[88vh]`（会话 ③ 第 28 项的教训），塞 500 行列表必然超高；历史是任务态，入口该贴着导入动作。设置对话框本次**零改动** → "加行要重算总高"这条约束不触发。
+  - `get_import_history` 的 `limit` 由 `Option<u32>` 改**必传**，新增 `count_import_history`；SQL 排序补 **`id DESC` 兜底**（`CURRENT_TIMESTAMP` 只到秒，同批记录否则会在分页间跳动）；SQL 全部下移到不依赖 `tauri::State` 的 `fetch_history`/`count_history`/`fetch_rules`/`upsert_rule`/`save_rule_inner`，**命令体只做壳** —— 否则单测够不着。
+  - `ImportHistory`/`ImportRule` 补 `rename_all = "camelCase"`（与其余结构体统一；两者此前前端零消费者 = 无破坏面，grep 已证）。
+  - 时间由 SQLite 的 UTC 串转本地（`formatImportedAt` 显式补 `T`/`Z`）：不这么做会整差一个时区（UTC+8 实测差 8 小时）。
+  - **6.2 的红线：启动绝不套用 DB 里 `is_default=1` 的"默认"方案**（它是 `{date}`，套上会让所有老用户升级后归档结构突变）。改为持久化"上次用的选择"本身：localStorage `imagefilter-import-scheme` = `{name, folder, file}`，**无键 = `""`/`""` = 平铺 + 原名**，脏数据一律回落 `null`。
+  - 方案下拉的选项 = `rules` ∪ `{当前名}`（`schemeOptions`）：列表是**惰性加载**的（首次展开高级选项才拉 `get_rules`，不占启动），并在方案被别处删掉时也不让当前名凭空消失 —— 否则 `<select value>` 找不到 option 会显示错项。
+  - 方案**不含 `customFolder`**：`save_rule` 只有两个模板参数、`import_rules` 也没有该列；子文件夹是正交开关，本次保持正交。
+  - 「另存为」用内联输入框（**不用 `window.prompt`**，Tauri/WebView2 下不可靠）；同名 = 原地覆盖（修好后的语义），这正好让 6.2 的 bug 修复有了用户可见的收益：**保存过的方案不再跳到下拉末尾**。
+  - `{seq}` 的"跳过也递增"落到 `seq_for(i) = i + 1`（不引入可变计数器：**输入顺序位次**一眼可读，且错误分支 `continue` 之前也已递增）。
+  - `verifying` 真正发出的**唯一正确位置**是"复制完成后、双端 MD5 之前"（一张 60MB RAW 的双端 MD5 ≈ 1 秒，算完再报等于没报）；用 `copy_one_reporting(..., &mut dyn FnMut(CopyStep))` 承载步骤，**`copy_one` 的签名一字不改** —— 它自己的数据安全单测 + Phase 5 三条边车单测因此**一行都不用动**。
+  - `CopyStep::Renamed(String)` **带真正生成的文件名**（实机首测发现原来报的是被占用的计划名，见下）。
+  - 计数口径收进可单测的 `ImportTally`，并把两条语义写进注释与断言：**`skipped` 不算失败**；**`renamed` 是 `imported` 的子集**（前端文案用"其中 N 张重名"表达）。
+  - 前端四行明细**只在 >0 时渲染**（全成功的老路径观感不变），数字**全部来自 Rust**，前端不再做任何算术（老代码那句 `paths.length - count` 就是 bug 源头）。
+  - 官网同步：**三个功能提交每一个都配一次官网提交**（不是只在最后一个同步）—— `get_rules`/`get_import_history` 都会在演示里被真的调到，漏一条 mock 就是 `[mock] unknown command` 抛错。mock 的 `import_photos` 改返回 `ImportSummary`，并把假进度改成真机存在的状态全集（`checking/copying/renamed/verifying/sidecar/done/skipped`，删掉真机没有的 `"renaming"`）；`save_rule` 用模块级副本模拟 upsert 后的库（同名原地更新、不碰 `isDefault`）。
+- **被否决方案**：
+  - 把导入历史塞进设置对话框（文档原设计）→ 否决：见"已定决定"第 1 条；
+  - 用 `offset` 分页做"加载更多" → 否决：`limit` 单调增长 + 每次重查是单查询、无状态，与 `count` 永远自洽；offset 会多一份"翻页游标"状态；
+  - 启动时套用 `is_default=1` 的方案（或"上次用过的方案"存 DB）→ 否决：① 会让老用户归档结构突变；② 存 DB 要新增列或新命令（`set_default_rule`）+ 再同步一条 mock，而 localStorage 已经是本仓库存 UI 偏好的既有方式（`autoAdvance`/`xmpMode`/`labelModifier` 同款），且**无键即旧行为**这条性质天然满足"升级零差异"；
+  - 方案里带上 `customFolder`（提示词原话）→ 否决：`import_rules` 没有该列，加列 = schema 迁移 + mock 变更，收益只是"少勾一次子文件夹"；
+  - 把 `Channel` 传进 `copy_one` 来报进度 → 否决：要改它的签名 → 4 条既有单测（含 Phase 5 三条边车）都得动；回调版本让它们零改动，且"步骤顺序"本身变成可单测的；
+  - 在**跳过**路径也发 `verifying`（跳过判定也是双端 MD5）→ 否决：一次导入会出现两行"校验中"，实机上极易被当成 bug，且不在任何验收口径里；
+  - 用"计划名 ≠ 实际名"在 `import_photos` 里反推 `renamed` → 否决：`copy_one` 在 skipped 分支返回**相对**路径、成功分支返回**绝对**路径，这个既有的不对称会读出假阳性；必须在 `copy_one_reporting` 内部置位；
+  - `startImport` 里对 `paths` **排序**（让 `{seq}` 变成"文件名顺序位次"）→ 否决：文档把 `{seq}` 定义为"**输入**顺序位次"，而输入顺序 = 用户勾选顺序（用户可控的显式意图）；改排序属超范围行为变更 → 写进遗留项；
+  - 做「导出清单」（文档里的可选项）→ 否决：要么新增写文件的 Rust 命令，要么加 `fs` 写权限 + 路径 scope + 再同步一条 mock，对"区分跳过与失败"零贡献；
+  - 本会话顺手把 Rust 侧进度文案 i18n 化 → 否决：既有 `检查中...`/`复制中`/`边车 →` 一直是 Rust 中文（会话 ④ 已记录，回归清单第 7 项已加例外说明），要改就得给"进度用 key 还是事件"重新设计，属另一件事；
+  - 收尾用 `git add -A` → 否决：会捎带 `Cargo.toml` 行尾噪音、非本项目的 `task-7-review-package.decoded.txt`、以及会话 ④ 的 `_probe/`（前置约束 7）。
+- **验收结果**：**静态验收全通过**：`npx tsc --noEmit` / `npx vite build` 每轮 exit 0；`cargo test --lib` **58 passed / 0 failed / 3 ignored**；i18n zh/en 各 **241** 叶子 key、225 个字面 `t()` 全部可解析、无死 key、无 `{{ }}`；`import-history.ts` + `import-rules.ts` **纯逻辑冒烟 36 条断言全绿**（esbuild 转译 + Node，用完即删；含"勾上仍是老行为 `{seq}.{ext}`"、"脏 localStorage 一律回落 null"、`schemeOptions` 并集、`toggleSeqRule` 幂等）；官网 `npm run build` exit 0、`vitest` 3/3、**主仓库 `src/**` 里 23 个 `invoke("…")` 命令名在 mock 里全部有 handler**（差集断言）、mock 形状断言全通过（`ImportSummary` 四字段 / `renamed ⊆ imported` / 历史与方案字段 camelCase / `save_rule` 同名原地更新且不动 `isDefault`）。
+  **实机 GUI 已验证 20 项**（2026-10-05，`npm run tauri dev` 真机，浅色主题 1216×809，源 `F:\壁纸` 16 JPG + 3 `.xmp`，目标 `%TEMP%\p6-import` 由使用者点了一次原生选目录）：逐项见文末「附 · 会话 ⑤ GUI 手测清单」。要点：历史弹窗（真实 2 条 + 后来 9 条记录，source/dest 双列、UTC→本地时间、点归档行打开父目录）；方案下拉选「默认」→ 模板写入；手改 → 变「自定义」；另存为 → **DB 真的多一行**（`sqlite3` 直读 `(22,'p6test',…)`）；**同名再存 → id / `created_at` / `is_default` 三者全不变、不多行**；F5 重载 → 方案与勾选全恢复；**无 localStorage 键时仍是"平铺 + 原名"**；勾序号仍是 `{seq}.{ext}`、子选项才切 `{seq}_{original}.{ext}`；真实导入 3 张 → 两级目录 + 边车按新名复制（MD5 与源一致，源目录 19 个文件 MD5 全不变）；重复导入 → "0 张成功 / 3 张已存在相同，跳过"、**无失败行**；改归档字节再导 → `0002_1.jpg` + `0002_1.xmp`；**第 1/3 张跳过、第 2 张改名时归档名仍是 `0002_1.jpg`**（老实现会给 `0001_1.jpg`）；进度里可见"校验中…"与"重名, 改名 → 0002_2.jpg"；四行明细 1+2=3 与勾选数自洽；EN 界面无中文残留/无裸露 key。
+  **实机首测即发现并修掉 2 个真 bug（提交 `6cad676`）**：① 历史弹窗被 `ui/dialog.tsx` 基础类里的 `sm:max-w-sm` 压在 **384px**（长路径截半截、时间/大小被挤出可视区）→ 补 `max-w-[620px] sm:max-w-[620px]`，并给行内 `truncate flex-1` 的子项补 `min-w-0`（否则不收缩）；② 改名进度行报的是**被占用的计划名**（`重名, 改名 → 0002.jpg`）而磁盘上是 `0002_1.jpg` → `CopyStep::Renamed(String)` 带出真正生成的名字，单测同步钉住。
+  **未实机验证 7 项**：历史空库文案、历史「加载更多」（需 >100 条）、`HISTORY_MAX=500` 截断提示、归档目录不存在时点"打开"的行为、跨多日期的 `{seq}` 全局递增（本批同日期）、`status:"sidecar"` 那一行在本批的渲染（边车已一致 → `copy_sidecar` 返回 `Ok(None)`，代码路径与单测未动，Phase 5 清单第 23/24/25 项已验过同一行）、官网 demo 的浏览器内点击（只做了 build + vitest + mock 断言）。
+  **实机副作用（已复原/如实报告）**：测试产物全部在 `%TEMP%\p6-import`，**验证后已整个删除**（同时删掉了会话 ④ 那个已被清空的 `%TEMP%\p5-import`）；`F:\壁纸` 的 16 张照片 + 3 个边车 **MD5 全部与测试前一致**；实机期间为验"打开所在目录"临时重建过 `%TEMP%\p5-import`（空目录，已删）。**留在使用者机器上的两样东西**：① 命名方案 `p6test`（一行 DB 记录 + localStorage `imagefilter-import-scheme`）—— 这是"重启后仍在"的验证产物；② `import_history` 里 7 条指向已删除临时目录的新记录（会话 ④ 的先例也是把测试记录留在库里）。两者都可以一条 SQL / 一个键清掉，已在交付说明里写明。
+- **遗留 / 本次不做**：
+  - 历史「加载更多」与 `HISTORY_MAX` 截断提示未实机验证（需要 >100 条记录造数据）；
+  - `{seq}` 的位次 = **勾选顺序**：顺序不同 → 编号不同 → 重导会走 `_1` 而不是 `skipped`。想彻底做成"拍摄顺序位次"就得在 `startImport` 里排序（或让后端按源路径排），本次刻意不做，已在 6.3 正文与代码注释写明；
+  - Rust 侧进度文案仍是中文硬编码（`检查中...`/`复制中`/`校验中...`/`重名, 改名 → …`/`边车 → …`），"进度文案前端化（改发事件/key）"留作独立一件事；
+  - 历史记录**只记"真的复制进归档"的那些**：`skipped`/`failed` 不写库（否则"历史 = 归档里有什么"的语义会被每次点导入翻倍）；要"连跳过也留痕"得改写入时机 + 给 skipped 行补绝对路径，属另一件事；
+  - `import_rules` 仍无"当前选中方案"列（选择存在前端 localStorage）；若日后要跨设备/跨安装同步选择，再加列或命令；
+  - 「导出清单」（manifest.txt/CSV）未做（见被否决）；
+  - 官网 demo 只做了静态验证，没在浏览器里点过（本机没有 CDP 端口可用的浏览器自动化）；
+  - 会话 ①②③④ 未实机验证的旧项本次也没补测（本次未碰查看器、工具栏、筛选、XMP 写入路径）。
+
+---
+
 ## 附 · 会话 ① GUI 手测清单（Phase 1 + 3）
 
 > 已实机通过：**第 1、4、5、8、9、10、16 项**（2026-09-27）。其余 13 项仍待执行——下次碰查看器/设置相关代码前，优先补第 2、6、11、13 项（末张关闭、≥2 星筛选下打 0 星、预览→全解码重锚、滚轮/`0` 退出 1:1），这四项失败概率最高。
@@ -972,6 +1045,52 @@ cd src-tauri && cargo check --lib
 
 ---
 
+## 附 · 会话 ⑤ GUI 手测清单（Phase 6 · 导入历史 / 命名方案预设 / 导入结果统计）
+
+> 状态：**2026-10-05 已实机验证 20 项**（真机 `npm run tauri dev`，浅色主题，窗口 1216×809，源目录 `F:\壁纸` 16 张 JPG + 3 个 `.xmp`，目标 `%TEMP%\p6-import`）。**首次实机即发现并修掉 2 个真 bug**（提交 `6cad676` + 官网配对 `2db7e64`）：① 历史弹窗被 `ui/dialog.tsx` 的 `sm:max-w-sm` 压在 384px、长路径把"时间/大小"挤出可视区；② 改名进度行报的是**被占用的计划名**（`重名, 改名 → 0002.jpg`）而磁盘上是 `0002_1.jpg`。
+> 执行前：`npm run tauri dev`，准备一个可写目标目录 + 一个含 JPG 的源目录；**测完记得删掉目标目录**（导入会在里面留下照片与边车）。
+> 每项后标注结果：✅ 通过 / ❌ 失败（附现象）/ ⏭ 跳过（附原因）。做完把结果回填进上面的决策日志"验收结果"。
+> 手段（照会话 ④）：`powershell.exe -NoProfile -File scripts\gui.ps1 …`（`uia-*` 必须 Windows PowerShell 5.1，pwsh 7 加载不了 UIA 程序集）；截图当眼睛、元素树定位、注入键鼠；**应用重启后窗口会换位置**（实测 `208,208` → `78,78`），每次注入前重新 `rect`；原生"选目录"对话框自动化不了 → **请使用者点一次，其余脚本接管**。
+
+**A. 导入历史（6.1）**
+
+1. ✅ 导入栏出现「导入历史」按钮（**不在设置对话框里**）；点开是独立弹窗，标题「导入历史」+ 一行说明。
+2. ✅ 头部显示「共 N 条记录」与「已显示 N / M」（实测 2/2、9/9）；空库文案与「加载更多」**未实机验证**（库里始终有记录，且没到 100 条）。
+3. ✅ 列表每行**同时显示"原文件"与"归档"两条完整路径**（`{seq}` 改名后原文件名只能在这里找回 —— 实测 `F:\壁纸\20251115-DSC07578-HDR.JPG → …\2025-11-16\0003_1.jpg`）。
+4. ✅ 时间与大小：`2026/10/5 13:56:02 · 7.8 MB`。时间由 SQLite 的 **UTC** 串转本地（库里 `05:56:02` → 界面 `13:56:02`，UTC+8）。
+5. ✅ 点"归档"那一行 → 资源管理器打开**父目录**（实测弹出 `p5-import` 窗口，不是打开文件、也不是报错）。
+6. ✅ 弹窗宽度 620px（长路径不被截断）、行内省略号正常（`…HDR_1.…`）、`no-scrollbar` 生效（**无侧边滚动条**）；最小窗口 900×600 下弹窗仍在屏内、内容可滚。
+
+**B. 命名方案（6.2）**
+
+7. ✅ 高级选项面板顶部一行：`命名方案 [下拉] [另存为] 当前文件名：…`；下拉里有 DB 的「默认」。
+8. ✅ 选「默认」→ 两个模板被写入：「按拍摄日期分文件夹」变勾选、「当前文件名」变 `{original}`。
+9. ✅ 手改任一勾选 → 下拉立刻变「自定义」（名字诚实反映模板来源）。
+10. ✅ 「另存为」→ 出现方案名输入框 + 保存按钮（**不是 `window.prompt`**）；名字为空时保存按钮置灰。
+11. ✅ 输入并保存 → **DB 里真的多了一行**（`sqlite3` 直接读：`(22,'p6test','{date}','{seq}_{original}.{ext}',0)`），下拉立刻显示 `p6test`。
+12. ✅ 同名再保存一次（模板改成 `{seq}.{ext}`）→ **id 仍是 22、`created_at` 不变、没有多出第二行**，且「默认」那行的 `is_default` 仍是 1（老实现是 DELETE+INSERT，这三个都会变）。
+13. ✅ F5 重载 webview（= 重启的非 DB 部分）→ 方案名 `p6test`、勾选状态（日期 + 序号）全部恢复 —— 来自 localStorage `imagefilter-import-scheme`。
+14. ✅ **老用户默认行为不变**：清空该 localStorage 键后重开 → 面板显示「自定义 / 原名」+ 全不勾（平铺 + 原名），**没有**自动套用 DB 里 `is_default=1` 的 `{date}`。
+15. ✅ 勾「按序号重命名」→ 当前文件名 = `{seq}.{ext}`（**与改动前逐字节相同**）；再勾「保留原文件名」→ `{seq}_{original}.{ext}`，该子选项在序号未勾时是置灰不可点的；取消勾选 → 回"原名"。
+
+**C. 导入结果统计（6.3）**
+
+16. ✅ 导入 3 张（其中 2 张带 `.xmp`）→ 归档落在**两级目录** `2025-11-16\0001.jpg / 0002.jpg / 0003.jpg`，**边车按新名复制**为 `0001.xmp / 0002.xmp`，MD5 与源逐字节一致；源目录 19 个文件 MD5 全部不变。
+17. ✅ 立刻重复导入同一批 → 「导入完成 ✓ 0 张成功」+「3 张已存在相同，跳过」，**没有"失败"那一行**（这就是本次要修的 bug）。
+18. ✅ 归档里 `0002.jpg` 改掉一个字节再导入 → 生成 `0002_1.jpg`（内容 = 源）**并带动边车 `0002_1.xmp`**；归档里那个被改过的 `0002.jpg` 一个字都没被覆盖。
+19. ✅ **"跳过也递增"的决定性证据**：同一次导入里第 1、3 张被判跳过、第 2 张改名，归档名仍是 `0002_1.jpg` / `0003_1.jpg`（老实现用 `imported + 1` 会给出 `0001_1.jpg` / `0002_1.jpg`）。
+20. ✅ 四行明细（真实数据）：`导入完成 ✓ 1 张成功` / `其中 1 张重名，改名导入` / `2 张已存在相同，跳过` —— 1+2 = 3 = 勾选张数；为 0 的行不渲染。浅色主题下四行配色（绿/琥珀/灰/红）都可读。
+
+**D. 进度与边车（回归）**
+
+21. ✅ 进度里能看到 `校验中...`（天蓝）与 `重名, 改名 → 0002_2.jpg`（琥珀，**带真正生成的名字**，见修复 ②）。
+22. ⏭ `status: "sidecar"` 那一行本批未渲染：这一批里"有边车的照片"在归档中已一致（`copy_sidecar` 返回 `Ok(None)` 不报），改名的两张确实补出了 `.xmp` 但进度行没抓到（列表只显示最近 4 条且导入很快）。**代码路径与单测未动**，Phase 5 手测清单第 23/24/25 项已实机验过同一行。
+23. ✅ EN 界面重跑：`Scheme / Save as / Filename: {seq}.{ext} / Save / Import history / Showing 2 / 2` —— **无中文残留、无裸露 key**（唯一中文是 Rust 侧进度文案，见回归清单第 7 项的例外）。
+
+**未实机验证的项**（如实列出）：历史空库文案、历史「加载更多」（需要 >100 条记录）、`HISTORY_MAX=500` 的截断提示、归档目录不存在时点"打开"的行为、跨多个日期的 `{seq}` 全局递增（本批 3 张同日期）、官网 demo 的浏览器内点击（只做了 `npm run build` + `vitest` + mock 命令差集/形状断言）。
+
+---
+
 ## 附 · 会话启动提示（复制粘贴即可开新会话）
 
 > **用法**：一次只粘一段。第一句必须要求"先只输出改动计划"，这样如果我理解偏了，你在 2000 token 内就能发现，而不是等我改完 5 个文件。
@@ -1066,7 +1185,7 @@ C. **落地页 demo 的 mock 层**（另一个仓库）：命令签名一变那�
   按模板追加「会话 ④」决策日志，拆成 feat(xmp) 与 docs 两个提交。
 ```
 
-### 会话 ⑤（Phase 6）— ✅ 会话 ④ 已完成（见决策日志），现在可用
+### 会话 ⑤（Phase 6）— ✅ 会话 ⑤ 已完成（见决策日志）；Phase 1–6 全部落地，无后续规划的 Phase
 
 ```text
 接着做 docs/ImageFilter-功能实施方案.md 的 Phase 6（导入历史 / 命名方案预设 / 导入结果统计）。
@@ -1126,5 +1245,7 @@ Phase 5 实机清单 **29/29** 已验（含边车复制的 3 条单测）。
 - 「附 · 每个 Phase 做完都要跑的回归清单」第 2 项的措辞与实现不符（实现是"**前进到下一张**"，
   不是"关闭"），别照它判失败。
 ```
+
+**会话 ⑤ 收尾补记**：上面的启动提示是会话 ⑤ 的输入，**已执行完毕**；其中"回归清单第 2 项措辞不符"这一条**已在本文档修正**（见回归清单第 2 项），不用再记。若以后要开新会话，从会话 ⑤ 决策日志的「遗留 / 本次不做」里挑一件（例子：历史「加载更多」实机、Rust 侧进度文案前端化、`{seq}` 是否改成"文件名顺序位次"、把 `import_history` 的 skipped 也留痕），并且照老规矩：**先只输出改动计划**。
 
 
