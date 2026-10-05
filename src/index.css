@@ -116,6 +116,26 @@ img {
   outline-offset: 2px;
 }
 
+/* ── 左侧文件夹树的"行" ──
+   行高 24px: WCAG 2.5.8 的目标尺寸下限。原先靠 11px 字号 + 上下各 2px 内边距隐式得到
+   20.5px, 是左侧面板里唯一低于 24px 的行(面板收起按钮/刷新 24、设备行 28、根目录 26.5),
+   而它恰恰是数量最多、最常点的那个。
+   24px 在整个代码库里只出现这一次 —— 占位行复用 .tree-row, 所以自动同高,
+   JS 里不需要知道这个数(子树高度一律由 scrollHeight 实测)。 */
+.tree-row {
+  height: 24px;
+}
+
+/* 箭头用同一个 ▶ 字形旋转, 而不是 ▶/▼ 换字形 ——
+   两个字符的推进宽度不同, 展开时后面的文字会横向抖 1px。 */
+.tree-caret i {
+  display: inline-block;
+  font-style: normal;
+  transition: transform 160ms ease-out;
+}
+.tree-row[aria-expanded="true"] .tree-caret i {
+  transform: rotate(90deg);
+}
 
 /* 照片 hover 描述渐变 — 统一黑色底（深浅主题一致） */
 .hover-overlay {

@@ -19,15 +19,16 @@ export function FolderTreeItem({
           if (canExpand) setOpen(!open);
           onSelect(node.path);
         }}
-        className={`w-full text-left rounded text-[11px] flex items-center gap-1 ${
+        aria-expanded={canExpand ? open : undefined}
+        className={`tree-row w-full text-left rounded text-[11px] flex items-center gap-1 ${
           isActive
             ? "bg-emerald-900/30 text-emerald-300"
             : "text-zinc-400 hover:bg-zinc-800/50"
         }`}
-        style={{ paddingLeft: `${depth * 12 + 8}px`, paddingRight: "4px", paddingTop: "2px", paddingBottom: "2px" }}
+        style={{ paddingLeft: `${depth * 12 + 8}px`, paddingRight: "4px" }}
       >
-        <span className="text-[10px] w-3 flex-shrink-0">
-          {canExpand ? (open ? "▼" : "▶") : <Folder theme="filled" size="12" />}
+        <span className="tree-caret text-[10px] w-3 flex-shrink-0 flex items-center justify-center" aria-hidden="true">
+          {canExpand ? <i>▶</i> : <Folder theme="filled" size={12} />}
         </span>
         <span className="truncate">{node.name}</span>
         {!(counting && node.photoCount === 0) && (
