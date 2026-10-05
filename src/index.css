@@ -140,6 +140,31 @@ img {
   transform: rotate(90deg);
 }
 
+/* 子树容器。高度由组件按内容 scrollHeight 实测后写在行内(JS 不知道 24 这个数)。
+   transition 常驻、只翻值 —— 与 collapsible-bar.tsx 同一写法;
+   时长必须与 folder-tree-motion.ts 的 EXPAND_MS 一致。 */
+.tree-kids {
+  overflow: hidden;
+  transition: height 200ms ease-in-out;
+}
+
+/* 加载占位行。与真行同高(复用 .tree-row), 但**不能读成"这是个空文件夹"** ——
+   所以不画文件夹图标、不画计数, 只有一根呼吸的灰条。 */
+.tree-row-skeleton {
+  cursor: default;
+}
+.tree-skeleton-bar {
+  display: inline-block;
+  height: 8px;
+  width: 64px;
+  border-radius: 2px;
+  background: #3f3f46; /* zinc-700, 与 .thumb-slider 用字面量同风格 */
+  animation: tree-skeleton-pulse 1s ease-in-out infinite;
+}
+@keyframes tree-skeleton-pulse {
+  50% { opacity: 0.4; }
+}
+
 /* 照片 hover 描述渐变 — 统一黑色底（深浅主题一致） */
 .hover-overlay {
   background: linear-gradient(to top, rgba(0, 0, 0, 0.8), transparent);
