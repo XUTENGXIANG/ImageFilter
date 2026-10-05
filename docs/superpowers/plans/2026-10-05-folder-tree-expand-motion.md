@@ -420,14 +420,18 @@ export function treePhase(i: TreePhaseInput): TreePhase {
 }
 ```
 
-- [ ] **Step 4: 跑测试，确认 11 条全通过**
+- [ ] **Step 4: 跑测试，确认 10 条全通过**
 
 Run:
 ```bash
 npx esbuild docs/evidence/scripts/tree-motion.test.ts --bundle --platform=node --format=esm --outfile=.design-audit/_probe/tree-motion.mjs
 node .design-audit/_probe/tree-motion.mjs
 ```
-Expected: `ALL PASS: 11 passed, 0 failed`，退出码 0。
+Expected: `ALL PASS: 10 passed, 0 failed`，退出码 0。
+
+> 数字是 **10**，不是 11。数断言时不能拿 `grep 'eq('` 去数 —— 它会把 `function eq(...)` 的定义也算进去（同一个方法把 `lrc-logic.test.ts` 数成 18，而它真实是 17）。数行首缩进的调用，或者直接看程序自己打印的通过数。
+>
+> `canExpand:false` + `childCount>0` 这个组合**故意不写断言**：`canExpand = hasSubdirs || children.length > 0`，所以 `childCount > 0` 必然蕴含 `canExpand === true`，这个组合不可达。为不可达组合加断言只是把实现的短路顺序固化下来，不是覆盖真实行为。
 
 - [ ] **Step 5: 提交**
 
@@ -711,6 +715,23 @@ node .design-audit\_probe\verify-tree-expand.mjs 600
 Expected: 四档都是 `ok   平滑`（台阶数 > 10），退出码 0。
 参考基准（规格 §3.2 实测）：32ms 应约 15 台阶、250ms 应约 26 台阶。
 
+**再加一条跨文件的断言：CSS 的过渡时长必须等于 `EXPAND_MS`。** 这两处是同一个值写在两个地方（`src/index.css` 的 `.tree-kids` 与 `src/components/folder-tree-motion.ts` 的 `EXPAND_MS`），而 TS 侧的单测只能钉住自己那一半 —— CSS 漂走了没有任何东西会失败，症状是 `height: auto` 的收尾时刻错位（早于过渡结束 → 看得见一跳；晚太多 → 把嵌套展开被裁的窗口拉长）。在同一个探针里量：
+
+```js
+const dur = await page.evaluate(() => {
+  const kids = document.querySelector(".tree-kids");
+  const cs = getComputedStyle(kids);
+  return cs.transitionDuration + " / " + cs.transitionProperty;
+});
+console.log("CSS 过渡:", dur);
+const expectS = (EXPAND_MS / 1000).toFixed(3).replace(/0+$/, "").replace(/\.$/, "");
+// getComputedStyle 返回秒为单位、可能带尾零，这里做归一后比对
+const okDur = dur.split(" / ")[0].split(",").some((v) => parseFloat(v) === EXPAND_MS / 1000);
+console.log(okDur ? "ok   CSS 过渡时长与 EXPAND_MS 一致" : `FAIL CSS 过渡时长与 EXPAND_MS(${EXPAND_MS}ms) 不一致: ${dur}`);
+```
+
+（`EXPAND_MS` 从 `../../../src/components/folder-tree-motion` 引入即可，这条断言本来就要跨这两个文件。）
+
 - [ ] **Step 6: 确认收起的子树不进 Tab 顺序**
 
 新建 `.design-audit/_probe/verify-tree-inert.mjs`：加载桩、展开 `DCIM`，然后连续按 Tab 并记录焦点元素的可访问名，断言**没有出现已收起分支的子行名字**（如 `100CANON`、`101CANON`）。
@@ -954,7 +975,7 @@ Run: `npm run tauri dev`，插上真实 SD 卡，点设备进入 DCIM。
 
 ```markdown
 | `verify-tree-motion.mjs` | 文件夹树展开的台阶数断言（>3 台阶为平滑） | `node verify-tree-motion.mjs <卡速ms>`，需先跑 `npm run tauri dev` |
-| `tree-motion.test.ts` | `src/components/folder-tree-motion.ts` 的阶段判定断言（11 条） | 见文件头注释（esbuild + node，不引 vitest —— 项目既有约定） |
+| `tree-motion.test.ts` | `src/components/folder-tree-motion.ts` 的阶段判定断言（10 条） | 见文件头注释（esbuild + node，不引 vitest —— 项目既有约定） |
 ```
 
 - [ ] **Step 9: 最终全量核对**
@@ -967,7 +988,7 @@ npx esbuild docs/evidence/scripts/tree-motion.test.ts --bundle --platform=node -
 node .design-audit\_probe\tree-motion.mjs
 git status --short
 ```
-Expected: `tsc exit: 0`；控制台无 error / warning；单测 `ALL PASS: 11 passed, 0 failed`（退出码 0）；`git status` 只剩本次要提交的文件。
+Expected: `tsc exit: 0`；控制台无 error / warning；单测 `ALL PASS: 10 passed, 0 failed`（退出码 0）；`git status` 只剩本次要提交的文件。
 
 - [ ] **Step 10: 提交**
 
