@@ -945,7 +945,8 @@ Run: `npm run tauri dev`，插上真实 SD 卡，点设备进入 DCIM。
    - `PLACEHOLDER_DELAY_MS = 120` 只有 Step 6 的人工观感依据，没有延迟分布数据；
    - 嵌套展开的短暂裁剪（引用第 7 条的实测数字）；
    - 树没有 `role="tree"` 语义，也没有方向键导航，读作"一串按钮"（既有缺口，本次不引入）；
-   - 收起后子树常驻 DOM，规模由"用户实际展开过多少分支"决定（未展开的节点 `children` 为空，不产生 DOM）。
+   - 收起后子树常驻 DOM，规模由"用户实际展开过多少分支"决定（未展开的节点 `children` 为空，不产生 DOM）；
+   - **`verify-tree-motion.mjs` 里那条 transform 判据是钉死的字符串**（`matrix(0, 1, -1, 0, 0, 0)`）。它绑在 Playwright 自带 Chromium 的 `rotate(90deg)` 序列化形式上 —— 换一个 Chromium 版本可能变成别的等价写法而误报失败。归档时要写明这一点；真要长期用，应改成解析角度而不是比对字符串。
 
 - [ ] **Step 8: 在 README 的 scripts 表格里加两行**
 
