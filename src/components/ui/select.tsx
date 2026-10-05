@@ -56,6 +56,12 @@ export function Dropdown<T extends string | number>({
           // 默认会把选中项和触发器文字对齐(整个弹层盖住触发器), 那是原生 select 的手感;
           // 这里要的是"从下面展开一个菜单", 所以关掉
           alignItemWithTrigger={false}
+          // ⚠️ 层级必须写在 positioner 上, 不能只写在弹层上。
+          // positioner 带 transform → 它自己形成一个**层叠上下文**, 弹层上的 z-index 会被
+          // 关在里面、对外不生效; 而 positioner 本身是 z-index: auto, 于是整块弹层在应用里的
+          // 层级等于 0 —— 输给工具栏的 z-40, 表现为"弹层上半截被工具栏盖住"(实测踩过)。
+          // 100 = 本项目的菜单层(与右键菜单同层); 刻度是 10/20/40/50/100/200。
+          className="z-[100]"
         >
           <SelectPrimitive.Popup className={`${MENU_CONTENT} ${MENU_TRANSITION}`}>
             <SelectPrimitive.List>

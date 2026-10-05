@@ -86,6 +86,30 @@ async function testDropdown(name, ariaLabel, optionToPick) {
   check(radius === "10px", "弹层是圆角 10px", String(radius));
   check(seen.length > 1, "弹层有入场过渡(不是瞬现)", `未达终态 ${seen.length} 帧`);
 
+  // 弹层有没有被别的层盖住 —— 这条是本轮补的。
+  // 之前 26 条断言全过, 却漏掉了"弹层上半截被工具栏压住"这个真实 bug:
+  // 圆角/过渡/选中都对, 只是被盖住了。所以必须直接问浏览器"这个点上谁在最上面"。
+  // (根因: positioner 带 transform 会自成层叠上下文, 弹层上的 z-index 对外不生效。)
+  const occlusion = await page.evaluate((f) => {
+    const pop = eval(f);
+    if (!pop) return { err: "弹层没找到" };
+    const r = pop.getBoundingClientRect();
+    // 顶部中间(最容易撞上工具条)、中部、左下角
+    const pts = [[r.x + r.width / 2, r.y + 2], [r.x + r.width / 2, r.y + r.height / 2], [r.x + 6, r.y + r.height - 6]];
+    return pts.map(([x, y]) => {
+      const el = document.elementFromPoint(x, y);
+      return {
+        点: [Math.round(x), Math.round(y)],
+        最上层: el ? String(el.className || el.tagName).slice(0, 46) : null,
+        是弹层: !!(el && (pop === el || pop.contains(el))),
+      };
+    });
+  }, POPUP_FINDER);
+  if (occlusion.err) { check(false, "测弹层遮挡", occlusion.err); return; }
+  const covered = occlusion.filter((o) => !o.是弹层);
+  console.log("  遮挡检查: " + occlusion.map((o) => `${o.点.join(",")}→${o.是弹层 ? "弹层" : "被盖:" + o.最上层}`).join("  "));
+  check(covered.length === 0, "弹层没有被其它层盖住", JSON.stringify(covered));
+
   // 真正选中一项
   const picked = await page.evaluate(({ label, want }) => {
     const items = [...document.querySelectorAll('[role="option"]')];
