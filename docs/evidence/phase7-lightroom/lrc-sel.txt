@@ -1,0 +1,11 @@
+﻿=== SELECTED elements in Lightroom window ===
+
+=== ancestry of the '1 photo / 120KB' element ===
+  Pane class='Static' name='1 张照片 / 120 KB'
+    Pane class='AfxWnd140u' name='(Bridge View)'
+      Pane class='AfxWnd140u' name='(Bridge View)'
+        Pane class='AfxWnd140u' name='(Bridge View)'
+          Pane class='AfxWnd140u' name='(Bridge View)'
+            Pane class='Afx:0000000140000000:0' name='Lightroom'
+              Window class='AgWinMainFrame' name='Lightroom Catalog - Adobe Photoshop Lightroom Classic - 图库 - '
+                Pane class='#32769' name=''

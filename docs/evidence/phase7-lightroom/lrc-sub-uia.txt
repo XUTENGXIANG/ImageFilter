@@ -1,0 +1,10 @@
+﻿window: 'Lightroom Catalog - Adobe Photoshop Lightroom Classic - 图库 - '
+--- does the import dialog appear? ---
+导入 | 完成 | 取消
+--- lines mentioning the test folder / subfolder / counts ---
+包含子文件夹
+1 张照片
+1 张照片 / 120 KB
+文件夹
+筛选文件夹
+选定的照片

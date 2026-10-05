@@ -1,0 +1,6 @@
+﻿killing pid=16184
+still alive, force kill pid=16184
+lightroom procs now: 0
+relaunching with FILE arg: A:\tenent\_probe\lrc-testdir\probe-photo.png
+pid=23064
+  pid=23064 window='Lightroom Catalog - Adobe Photoshop Lightroom Classic - 图库 - '

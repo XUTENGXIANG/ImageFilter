@@ -1,0 +1,6 @@
+﻿prefs: C:\Users\11\AppData\Roaming\Adobe\Lightroom\Preferences\Lightroom Classic CC 7 Preferences.agprefs  exists=True
+size=42101  first4=112,114,101,102  hasNulInFirst2k=False
+--- searching for auto/watcher/import keys ---
+  'Import' x68
+  'import_' x4
+--- matching lines (0) ---

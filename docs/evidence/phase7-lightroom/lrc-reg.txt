@@ -1,0 +1,25 @@
+﻿=== .lrcat assoc (the reliable finder) ===
+HKLM:\SOFTWARE\Classes\.lrcat -> AdobeLightroom7.lrcat
+   cmd: A:\lrc\Adobe Lightroom Classic\Lightroom.exe "%1"
+
+=== Adobe registry subkeys ===
+  HKLM:\SOFTWARE\Adobe :: Lightroom
+  HKLM:\SOFTWARE\WOW6432Node\Adobe :: CommonFiles
+       sub: Color
+  HKCU:\SOFTWARE\Adobe :: Common 24.0
+       sub: Client Media Cache
+       sub: Media Cache
+  HKCU:\SOFTWARE\Adobe :: CommonFiles
+       sub: CRLog
+  HKCU:\SOFTWARE\Adobe :: CreativeCloud
+  HKCU:\SOFTWARE\Adobe :: dynamiclinkmediaserver
+       sub: 24.0
+  HKCU:\SOFTWARE\Adobe :: Lightroom
+
+=== user Lightroom dirs ===
+EXISTS C:\Users\11\AppData\Roaming\Adobe\Lightroom
+EXISTS C:\Users\11\AppData\Local\Adobe\Lightroom
+EXISTS C:\Users\11\Pictures\Lightroom
+
+=== uninstall entries with Lightroom ===
+  Adobe Lightroom Classic | 15.2.1 | A:\lrc

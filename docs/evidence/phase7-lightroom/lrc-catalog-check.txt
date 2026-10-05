@@ -1,0 +1,6 @@
+﻿catalog size: 5120000 bytes
+contains 'probe-photo': False
+contains 'lrc-testdir': False
+contains '_probe': False
+
+→ 若均为 False, 说明没有任何探针文件被导入目录

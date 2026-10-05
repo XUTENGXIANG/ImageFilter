@@ -1,0 +1,120 @@
+﻿[Pane] Lightroom
+[Pane] (Bridge View)
+[Pane] 从 (Bridge View)
+[Pane] 导入行为 (Bridge View)
+[Pane] 导入
+[Pane] 协助消隐 (Bridge View)
+[Pane] |
+[Pane] 添加
+[Pane] 将照片添加到目录而不移动
+[Pane] 到 (Bridge View)
+[Pane] Background View
+[Pane] View
+[Pane] Scroll View
+[Pane] ClipView
+[Pane] Accordion View
+[Pane] Accordion Content
+[Pane] 源
+[Pane] Collapsible Section
+[Pane] 文件
+[Pane] 包含子文件夹
+[Pane] Import_volumeContainer
+[Pane] 本地磁盘 (C:) (Bridge View)
+[Pane] 本地磁盘 (C:)
+[Pane] Eleven (F:) (Bridge View)
+[Pane] Eleven (F:)
+[Pane] ImportDatePicker_dateViewArea
+[Pane] 所有照片
+[Pane] 新照片
+[Pane] 1 张照片
+[Pane] (D2D Bridge View)
+[Pane] 全选
+[Pane] 取消全选
+[Pane] 排序依据:
+[Pane] 关
+[Pane] 缩览图
+[Pane] 文件处理
+[Pane] 在导入时应用
+[Pane] 1 张照片 / 120 KB
+[Pane] 导入预设:
+[Pane] 无
+[Pane] 完成
+[Pane] 取消
+[Pane] Top/Bottom Panel Host
+[Pane] Last Bar
+[Pane] First Bar
+[Pane] Last Panel
+[Pane] modulePicker (Last Panel's content)
+[Pane] PROGRESS CENTER (Bridge View)
+[Pane] cloudIcon (Bridge View)
+[Pane] First Panel
+[Pane] Photo Bin (Bridge View) (First Panel's content)
+[Pane] library_filter
+[Pane] FilterRowNormalContent
+[Pane] 过滤器:
+[Pane] 关闭过滤器
+[Pane] Main Switcher View
+[Pane] LibraryPanels
+[Pane] View (Last Panel's content)
+[Pane] 导航器 (Bridge View)
+[Pane] 导航器
+[Pane] 适合
+[Pane] 100%
+[Pane] 300%
+[Pane] AgLibrary_navigatorPanel
+[Pane] navigatorPicture (D2D Bridge View)
+[Pane] 目录
+[Pane] 文件夹
+[Pane] 筛选文件夹
+[Pane] F:\
+[Pane] 169 / 932 GB
+[Pane] 收藏夹
+[Pane] 过滤收藏夹
+[Pane] 发布服务
+[Pane] 导入...
+[Pane] 导出...
+[Pane] View (First Panel's content)
+[Pane] 直方图
+[Pane] AgLibrary_histogramPanel
+[Pane] ISO 400
+[Pane] 38 mm
+[Pane] f / 9.0
+[Pane] 1/4000 秒
+[Pane] 原始照片
+[Pane] 协助消隐
+[Pane] 剔选分数
+[Pane] Library_CullingInfoView
+[Pane] 主体聚焦
+[Pane] 眼睛聚焦
+[Pane] 眼睛在睁着
+[Pane] 提供反馈
+[Pane] 快速修改照片
+[Pane] 自定
+[Pane] 关键字
+[Pane] 关键字列表
+[Pane] 元数据
+[Pane] 默认值
+[Pane] containingView
+[Pane] insert_here
+[Pane] 预设
+[Pane] 目标照片
+[Pane] 选定的照片
+[Pane] 文件名
+[Pane] DSC02826-HDR 全景图.dng
+[Pane] 待修2026.7.23
+[Pane] 标题
+[Pane] 题注
+[Pane] 版权
+[Pane] XTX
+[Pane] 拍摄者
+[Pane] Eleven
+[Pane] 星级
+[Pane] 拍摄日期
+[Pane] 2026年7月22日
+[Pane] 文件尺寸
+[Pane] 26063 x 11125
+[Pane] 当前尺寸
+[Pane] 20764 x 10219
+[Pane] 自定义...
+[Pane] 评论
+[Pane] 同步

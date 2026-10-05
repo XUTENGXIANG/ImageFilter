@@ -1,0 +1,3 @@
+﻿created: A:\tenent\_probe\lrc-testdir\subfolder\probe-photo.png
+lightroom running before: 1
+launched with SUBFOLDER arg: A:\tenent\_probe\lrc-testdir\subfolder  (pid=32904)

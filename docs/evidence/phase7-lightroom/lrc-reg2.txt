@@ -1,0 +1,9 @@
+﻿=== HKCU:\SOFTWARE\Adobe\Lightroom subkeys+values ===
+--- HKCU:\SOFTWARE\Adobe\Lightroom
+  val language = zh_cn
+  val Locale = zh_CN
+--- HKLM:\SOFTWARE\Adobe\Lightroom
+  val language = zh_cn
+  val Locale = zh_CN
+
+=== look for a value naming the installed version ===

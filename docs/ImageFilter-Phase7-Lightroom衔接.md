@@ -39,7 +39,7 @@
 
 ## 1. 实机探路：三个反直觉的结论（决定了全部实现）
 
-在做任何设计之前先实测了这台机器上的 LrC。结论与"想当然"差距很大，所以这里是**证据**而不是推测（原始证据在 `_probe/`，见 §6）。
+在做任何设计之前先实测了这台机器上的 LrC。结论与"想当然"差距很大，所以这里是**证据**而不是推测（原始输出在 `docs/evidence/phase7-lightroom/`，索引见 §6）。
 
 ### 1.1 ✅ `Lightroom.exe "<文件夹>"` 会打开导入对话框
 
@@ -183,24 +183,27 @@ LrC 的偏好文件 `%APPDATA%\Adobe\Lightroom\Preferences\Lightroom Classic CC 
 
 ---
 
-## 6. 证据文件（`_probe/`，未入库）
+## 6. 证据文件（`docs/evidence/`）
+
+原始输出已归档进仓库（只留文本，截图没入库），完整索引见 [evidence/README.md](evidence/README.md)。
 
 | 文件 | 内容 |
 |---|---|
-| `lrc-reg.txt` | 注册表：`.lrcat` 文件关联、Adobe 键、卸载项（**最关键的一份**） |
-| `lrc-reg2.txt` | 确认没有版本子键 |
-| `lrc-user.txt` | 用户目录、`.agprefs` 位置、`.lrcat` 位置 |
-| `lrc-prefs.txt` | `.agprefs` 的文本性验证 + Auto Import 键 0 命中 |
-| `lrc-uia.txt` | **导入对话框元素树（§1.1 的证据）** |
-| `lrc-sel.txt` / `lrc-import-dialog.txt` / `lrc-filearg-uia.txt` | 选中项探测与窗口类名 `AgWinMainFrame` |
-| `lrc-after-launch.png` | 启动后截图（未做视觉判读，当时的模型不支持读图） |
-| `lrc-catalog-check.txt` | 确认目录库里**没有**混入任何探针文件 |
-| `lrc-teardown.txt` | 收尾记录：LrC 已关、测试目录已删 |
-| `probe-lrc.ps1` | 探测脚本本体（可复用；注：Windows PowerShell 5.1 下用 `powershell -File`，没有 `pwsh`） |
-| `lrc-logic.test.ts` / `lrc-logic.mjs` | `src/lightroom.ts` 的 15 条纯逻辑断言 |
-| `i18n-parity.cjs` | zh/en 叶子 key 对齐检查 |
+| `phase7-lightroom/lrc-reg.txt` | 注册表：`.lrcat` 文件关联、Adobe 键、卸载项（**最关键的一份**） |
+| `phase7-lightroom/lrc-reg2.txt` | 确认没有版本子键 |
+| `phase7-lightroom/lrc-user.txt` | 用户目录、`.agprefs` 位置、`.lrcat` 位置 |
+| `phase7-lightroom/lrc-prefs.txt` | `.agprefs` 的文本性验证 + Auto Import 键 0 命中 |
+| `phase7-lightroom/lrc-uia.txt` | **导入对话框元素树（§1.1 的证据）** |
+| `phase7-lightroom/lrc-sub-uia.txt` | 传子文件夹路径能精确进到该层 |
+| `phase7-lightroom/lrc-sel.txt` / `lrc-import-dialog.txt` / `lrc-filearg*.txt` | 选中项探测与窗口类名 `AgWinMainFrame` |
+| `phase7-lightroom/lrc-catalog-check.txt` | 确认目录库里**没有**混入任何探针文件 |
+| `phase7-lightroom/lrc-*-teardown.txt` | 收尾记录：LrC 已关、测试目录已删 |
+| `scripts/probe-lrc.ps1` | 探测脚本本体（可复用；注：Windows PowerShell 5.1 下用 `powershell -File`，本机没有 `pwsh`） |
+| `scripts/lrc-logic.test.ts` / `lrc-logic.mjs` | `src/lightroom.ts` 的 17 条纯逻辑断言 |
+| `scripts/i18n-parity.cjs` | zh/en 叶子 key 对齐检查 |
 
-> `_probe/` 里另有 Phase 5 的 XMP 证据（`EVIDENCE.md`、`*.xmp`、界面截图），是上一轮留下的。
+> 另有 Phase 5 的 XMP 边车逐字节证据在 `docs/evidence/xmp-sidecar/`（`EVIDENCE.md` + `*.xmp`）。
+> 当时的界面截图（`01-app.png`、`lrc-after-launch.png` 等约 3.1 MB）**已删**，不入库。
 
 ---
 

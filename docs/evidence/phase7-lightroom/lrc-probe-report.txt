@@ -1,0 +1,90 @@
+LrC probe report
+time      : 2026-10-05 16:13:07 +08:00
+machine   : DESKTOP-96B8FMF
+user      : 11
+psVersion : 5.1.26100.9444
+edition   : Desktop
+language  : FullLanguage
+launchTest: False
+
+==============================================================================
+== 1. Is LrC running? window titles
+==============================================================================
+lightroom.exe : NOT running
+
+==============================================================================
+== 2. Install path: Adobe registry keys
+==============================================================================
+  (exists) 
+    * 
+  (exists) 
+  (exists) 
+    * 
+
+==============================================================================
+== 3. Install path: dirs + App Paths + uninstall + associations
+==============================================================================
+  uninstall     : 
+  assoc         : .lrcat -> AdobeLightroom7.lrcat
+    open cmd     : A:\lrc\Adobe Lightroom Classic\Lightroom.exe "%1"
+    Open cmd     : A:\lrc\Adobe Lightroom Classic\Lightroom.exe "%1"
+
+  candidate exe count : 0
+
+==============================================================================
+== 4. Per-user Lightroom data dirs (clues for watcher / preferences)
+==============================================================================
+  exists : 
+           
+           
+           
+           
+           
+           
+           
+           
+           
+           
+           
+           
+           
+           
+           
+           
+           
+           
+           
+  exists : 
+           
+           
+           
+  exists : 
+           
+           
+           
+           
+  absent : 
+
+  --- searching readable text files in Lightroom settings for auto-import keys ---
+    (no text file mentions auto-import keys; it is likely in the binary .agprefs)
+
+==============================================================================
+== 5. Live test: pass a folder to lightroom.exe
+==============================================================================
+SKIPPED (no -LaunchTest)
+
+This is the only item that must be measured, not researched:
+does "lightroom.exe <folder>" open the Import dialog with that source?
+
+Re-run with the switch when you are ready to launch Lightroom:
+    powershell -File .\probe-lrc.ps1 -LaunchTest
+
+It starts Lightroom (can be slow) but never imports by itself.
+The default target is an empty temp folder; nothing of yours is touched.
+
+==============================================================================
+== SUMMARY
+==============================================================================
+lightroom.exe path : <not found>
+running count      : 0
+launch test        : SKIPPED

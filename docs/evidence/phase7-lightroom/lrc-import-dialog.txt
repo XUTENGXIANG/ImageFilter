@@ -1,0 +1,13 @@
+﻿=== top-level windows ===
+  [ControlType.Window] 'Lightroom Catalog - Adobe Photoshop Lightroom Classic - 图库 - '
+  [ControlType.Window] '阅读交接文档并规划功能 — DeepSeek Harness'
+  [ControlType.Window] '于是 - 郑润泽'
+  [ControlType.Window] 'QQ'
+  [ControlType.Window] 'Steam'
+  [ControlType.Pane] 'NVIDIA GeForce Overlay'
+  [ControlType.Window] 'ImageFilter'
+  [ControlType.Pane] 'Program Manager'
+
+=== 'Lightroom Catalog - Adobe Photoshop Lightroom Classic - 图库 - ' ===
+controlType: ControlType.Window  class: AgWinMainFrame
+boundingRect: -8,-8,1936,1048

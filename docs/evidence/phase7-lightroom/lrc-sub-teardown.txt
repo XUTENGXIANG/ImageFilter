@@ -1,0 +1,6 @@
+﻿closing pid=32904 (NOT clicking 完成)
+force kill pid=32904
+lightroom now: 0
+removed lrc-testdir
+catalog contains 'probe-photo': False
+catalog contains 'lrc-testdir': False

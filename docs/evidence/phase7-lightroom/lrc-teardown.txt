@@ -1,0 +1,5 @@
+﻿closing pid=23064 (sending window close, NOT importing)
+force killing pid=23064
+lightroom procs now: 0
+removed _probe\lrc-testdir
+catalog: 4.88 MB, mtime=10/05/2026 16:14:53

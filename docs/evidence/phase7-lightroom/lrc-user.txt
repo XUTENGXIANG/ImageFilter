@@ -1,0 +1,36 @@
+﻿=== %APPDATA%\Adobe\Lightroom ===
+  2
+  Color Profiles
+  Develop Presets
+  Export Actions
+  Export Presets
+  External Editor Presets
+  Filename Templates
+  Filter Presets
+  Import Presets
+  Keyword Sets
+  Label Sets
+  Local Adjustment Presets
+  Locations
+  Metadata
+  Metadata Presets
+  Preferences
+  Smart Collection Templates
+  Watermarks
+  lrc_console.log
+
+=== %APPDATA%\Adobe\Lightroom\Preferences (LrC prefs = auto-import lives here) ===
+  Lightroom Classic CC 7 Preferences.agprefs   42101 B
+  Lightroom Classic CC 7 Startup Preferences.agprefs   346 B
+
+=== %LOCALAPPDATA%\Adobe\Lightroom ===
+  Caches
+  Logs
+  Preferences
+
+=== HKCU:\SOFTWARE\Adobe\Lightroom values ===
+  language = zh_cn
+  Locale = zh_CN
+
+=== .lrcat files found (bounded search) ===
+  C:\Users\11\Pictures\Lightroom\Lightroom Catalog.lrcat  4.9 MB
