@@ -92,7 +92,7 @@ export function PhotoToolbar({
               { value: "type" as const, label: t("toolbar.sortType") },
               { value: "date" as const, label: t("toolbar.sortDate") },
             ]}
-            className="bg-zinc-800 text-[10px] leading-4 text-zinc-400 border-zinc-700 px-1 py-1"
+            className="bg-zinc-800 text-[10px] leading-none text-zinc-400 border-zinc-700 px-1.5"
           />
           {/* 排序方向: asc = "今天的观感"(name/type A→Z, date 新→旧), 见 docs 4.5 ——
               所以提示只写"切换方向", 不写"升序/降序"(否则与日期的字面含义打架) */}
@@ -117,7 +117,7 @@ export function PhotoToolbar({
               { value: 0, label: t("toolbar.all") },
               ...[1, 2, 3, 4, 5].map((s) => ({ value: s, label: t("toolbar.starFilter", { n: s }) })),
             ]}
-            className={`bg-zinc-800 text-[10px] leading-4 px-1 py-1 ${
+            className={`bg-zinc-800 text-[10px] leading-none px-1.5 ${
               starFilter > 0 ? "text-amber-400 border-amber-500/40" : "text-zinc-400 border-zinc-700"
             }`}
           />
@@ -192,7 +192,7 @@ export function PhotoToolbar({
                 { value: "duplicate" as const, label: t("grid.duplicate") },
                 { value: "best" as const, label: t("grid.best") },
               ]}
-              className="bg-zinc-800 text-[10px] px-1 py-0.5 text-zinc-400 border-zinc-700"
+              className="bg-zinc-800 text-[10px] leading-none px-1.5 text-zinc-400 border-zinc-700"
             />
             <button
               onClick={onClearFilters}

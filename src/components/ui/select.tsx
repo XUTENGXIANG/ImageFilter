@@ -42,7 +42,10 @@ export function Dropdown<T extends string | number>({
     >
       <SelectPrimitive.Trigger
         aria-label={ariaLabel}
-        className={`shrink-0 inline-flex items-center gap-1 rounded border cursor-pointer transition-colors ${className}`}
+        // 高度由这里定死, 不让调用点各配各的 py —— 这几个下拉散在工具栏、筛选面板、
+        // 高级选项三处, 各写各的竖向内边距就会各长各的(实测过: 26px 比同一行其它控件高 7px)。
+        // h-5 = 20px, 与工具栏那一行的排序方向按钮(20px)/筛选按钮(19px)同一档。
+        className={`shrink-0 inline-flex items-center gap-1 h-5 rounded border cursor-pointer transition-colors ${className}`}
       >
         <SelectPrimitive.Value />
         <SelectPrimitive.Icon className="text-zinc-500 text-[9px] leading-none">▾</SelectPrimitive.Icon>

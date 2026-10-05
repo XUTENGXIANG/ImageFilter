@@ -99,7 +99,7 @@ export function AdvancedOptions({
                 { value: "", label: t("import.schemeCustom") },
                 ...schemeOptions(scheme.rules, scheme.name).map((n) => ({ value: n, label: n })),
               ]}
-              className="bg-zinc-800 text-[10px] text-zinc-400 border-zinc-700 px-1 py-0.5 max-w-[150px]"
+              className="bg-zinc-800 text-[10px] leading-none text-zinc-400 border-zinc-700 px-1.5 max-w-[150px]"
             />
             <button
               onClick={() => setSaveAsOpen((v) => !v)}
