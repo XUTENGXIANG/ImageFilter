@@ -141,9 +141,10 @@ settled          height: auto
 ## 7. 无障碍
 
 - **行按钮补 `aria-expanded`。** 实测现在 6 行里 **0 行**有这个属性。
+- **箭头那层 span 补 `aria-hidden="true"`。** 它是纯装饰，但今天**在按钮的可访问名里** —— 整行会被读成"▶ DCIM 874"。补上之后可访问名才是本节说的"行文本 `DCIM 874`"。
 - **收起的子树必须常驻 DOM**（这是 B 的前提），所以**必须补 `inert` + `aria-hidden`**，否则收起的子行会漏进 Tab 顺序和无障碍树。`src/components/collapsible-bar.tsx:25-26` 与 `src/components/panel.tsx:28-29` 已经是这个写法，照抄即可。注意：本方案下这两个属性在收起状态下是**长期**成立，不只是动画期间。
-- **占位行不是按钮**，`aria-hidden="true"`，不可聚焦。用一个 `role="status"` 的视觉隐藏文案（复用已有的 `devices.loading`，`src/i18n/zh.ts:116` = "加载中..."）向读屏说明正在加载，不新增 i18n key。
-- 行按钮的可访问名保持现状（行文本 `DCIM 874` 已经是合理的名字），不额外加 `aria-label`。
+- **占位行不是按钮**，不可聚焦，`aria-hidden` 掉视觉部分。用一个 `role="status"` 的视觉隐藏文案（复用已有的 `devices.loading`，`src/i18n/zh.ts:116` = "加载中..."）向读屏说明正在加载，不新增 i18n key。已知局限：实时区域是随内容一起插入的，部分读屏不一定播报；主信号仍是父行的 `aria-expanded="true"`。
+- 行按钮本身不额外加 `aria-label`（它的文本内容就是名字）。
 
 ## 8. 减少动效
 

@@ -185,7 +185,7 @@ Expected: `FAIL 行高不是 24: ...=20.5`，以及 `可展开行 aria-expanded:
         }`}
         style={{ paddingLeft: `${depth * 12 + 8}px`, paddingRight: "4px" }}
       >
-        <span className="tree-caret text-[10px] w-3 flex-shrink-0 flex items-center justify-center">
+        <span className="tree-caret text-[10px] w-3 flex-shrink-0 flex items-center justify-center" aria-hidden="true">
           {canExpand ? <i>▶</i> : <Folder theme="filled" size={12} />}
         </span>
         <span className="truncate">{node.name}</span>
@@ -197,7 +197,9 @@ Expected: `FAIL 行高不是 24: ...=20.5`，以及 `可展开行 aria-expanded:
       </button>
 ```
 
-注意三处改动：加 `tree-row` 类；**删掉内联的 `paddingTop` / `paddingBottom`**（高度已由类给出，`items-center` 负责垂直居中）；箭头从 `{canExpand ? (open ? "▼" : "▶") : <Folder .../>}` 改成恒为 `<i>▶</i>`，靠 `aria-expanded` 驱动 CSS 旋转。
+注意四处改动：加 `tree-row` 类；**删掉内联的 `paddingTop` / `paddingBottom`**（高度已由类给出，`items-center` 负责垂直居中）；箭头从 `{canExpand ? (open ? "▼" : "▶") : <Folder .../>}` 改成恒为 `<i>▶</i>`，靠 `aria-expanded` 驱动 CSS 旋转；箭头那层 span 加 **`aria-hidden="true"`**。
+
+> 为什么加 `aria-hidden`：这个 span 是装饰，但它现在**在按钮的可访问名里** —— 读屏会把整行读成"▶ DCIM 874"。规格 §7 写的是"可访问名保持现状（行文本 `DCIM 874`）"，而现状其实带着那个箭头字形，所以这里要顺手修正，让实际行为和规格描述一致。
 
 - [ ] **Step 5: 跑探针，确认三处断言都通过**
 
@@ -581,7 +583,7 @@ export function FolderTreeItem({
         }`}
         style={{ paddingLeft: `${depth * 12 + 8}px`, paddingRight: "4px" }}
       >
-        <span className="tree-caret text-[10px] w-3 flex-shrink-0 flex items-center justify-center">
+        <span className="tree-caret text-[10px] w-3 flex-shrink-0 flex items-center justify-center" aria-hidden="true">
           {canExpand ? <i>▶</i> : <Folder theme="filled" size={12} />}
         </span>
         <span className="truncate">{node.name}</span>
@@ -760,7 +762,22 @@ const GAP = process.argv[2] || "250";
 // 退出码: 0 = 平滑 (>3 台阶); 1 = 跳变; 采集失败时也返回 0 并在输出里标 SKIP
 ```
 
-同时把 `.design-audit/_probe/verify-tree-motion.mjs`（四机理对照，量 `grid-template-rows` / `height:auto` / 占位行 / 仅行淡入的高度轨迹）也一并复制成 `docs/evidence/scripts/verify-tree-motion-mechanisms.mjs`，同样去掉绝对路径。
+同时把 `.design-audit/_probe/verify-tree-motion.mjs`（四机理对照，量 `grid-template-rows` / `height:auto` / 占位行 / 仅行淡入的高度轨迹）也一并提出去。⚠️ **它必须和 `.design-audit/_probe/tree-motion.html` 一起** —— 那个脚本是用 `file://` 打开这个 HTML 的，只复制 .mjs 会得到一个打不开的探针：
+
+```bash
+copy .design-audit\_probe\tree-motion.html docs\evidence\scripts\tree-motion.html
+copy .design-audit\_probe\verify-tree-motion.mjs docs\evidence\scripts\verify-tree-motion-mechanisms.mjs
+```
+然后把 `verify-tree-motion-mechanisms.mjs` 里写死的 `file:///A:/tenent/.design-audit/_probe/tree-motion.html` 改成同目录下的相对路径：
+
+```js
+import { fileURLToPath } from "node:url";
+import { dirname, resolve } from "node:path";
+const HERE = dirname(fileURLToPath(import.meta.url));
+const FILE = "file:///" + resolve(HERE, "tree-motion.html").replace(/\\/g, "/") + "?d=" + D;
+```
+
+在 `docs/evidence/README.md` 里注明 `tree-motion.html` 是「探针页面（含四个机理的对照实现），由 `verify-tree-motion-mechanisms.mjs` 打开」。
 
 - [ ] **Step 2: 跑四档卡速并把原始输出存成证据**
 
