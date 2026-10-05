@@ -54,7 +54,10 @@
 新建 `.design-audit/_probe/verify-tree-row-geometry.mjs`。它复用已有的 `mock-tree.js` 桩（`browse_directory` 只返回一层子目录，与 Rust 一致）和 `playwright-core`（从 DSH profile 解析）：
 
 ```js
-// 树行几何断言：行高必须 24px（WCAG 2.5.8），箭头必须不随展开/收起改变文字位置。
+// 树行几何断言：
+//   1. 行高必须 24px（WCAG 2.5.8）
+//   2. 箭头必须是同一个字形 + 靠 transform 旋转（不是 ▶/▼ 换字形）
+//   3. 可展开的行有 aria-expanded，叶子没有该属性
 import { createRequire } from "node:module";
 import { readFileSync } from "node:fs";
 const require = createRequire("file:///C:/Users/11/.dsh/profiles/desktop/");
