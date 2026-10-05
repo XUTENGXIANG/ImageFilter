@@ -1069,14 +1069,62 @@ C. **落地页 demo 的 mock 层**（另一个仓库）：命令签名一变那�
 ### 会话 ⑤（Phase 6）— ✅ 会话 ④ 已完成（见决策日志），现在可用
 
 ```text
-接着做 docs/ImageFilter-功能实施方案.md 的 Phase 6（导入历史 / 命名方案预设 / 结果统计）。
+接着做 docs/ImageFilter-功能实施方案.md 的 Phase 6（导入历史 / 命名方案预设 / 导入结果统计）。
 
-先读该文档的 Phase 6 一节和文末决策日志，再只输出改动计划，
-按三个独立提交组织：6.1 历史界面、6.2 方案预设（含先修 save_rule 的 is_default bug）、
-6.3 ImportSummary 契约变更（含 {seq} 独立计数与 verifying 状态）。
-我确认后再动手。
+先读：Phase 6 一节 + 文末决策日志（会话 ⓪①②③④ 都要读）+ 开头「共同的前置约束」9 条。
+（文档里的行号是写文时记的，可能已漂移，请按符号名找。）
 
-约束：ImportSummary 是契约变更，请明确列出前端所有受影响调用点；
-提醒我同步落地页仓库的 mock 层；i18n 双写。
+基线：会话 ④ 收尾后的 HEAD（`08b581c` 之后只有 docs 提交）· `cargo test --lib` 52 活跃 + 3 ignored ·
+`npx tsc --noEmit` exit 0 · `npx vite build` exit 0 · i18n zh/en 各 **219** 个叶子 key 完全对齐 ·
+Phase 5 实机清单 **29/29** 已验（含边车复制的 3 条单测）。
+
+然后**只输出改动计划**，不要动代码，按三个独立提交组织，逐条回答：
+1. **6.1 导入历史界面**：`get_import_history` 的调用链、`importHistory` 状态放哪、UI 放设置对话框还是新面板；
+   `limit` 改成显式传 + 加一个 count 查询的签名；列表**同时显示 `source_path` 与 `dest_path`**
+   （`{seq}` 改名后原文件名的唯一补救）。
+2. **6.2 命名模板预设**：先说清 [db.rs] 里 `save_rule` 的 `INSERT OR REPLACE` bug 怎么修
+   （改 `ON CONFLICT(name) DO UPDATE`，否则每次保存都把 `is_default` 重置）；再给
+   "方案下拉 → 写入 folderRule/fileRule/customFolder + 另存为" 的数据流；
+   [advanced-options.tsx] 勾"按序号重命名"写死 `{seq}.{ext}` 的问题怎么改
+   —— **默认行为必须保持不变**（否则老用户升级后归档结构突变）。
+3. **6.3 ImportSummary 契约变更**：结构体字段、`ImportedFile.renamed` 在哪置位、`verifying` 怎么拆成两条进度、
+   **`{seq}` 独立计数**的落点（跳过也要递增，保持"编号=拍摄顺序位次"）；
+   **列出前端所有受影响调用点**（含 import-bar 的四行明细）；并给出**官网 mock 同步清单**
+   （另一仓库 `A:\ImageFilter-Website`：重跑 demo/ui 逐文件副本 + 改 `src/demo/mock/tauri-mock.ts` 命令表；
+   未知命令会直接 throw → 官网迷你演示白屏）。
+4. **不许碰坏的**：Phase 5 刚加进 `import_photos` 的边车复制（`copy_sidecar`）与它的 3 条单测必须保持绿；
+   进度里 `status: "sidecar"` 那一行要保留。
+
+必须明确表态：`import_photos` 返回值是**契约变更**，你打算怎么保证"前端 + 官网 mock 同时改完"
+（顺序、清单、验证手段）。
+
+约束（照抄，别打折）：
+- i18n **双写** zh/en（当前各 **219** 个叶子 key），插值一律**单括号 {n}** —— i18n/index.ts 把 prefix/suffix
+  改成了 { }，写成 {{n}} 会原样显示（会话 ② 踩过）；
+- 所有 `overflow-auto` 容器一律带 `no-scrollbar`；**给设置对话框加行要重新算总高**（会话 ③ 第 28 项踩过）；
+- 除 Phase 6 设计内的 src-tauri 改动外不动 Rust；**不加任何第三方依赖**；
+- 纯逻辑验证用"临时脚本 + 仓库自带 esbuild 转译 + Node 断言，用完即删"，**不要引入 vitest、
+  不要动 vite.config.ts**（可能有并发会话在改）；
+- **禁止 `git add -A` / `git commit -a`**：只 add 明确路径；`src-tauri/Cargo.toml`（非本会话的行尾符噪音）、
+  `task-7-review-package.decoded.txt`（不属本项目）、`_probe/`（会话 ④ 的实机证据目录）都不要提交；
+- 收尾四件套：`npx tsc --noEmit` + `npx vite build`（报 exit code）、i18n 静态校验、
+  GUI 手测清单照「附 · 会话 ②/③ 手测清单」的样子写进文档（未实机验证的项标清楚）、
+  按模板追加「会话 ⑤」决策日志 —— 按 6.1 / 6.2 / 6.3 拆成三个提交。
+
+实机验收怎么做（会话 ④ 的经验，直接照用）：
+- 用全局 skill：`C:\Users\11\.agents\skills\testing-windows-gui-apps\SKILL.md`（配套 `scripts\gui.ps1`；
+  必须用 **`powershell.exe -NoProfile -File`** 跑，pwsh 7 加载不了 UIA 程序集）：
+  `list/rect/focus/shot/crop/click/clickrel/key/uia-*/leveldb*` —— 截图当眼睛、元素树定位、注入按键鼠标、读 localStorage；
+- **原生"选目录"对话框（IFileDialog）自动化不了**（地址栏在 UIA 里不是 Edit；`F4` 后输入是**追加**；
+  `Alt+D`+Enter 会把对话框直接确认掉）→ 这一步**请使用者点一次**，其余步骤脚本接管；
+- **测试期间不要改本仓库里被 Vite watch 的文件**（含 `docs/*.md`、以及跑 `vite build` 写 `dist/`），
+  否则 dev 页面**整页重载**、被测状态被重置（会话 ④ 因此白跑过两轮）；
+- 查看器里 `0` 是"重置视图"、打 0 星要用 **`X`**；判定"查看器是否打开"要看**文件名 + `N / M`**，
+  别用欢迎页也有的提示文案（会话 ④ 因此误判过两次）；
+- LevelDB 里的 localStorage 是**滞后真相**（Chromium 攒批落盘，实测滞后 1–5 秒）——
+  判定"刚才那一下成功没有"要用元素树/截图，DB 只用于审计；
+- 「附 · 每个 Phase 做完都要跑的回归清单」第 2 项的措辞与实现不符（实现是"**前进到下一张**"，
+  不是"关闭"），别照它判失败。
 ```
+
 
