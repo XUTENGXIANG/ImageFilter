@@ -97,12 +97,20 @@ const tree = () => page.evaluate(() => {
       text: b.textContent.trim().slice(0, 12),
       h: +r.height.toFixed(2),
       w: +r.width.toFixed(2),
-      nameLeft: name ? +name.getBoundingClientRect().left.toFixed(2) : null,
-      caret: (() => { const c = b.querySelector(".tree-caret"); return c ? +c.getBoundingClientRect().width.toFixed(2) : null; })(),
       aria: b.getAttribute("aria-expanded"),
     };
   });
 });
+
+// ── 判定与退出码 ──
+// 这个探针是本任务唯一的验证产物，而 Task 4 会把它归档进 docs/evidence/。
+// 只在 console 里喊 FAIL 而不设退出码，等于任何自动化调用者都会把回归读成成功
+// （实测过：旧版打印 FAIL 之后仍然 exit=0）。所以判定一律走 check()。
+let failed = 0, passed = 0;
+function check(ok, label, detail) {
+  if (ok) { passed++; console.log(`ok   ${label}`); }
+  else { failed++; console.log(`FAIL ${label}${detail ? "  " + detail : ""}`); }
+}
 
 const before = await tree();
 const heights = [...new Set(before.map((r) => r.h))];
@@ -110,7 +118,7 @@ console.log("行数:", before.length, " 去重行高:", heights.join(", "));
 
 // 断言 1：行高 24
 const badH = before.filter((r) => r.h !== 24);
-console.log(badH.length ? `FAIL 行高不是 24: ${badH.map((r) => r.text + "=" + r.h).join(", ")}` : "ok  所有行高 24px");
+check(badH.length === 0, "所有行高 24px", badH.map((r) => `${r.text}=${r.h}`).join(", "));
 
 // 断言 2：箭头必须是**同一个字形 + 靠 transform 旋转**，而不是换字形。
 // ⚠️ 别写成"展开后其它行的文字不位移" —— 旧实现里箭头那层 span 是固定的
@@ -134,32 +142,73 @@ const openCaret = await caretOf("102EOSR5");
 console.log("收起态箭头:", JSON.stringify(closedCaret));
 console.log("展开态箭头:", JSON.stringify(openCaret));
 
-const sameGlyph = !!closedCaret.glyph && closedCaret.glyph === openCaret.glyph;
-const rotated = closedCaret.transform === "none" && openCaret.transform !== "none";
-console.log(sameGlyph
-  ? `ok   两个状态是同一个字形 "${closedCaret.glyph}"`
-  : `FAIL 箭头换了字形: "${closedCaret.glyph}" → "${openCaret.glyph}"`);
-console.log(rotated
-  ? `ok   靠 transform 旋转（${openCaret.transform}）`
-  : `FAIL 展开态没有 transform: ${openCaret.transform}`);
+check(!!closedCaret.glyph && closedCaret.glyph === openCaret.glyph,
+  `两个状态是同一个字形 "${closedCaret.glyph}"`,
+  `"${closedCaret.glyph}" → "${openCaret.glyph}"`);
+// 只判 !== "none" 不够：rotate(180deg) 或 scale(0) 也会通过。
+// 直接把矩阵钉成 rotate(90deg) 在 Chromium 里的形式 matrix(0, 1, -1, 0, 0, 0)。
+check(closedCaret.transform === "none" && openCaret.transform === "matrix(0, 1, -1, 0, 0, 0)",
+  "靠 transform: rotate(90deg) 旋转",
+  `收起 ${closedCaret.transform} / 展开 ${openCaret.transform}`);
+
 const after = await tree();
 
-// 断言 3：可展开的行有 aria-expanded，叶子没有
-const branches = after.filter((r) => r.text.includes("EOSR5") || r.text.includes("DCIM"));
-const leaves = after.filter((r) => r.text.includes("CANON"));
-console.log("可展开行 aria-expanded:", JSON.stringify(branches.map((r) => r.aria)));
-console.log("叶子行 aria-expanded:", JSON.stringify(leaves.map((r) => r.aria)));
+// 断言 3：可展开的行有 aria-expanded，叶子**一个属性都没有**（不是 "false"）。
+// 分类必须按"有没有箭头元素"判，不能按名字里有没有 "EOSR5" —— 叶子 103EOSR5 会被
+// 名字子串扫进"可展开行"那一桶，把唯一一眼可见的那行标签写错。
+const rowInfo = await page.evaluate(() => {
+  const root = [...document.querySelectorAll("button")].find((b) => b.textContent.includes("根目录"));
+  return [...root.parentElement.querySelectorAll("button")]
+    .filter((b) => !b.textContent.includes("根目录"))
+    .map((b) => ({ name: b.textContent.trim().slice(0, 12), expandable: !!b.querySelector(".tree-caret i"), aria: b.getAttribute("aria-expanded") }));
+});
+const expandableRows = rowInfo.filter((r) => r.expandable);
+const leafRows = rowInfo.filter((r) => !r.expandable);
+console.log("可展开行的 aria-expanded:", JSON.stringify(expandableRows.map((r) => [r.name, r.aria])));
+console.log("叶子行的 aria-expanded:", JSON.stringify(leafRows.map((r) => [r.name, r.aria])));
+check(expandableRows.length > 0 && expandableRows.every((r) => r.aria === "true" || r.aria === "false"),
+  "可展开行都有 aria-expanded（true 或 false）",
+  JSON.stringify(expandableRows.map((r) => [r.name, r.aria])));
+check(leafRows.length > 0 && leafRows.every((r) => r.aria === null),
+  "叶子行完全没有 aria-expanded 属性（不是 false）",
+  JSON.stringify(leafRows.map((r) => [r.name, r.aria])));
+
+// 断言 4：箭头字形不能进可访问名 —— 这是本轮 aria-hidden="true" 改动的**唯一目的**，
+// 加了属性却不断言它，等于这个改动没有任何验证覆盖。
+// 算法：把 aria-hidden 的子树摘掉再看文本，与可访问名"隐藏子树不参与"的规则一致。
+const accName = (n) => page.evaluate((name) => {
+  const root = [...document.querySelectorAll("button")].find((b) => b.textContent.includes("根目录"));
+  const row = [...root.parentElement.querySelectorAll("button")].find((r) => r.textContent.includes(name));
+  const clone = row.cloneNode(true);
+  clone.querySelectorAll('[aria-hidden="true"]').forEach((e) => e.remove());
+  return clone.textContent.replace(/\s+/g, " ").trim();
+}, n);
+const nameDCIM = await accName("DCIM");
+const nameLeaf = await accName("100CANON");
+console.log("可访问名:", JSON.stringify({ DCIM: nameDCIM, "100CANON": nameLeaf }));
+check(!/[▶▼]/.test(nameDCIM + nameLeaf), "箭头字形不在可访问名里", JSON.stringify({ nameDCIM, nameLeaf }));
+check(nameDCIM.startsWith("DCIM"), "可访问名以行文本开头", nameDCIM);
 
 await page.screenshot({ path: "A:\\tenent\\.design-audit\\_probe\\tree-row-after.png" });
 console.log("page errors:", errs.length ? errs : "none");
+check(errs.length === 0, "无页面错误", JSON.stringify(errs));
 await browser.close();
+
+console.log(`\n${failed === 0 ? "ALL PASS" : "FAILURES"}: ${passed} passed, ${failed} failed`);
+process.exitCode = failed === 0 ? 0 : 1;
 ```
 
 - [ ] **Step 2: 跑探针，确认它现在失败**
 
 Run: `node .design-audit\_probe\verify-tree-row-geometry.mjs`
-Expected: `FAIL 行高不是 24: ...=20.5`，以及 `可展开行 aria-expanded: [null, null...]`。
-（先决条件：`npm run tauri dev` 已在跑，Vite 在 `localhost:1420`。Vite 只绑 IPv6，必须用 `localhost` 而不是 `127.0.0.1`。）
+Expected: **退出码 1**，末行 `FAILURES: N passed, 8 failed` 里至少有这五条：
+- `FAIL 所有行高 24px  100CANON=20.5, …`
+- `FAIL 两个状态是同一个字形 "▶"  "▶" → "▼"`
+- `FAIL 靠 transform: rotate(90deg) 旋转  收起 none / 展开 none`
+- `FAIL 可展开行都有 aria-expanded（true 或 false）  []` —— 旧代码里根本没有 `.tree-caret`，按"有没有箭头元素"分类时一个可展开行都认不出来
+- `FAIL 箭头字形不在可访问名里  {"DCIM":"▶DCIM874",…}` —— 加 `aria-hidden` 之前，箭头确实在可访问名里
+
+先决条件：`npm run tauri dev` 已在跑，Vite 在 `localhost:1420`（只绑 IPv6，不能用 `127.0.0.1`）。
 
 - [ ] **Step 3: 在 index.css 追加行与箭头的规则**
 
@@ -223,15 +272,14 @@ Expected: `FAIL 行高不是 24: ...=20.5`，以及 `可展开行 aria-expanded:
       </button>
 ```
 
-注意四处改动：加 `tree-row` 类；**删掉内联的 `paddingTop` / `paddingBottom`**（高度已由类给出，`items-center` 负责垂直居中）；箭头从 `{canExpand ? (open ? "▼" : "▶") : <Folder .../>}` 改成恒为 `<i>▶</i>`，靠 `aria-expanded` 驱动 CSS 旋转；箭头那层 span 加 **`aria-hidden="true"`**。
+注意**五处**改动：加 `tree-row` 类；**删掉内联的 `paddingTop` / `paddingBottom`**（高度已由类给出，`items-center` 负责垂直居中）；箭头从 `{canExpand ? (open ? "▼" : "▶") : <Folder .../>}` 改成恒为 `<i>▶</i>`，靠 `aria-expanded` 驱动 CSS 旋转；箭头那层 span 加 **`aria-hidden="true"`**；叶子的 `size="12"` 写成 `size={12}`（React 两种写法渲染结果相同，只是跟着 JSON 风格的属性写法走）。
 
 > 为什么加 `aria-hidden`：这个 span 是装饰，但它现在**在按钮的可访问名里** —— 读屏会把整行读成"▶ DCIM 874"。规格 §7 写的是"可访问名保持现状（行文本 `DCIM 874`）"，而现状其实带着那个箭头字形，所以这里要顺手修正，让实际行为和规格描述一致。
 
-- [ ] **Step 5: 跑探针，确认三处断言都通过**
+- [ ] **Step 5: 跑探针，确认八条断言全通过**
 
 Run: `node .design-audit\_probe\verify-tree-row-geometry.mjs`
-Expected: `ok  所有行高 24px`、`ok   两个状态是同一个字形 "▶"`、`ok   靠 transform 旋转（matrix(...)）`、可展开行的 `aria-expanded` 至少有一个 `"true"`、叶子行是 `null`、`page errors: none`。
-（`tree()` 里可以顺手删掉已不再使用的 `nameLeft`。）
+Expected: **退出码 0**，末行 `ALL PASS: 8 passed, 0 failed`，包含 `ok   所有行高 24px`、`ok   两个状态是同一个字形 "▶"`、`ok   靠 transform: rotate(90deg) 旋转`、`ok   可展开行都有 aria-expanded（true 或 false）`、`ok   叶子行完全没有 aria-expanded 属性（不是 false）`、`ok   箭头字形不在可访问名里`、`ok   可访问名以行文本开头`、`ok   无页面错误`。
 
 - [ ] **Step 6: 看图确认旋转后的 ▶ 读起来是"向下"且光学居中**
 
