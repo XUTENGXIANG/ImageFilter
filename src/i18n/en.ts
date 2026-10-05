@@ -52,6 +52,7 @@ export default {
     lrcNotRunning: "not running",
     transparentBg: "Transparent frosted background",
     transparentBgDesc: "Windows Mica glass background",
+    transparentBgUnsupported: "Not available on this system (requires Windows 11)",
     transparentBgOpacity: "Title bar glass opacity",
     transparentBgOpacityDesc: "Title bar only",
     backgroundOpacity: "Background glass opacity",

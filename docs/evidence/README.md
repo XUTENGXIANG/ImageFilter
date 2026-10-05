@@ -50,7 +50,9 @@
 | `verify-tree-motion.mjs` | 文件夹树展开的**容器高度轨迹**（判据：台阶数 > 3 且单帧跨度 ≤ 总行程 35%；退出码 0/1） | `node verify-tree-motion.mjs <卡速ms>`，需先跑 `npm run tauri dev` |
 | `verify-tree-inert.mjs` | 收起后的子树是否真的不可 Tab 到，以及嵌套展开有没有被裁 | 同上 |
 | `verify-tree-row-geometry.mjs` | 树行 24px / 箭头同字形靠 transform 旋转 / `aria-expanded` 的有无 / 可访问名不含箭头 | 同上 |
-| `tree-mock.js` | 上面三个脚本共用的 Tauri IPC 桩（`browse_directory` 只返回一层子目录，与 Rust 一致） | 由脚本读取，`?gap=N` 模拟卡速 |
+| `tree-mock.js` | 上面四个脚本共用的 Tauri IPC 桩（`browse_directory` 只返回一层子目录，与 Rust 一致；也提供 `get_os_capabilities`） | 由脚本读取，`?gap=N` 模拟卡速、`?win10=1` / `?osfail=1` 模拟系统能力 |
+| `os-default-glass.test.ts` | `src/os-capability.ts` 的纯逻辑断言（17 条：stored × 五种系统能力） | 见 `mica-os-default/EVIDENCE.md` §7 |
+| `verify-os-default.mjs` | 玻璃开关默认值的端到端（4 场景：Win11 / 模拟 Win10 / 老用户已存值 / 探测失败） | 同上，需先跑 `npm run tauri dev` |
 
 跑浏览器脚本时注意路径：它们把 `playwright-core` 按本机 DSH profile 解析，换机器用 `PW_BASE` 环境变量覆盖。
 

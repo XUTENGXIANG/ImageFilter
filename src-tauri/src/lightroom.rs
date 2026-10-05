@@ -200,7 +200,7 @@ fn exe_from_command_line(cmd: &str) -> Option<String> {
 // ── Windows 注册表探测 ──────────────────────────────────────────────
 
 #[cfg(target_os = "windows")]
-mod win {
+pub(crate) mod win {
     use super::*;
     use windows::core::PCWSTR;
     use windows::Win32::Foundation::ERROR_SUCCESS;
@@ -213,7 +213,11 @@ mod win {
     ///
     /// 刻意只做"读字符串"这一件事: 本模块需要的信息(文件关联的 open 命令、
     /// 卸载项的 InstallLocation)全是字符串。类型不对就当没有。
-    fn reg_read_string(hkey: HKEY, subkey: &str, value: Option<&str>) -> Option<String> {
+    ///
+    /// `pub(crate)`: lib.rs 的 `get_os_capabilities` 也用它读 `CurrentBuildNumber`。
+    /// 读注册表字符串是 Windows 通用管道, 不值得为它再写第二份 —— 两份 unsafe 的
+    /// 句柄/缓冲区处理比一次跨模块调用更容易出错。
+    pub(crate) fn reg_read_string(hkey: HKEY, subkey: &str, value: Option<&str>) -> Option<String> {
         let sub_w: Vec<u16> = subkey.encode_utf16().chain(std::iter::once(0)).collect();
 
         let mut opened = HKEY::default();

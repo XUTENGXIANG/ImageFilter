@@ -48,6 +48,85 @@ fn set_glass_bg(app: tauri::AppHandle, enabled: bool, dark: bool) -> Result<(), 
     Ok(())
 }
 
+/// Mica 是 Windows 11(build >= 22000)才有的效果。
+///
+/// 边界核对: Win10 22H2 = 19045 ✓排除 · Windows Server 2022 = 20348 ✓排除(无 Mica)
+///          · Win11 21H2 = 22000 ✓纳入 · 本机 26200 ✓纳入
+///
+/// 为什么抽成纯函数: 本机是 Win11, "Win10 上会怎样"这条分支**没法实机验证**,
+/// 抽出来至少能把边界用单测钉死。
+pub fn mica_supported_by_build(build: u32) -> bool {
+    build >= 22000
+}
+
+/// 系统能力探测结果。字段名与前端 `OsCapabilities` 一一对应(serde camelCase)。
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OsCapabilities {
+    /// "windows" / "macos" / "linux"
+    platform: &'static str,
+    /// Windows 构建号。读不到时为 None —— 前端据此判定"探测失败", 从而**不改动**默认值。
+    windows_build: Option<u32>,
+    supports_mica: bool,
+}
+
+/// 启动时问一次: 这台机器的系统支持 Mica 吗?
+///
+/// 判据必须用**构建号**, 不能用 `ProductName`: Win11 出于兼容性不更新 ProductName
+/// (本机实测 ProductName = "Windows 10 Pro for Workstations", 而真值是 Win11 25H2 / 26200),
+/// 而 `navigator.userAgent` 对 Win10/Win11 都报 "Windows NT 10.0"。
+///
+/// 注意 `windows_build: None` 的语义: 它表示**探测失败**, 不是"不支持"。
+/// 前端只在 windowsBuild 非 null 时才拿 supports_mica 当默认值 —— 否则一次注册表读取
+/// 失败就会把 Win11 用户的玻璃默认关掉, 还把设置里的开关置灰。
+#[tauri::command]
+fn get_os_capabilities() -> OsCapabilities {
+    #[cfg(target_os = "windows")]
+    {
+        use windows::Win32::System::Registry::HKEY_LOCAL_MACHINE;
+        let build = crate::lightroom::win::reg_read_string(
+            HKEY_LOCAL_MACHINE,
+            r"SOFTWARE\Microsoft\Windows NT\CurrentVersion",
+            Some("CurrentBuildNumber"),
+        )
+        .and_then(|s| s.trim().parse::<u32>().ok());
+
+        OsCapabilities {
+            platform: "windows",
+            windows_build: build,
+            supports_mica: build.map(mica_supported_by_build).unwrap_or(false),
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        // macOS/Linux: Mica 不存在。platform 非 "windows", 前端因此保持今天的行为
+        // (默认开、不置灰) —— 见 docs/superpowers/specs/...-mica-os-default-design.md §6
+        OsCapabilities {
+            platform: std::env::consts::OS,
+            windows_build: None,
+            supports_mica: false,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::mica_supported_by_build;
+
+    #[test]
+    fn mica_boundary() {
+        // Win10 22H2 / Server 2022: 无 Mica
+        assert!(!mica_supported_by_build(19045));
+        assert!(!mica_supported_by_build(20348));
+        // 边界两侧
+        assert!(!mica_supported_by_build(21999));
+        assert!(mica_supported_by_build(22000));
+        // Win11 23H2 / 25H2
+        assert!(mica_supported_by_build(22621));
+        assert!(mica_supported_by_build(26200));
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -102,6 +181,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             allow_asset_dir,
             set_glass_bg,
+            get_os_capabilities,
             db::get_import_history,
             db::count_import_history,
             db::get_rules,

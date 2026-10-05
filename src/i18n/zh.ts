@@ -53,6 +53,7 @@ export default {
     lrcNotRunning: "未运行",
     transparentBg: "透明毛玻璃背景",
     transparentBgDesc: "用 Windows Mica 玻璃背景",
+    transparentBgUnsupported: "当前系统不支持（需要 Windows 11）",
     transparentBgOpacity: "标题栏玻璃透明度",
     transparentBgOpacityDesc: "只影响标题栏",
     backgroundOpacity: "背景玻璃透明度",

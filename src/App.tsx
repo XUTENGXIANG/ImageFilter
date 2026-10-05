@@ -12,6 +12,11 @@ import { WelcomeGuide } from "./components/welcome-guide";
 import { ScrollFadeZone } from "./components/scroll-fade-zone";
 import { FolderTreeItem } from "./components/folder-tree-item";
 import { PhotoCard } from "./components/photo-card";
+import {
+  osDefaultGlass,
+  micaUnsupported as isMicaUnsupported,
+  type OsCapabilities,
+} from "./os-capability";
 import { PhotoToolbar } from "./components/photo-toolbar";
 import { ImportBar } from "./components/import-bar";
 import { LrcProgressDialog } from "./components/lrc-progress-dialog";
@@ -158,7 +163,7 @@ const PhotoGridItem = memo(function PhotoGridItem({
   );
 });
 
-function App() {
+function App({ osCapabilities }: { osCapabilities: OsCapabilities }) {
   const { t } = useTranslation();
   const {
     drives,
@@ -497,8 +502,15 @@ function App() {
     [handlePhotoClick]
   );
 
-  // 透明毛玻璃背景: 默认开启, 深色/浅色随主题切换
-  const [transparentBg, setTransparentBg] = useState<boolean>(() => localStorage.getItem("imagefilter-glass") !== "0");
+  // 透明毛玻璃背景: 默认值由系统能力决定(Win11 开 / Win10 关 / 非 Windows 或探测失败保持开),
+  // 但**用户存过就永远听用户的**。判据见 os-capability.ts 的 osDefaultGlass。
+  const [transparentBg, setTransparentBg] = useState<boolean>(() =>
+    osDefaultGlass(osCapabilities, localStorage.getItem("imagefilter-glass")),
+  );
+
+  // 置灰只对「确认是 Windows 且确认读到了构建号且不支持」生效。
+  // 不能只看 platform —— 否则一次注册表读取失败就会把 Win11 用户的开关置灰。
+  const micaUnsupported = isMicaUnsupported(osCapabilities);
 
   useEffect(() => {
     localStorage.setItem("imagefilter-glass", transparentBg ? "1" : "0");
@@ -645,6 +657,7 @@ function App() {
         onLrcModeChange={setLrcMode}
         onReprobeLightroom={probeLightroom}
         transparentBg={transparentBg}
+        micaUnsupported={micaUnsupported}
         onToggleTransparentBg={() => setTransparentBg((v) => !v)}
         backgroundOpacity={backgroundOpacity}
         onBackgroundOpacityChange={setBackgroundOpacity}

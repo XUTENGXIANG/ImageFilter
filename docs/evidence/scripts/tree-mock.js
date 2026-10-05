@@ -75,6 +75,13 @@
 
   function stub(cmd, args) {
     switch (cmd) {
+      // 系统能力桩。缺省模拟本机(Win11 / 26200 → 支持 Mica)。
+      //   ?win10=1  → 模拟 Win10(19045, 不支持) —— 验默认关 + 置灰
+      //   ?osfail=1 → 返回 null, 模拟"读不到构建号" —— 验前端退回今天的行为
+      case "get_os_capabilities":
+        if (Q.has("win10")) return { platform: "windows", windowsBuild: 19045, supportsMica: false };
+        if (Q.has("osfail")) return null;
+        return { platform: "windows", windowsBuild: 26200, supportsMica: true };
       case "detect_drives":
         return [{ mountPoint: E, driveType: "removable", label: "EOS_DIGITAL", available: true }];
       case "browse_directory":

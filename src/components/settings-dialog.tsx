@@ -34,6 +34,8 @@ interface Props {
   onReprobeLightroom: () => void;
   transparentBg: boolean;
   onToggleTransparentBg: () => void;
+  /** 系统不支持 Mica(Win10)时为真 */
+  micaUnsupported: boolean;
   glassOpacity: number;
   onGlassOpacityChange: (v: number) => void;
   backgroundOpacity: number;
@@ -77,7 +79,7 @@ function OpacitySlider({
 
 export function SettingsDialog({
   open, onOpenChange, theme, onThemeChange, lang, onLangChange,
-  preloadFull, onTogglePreloadFull, transparentBg, onToggleTransparentBg,
+  preloadFull, onTogglePreloadFull, transparentBg, onToggleTransparentBg, micaUnsupported,
   autoAdvance, onToggleAutoAdvance,
   labelModifier, onLabelModifierChange,
   xmpMode, onXmpModeChange, xmpStatus,
@@ -239,8 +241,13 @@ export function SettingsDialog({
             </div>
           </SettingRow>
 
-          <SettingRow title={t("settings.transparentBg")} desc={t("settings.transparentBgDesc")}>
-            <Toggle checked={transparentBg} onChange={onToggleTransparentBg} />
+          {/* Win10 置灰: Mica 在 build < 22000 上不存在, 这个开关打开也没有效果。
+              说明文案也一起换掉 —— 只置灰不解释, 用户会以为坏了。 */}
+          <SettingRow
+            title={t("settings.transparentBg")}
+            desc={micaUnsupported ? t("settings.transparentBgUnsupported") : t("settings.transparentBgDesc")}
+          >
+            <Toggle checked={transparentBg} onChange={onToggleTransparentBg} disabled={micaUnsupported} />
           </SettingRow>
 
           <SettingRow title={t("settings.transparentBgOpacity")} desc={t("settings.transparentBgOpacityDesc")} dimmed={!transparentBg}>

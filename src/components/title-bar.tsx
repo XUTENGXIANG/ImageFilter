@@ -31,6 +31,7 @@ export function TitleBar({
   onReprobeLightroom,
   transparentBg,
   onToggleTransparentBg,
+  micaUnsupported,
   backgroundOpacity,
   onBackgroundOpacityChange,
 }: {
@@ -51,6 +52,8 @@ export function TitleBar({
   onReprobeLightroom: () => void;
   transparentBg: boolean;
   onToggleTransparentBg: () => void;
+  /** 系统不支持 Mica(Win10)时为真: 设置里把玻璃开关置灰并换掉说明文案 */
+  micaUnsupported: boolean;
   backgroundOpacity: number;
   onBackgroundOpacityChange: (v: number) => void;
 }) {
@@ -164,6 +167,7 @@ export function TitleBar({
         onReprobeLightroom={onReprobeLightroom}
         transparentBg={transparentBg}
         onToggleTransparentBg={onToggleTransparentBg}
+        micaUnsupported={micaUnsupported}
         glassOpacity={glassOpacity}
         onGlassOpacityChange={setGlassOpacity}
         backgroundOpacity={backgroundOpacity}
