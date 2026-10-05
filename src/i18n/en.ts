@@ -327,7 +327,7 @@ export default {
     importingPhotos: "Importing photos…",
     startingLightroom: "Starting Lightroom…",
     importingPhotosBody: "Copying and verifying {done}/{total} photo(s) into the destination folder. Please keep this window open.",
-    startingLightroomBody: "The photos are in place; opening Lightroom's Import dialog now. This can take many seconds (or longer, depending on your catalog size).",
+    startingLightroomBody: "The photos are in place; opening Lightroom's Import dialog now. This can take many seconds (longer with a big catalog). This box closes by itself once the window appears.",
     keepInBackground: "Continue in background",
     sent: "Imported {n} photo(s): {dir}",
     sentStaged: " (destination was not empty — placed in a subfolder; import from that path in LrC)",

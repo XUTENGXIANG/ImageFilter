@@ -472,8 +472,7 @@ mod win {
     ///
     /// 用 ToolHelp 快照按 exe 名判断 —— **不能**用窗口标题: 实测 LrC 主窗口标题
     /// 永远是"图库", 导入是模态对话框、不改标题(见文件头第 1 条)。
-    pub fn is_running() -> bool {
-        use windows::Win32::Foundation::CloseHandle;
+    pub fn is_running() -> bool {        use windows::Win32::Foundation::CloseHandle;
         use windows::Win32::System::Diagnostics::ToolHelp::{
             CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
             TH32CS_SNAPPROCESS,
@@ -507,6 +506,92 @@ mod win {
             let _ = CloseHandle(snap);
             found
         }
+    }
+
+    /// Lightroom 的进程 id(取第一个匹配的)。等窗口时要知道"哪个进程的窗口才算"。
+    pub fn lightroom_pid() -> Option<u32> {
+        use windows::Win32::Foundation::CloseHandle;
+        use windows::Win32::System::Diagnostics::ToolHelp::{
+            CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
+            TH32CS_SNAPPROCESS,
+        };
+
+        unsafe {
+            let Ok(snap) = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) else {
+                return None;
+            };
+            let mut entry = PROCESSENTRY32W::default();
+            entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
+            let mut found: Option<u32> = None;
+            if Process32FirstW(snap, &mut entry).is_ok() {
+                loop {
+                    let wide: Vec<u16> = entry
+                        .szExeFile
+                        .iter()
+                        .take_while(|c| **c != 0)
+                        .copied()
+                        .collect();
+                    if String::from_utf16_lossy(&wide).eq_ignore_ascii_case("lightroom.exe") {
+                        found = Some(entry.th32ProcessID);
+                        break;
+                    }
+                    if Process32NextW(snap, &mut entry).is_err() {
+                        break;
+                    }
+                }
+            }
+            let _ = CloseHandle(snap);
+            found
+        }
+    }
+
+    /// 是否至少有一个属于当前进程的 Lightroom 顶层窗口**已经有标题**。
+    ///
+    /// **为什么不能用 is_running() 代替**: 实测(本机 15.2.1, 4.9MB 目录库)
+    /// 进程出现只要 **0.4 秒**, 而主窗口有标题要到 **4.6 秒**。等进程等于没等 ——
+    /// 前端的"正在启动 Lightroom"提示会一闪而过(实测就是这么被用户看穿的)。
+    pub fn has_main_window(pid: u32) -> bool {
+        use windows::core::BOOL;
+        use windows::Win32::Foundation::{HWND, LPARAM, TRUE};
+        use windows::Win32::UI::WindowsAndMessaging::{
+            EnumWindows, GetWindowTextLengthW, GetWindowThreadProcessId,
+        };
+
+        // EnumWindows 的回调没有"用户数据"参数, 用一层全局暂存传递 pid/结果。
+        // 只在 Windows 且只有本模块用; 进程内调用是串行的(wait_until_started 一次一个)。
+        struct Probe {
+            pid: u32,
+            found: bool,
+        }
+        thread_local! {
+            static PROBE: std::cell::RefCell<Option<Probe>> = const { std::cell::RefCell::new(None) };
+        }
+
+        extern "system" fn cb(hwnd: HWND, _l: LPARAM) -> BOOL {
+            PROBE.with(|p| {
+                if let Some(probe) = p.borrow_mut().as_mut() {
+                    let mut wpid = 0u32;
+                    unsafe { GetWindowThreadProcessId(hwnd, Some(&mut wpid)) };
+                    if wpid == probe.pid {
+                        // 有标题 = 主窗口已经画出来了(标题栏为空的那一堆隐藏窗口不算)
+                        let len = unsafe { GetWindowTextLengthW(hwnd) };
+                        if len > 0 {
+                            probe.found = true;
+                            return BOOL(0); // 找到就停
+                        }
+                    }
+                }
+                TRUE
+            })
+        }
+
+        PROBE.with(|p| *p.borrow_mut() = Some(Probe { pid, found: false }));
+        unsafe {
+            let _ = EnumWindows(Some(cb), LPARAM(0));
+        }
+        let found = PROBE.with(|p| p.borrow().as_ref().map(|x| x.found).unwrap_or(false));
+        PROBE.with(|p| *p.borrow_mut() = None);
+        found
     }
 }
 
@@ -587,6 +672,45 @@ fn force_close_sync() -> Result<(), LrcError> {
         Err(LrcError::NotSupported)
     }
 }
+
+/// 等新启动的 Lightroom **主窗口**真的出现(最多 `timeout`)。
+///
+/// **为什么必须等**: `spawn` 只是把进程创建出来就返回(几毫秒), 而 Lightroom 要
+/// 好几秒才有窗口 —— 实测本机(15.2.1, 4.9MB 目录库) **进程 0.4s / 窗口 4.6s**。
+/// 等"进程"等于没等, 前端那个"正在启动 Lightroom"的提示会因为状态瞬间变回 idle
+/// 而**根本没机会上屏**(实测: 用户只看到"正在导入", 然后就没了)。
+///
+/// 判断依据是**窗口标题非空**, 不是进程存在; 也不能用标题内容判断状态(标题里那个
+/// "图库"是模块名, 导入是模态框、不改标题 —— 见文件头)。
+///
+/// 超时不算失败: 进程已经创建成功, 只是慢 —— 返回 true 让调用方照常报成功。
+fn wait_until_started(timeout: std::time::Duration) -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        let start = std::time::Instant::now();
+        while start.elapsed() < timeout {
+            // 每轮重新取 pid: 首次启动时进程可能还没起来, 不能只取一次
+            if let Some(pid) = win::lightroom_pid() {
+                if win::has_main_window(pid) {
+                    return true;
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(250));
+        }
+        false
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = timeout;
+        true
+    }
+}
+
+/// 启动 Lightroom 后最多等它出现多久。
+///
+/// 实测冷启动到有窗口约 6–12 秒(本机 4.9MB 目录库); 大库更久, 所以给足余量。
+/// 超时不会误报失败(进程已创建), 只是提示会提前收起。
+const WAIT_STARTED: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// 等在途的 Lightroom 进程真正消失(最多 `timeout`)。
 ///
@@ -695,7 +819,12 @@ pub async fn send_to_lightroom(folder_path: String) -> Result<String, String> {
             cmd.creation_flags(CREATE_NO_WINDOW);
         }
         match cmd.spawn() {
-            Ok(_child) => Ok(exe),
+            Ok(_child) => {
+                // 等它真的有窗口再返回: 否则前端的"正在启动 Lightroom"提示会因为
+                // 状态瞬间回落而根本看不到(见 wait_until_started 的说明)。
+                wait_until_started(WAIT_STARTED);
+                Ok(exe)
+            }
             Err(e) => {
                 eprintln!("send_to_lightroom: spawn 失败: {}", e);
                 Err(LrcError::LaunchFailed)

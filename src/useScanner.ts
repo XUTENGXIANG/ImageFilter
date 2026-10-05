@@ -1086,7 +1086,7 @@ export function useScanner() {
    * 失败一律只提示、不半途改动用户的数据: 导入失败就不启动 LrC(否则 LrC 会打开
    * 一个空/旧的目录, 用户会以为导入成功了)。
    */
-  const importToLightroom = useCallback(async () => {
+  const importToLightroom = useCallback(async (keepPhase = false) => {
     if (lrcImportingRef.current) return;
     const paths = [...selectedPathsRef.current];
     if (paths.length === 0) return;
@@ -1144,7 +1144,10 @@ export function useScanner() {
     } finally {
       lrcImportingRef.current = false;
       setLrcSending(false);
-      setLrcPhase("idle");
+      // keepPhase=true 表示调用方会自己收尾。forceCloseLightroomAndRetry 走这条路:
+      // 它在 **await importToLightroom() 期间必须让 phase 保持 "launching"**,
+      // 否则"正在启动 Lightroom/正在重新打开"的提示会被这里提前清掉(实测踩过)。
+      if (!keepPhase) setLrcPhase("idle");
     }
   }, [destDir, scheme.folder, pickDestDir, runImport, notifyLrc]);
 
@@ -1163,8 +1166,11 @@ export function useScanner() {
     try {
       await invoke("force_close_lightroom");
       setLrcAlreadyRunning(false);
-      lrcImportingRef.current = false; // 让 importToLightroom 能进来
-      await importToLightroom();
+      // 交还给 importToLightroom: 两个闸门都放开, 并把 phase 的收尾权也交给它
+      // (keepPhase=true), 由本函数的 finally 统一收回 idle。
+      lrcImportingRef.current = false;
+      setLrcSending(false);
+      await importToLightroom(true);
       return;
     } catch (err) {
       console.error("force_close_lightroom:", err);

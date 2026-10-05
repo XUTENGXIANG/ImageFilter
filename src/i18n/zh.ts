@@ -342,7 +342,7 @@ export default {
     importingPhotos: "正在导入照片…",
     startingLightroom: "正在启动 Lightroom…",
     importingPhotosBody: "正在把 {done}/{total} 张照片复制到目标文件夹并校验。请勿关闭本窗口。",
-    startingLightroomBody: "照片已就位，正在打开 Lightroom 的导入页面。它可能要十几秒甚至更久（取决于目录库大小），请稍候。",
+    startingLightroomBody: "照片已就位，正在打开 Lightroom 的导入页面。它可能要十几秒甚至更久（取决于目录库大小），请稍候 — 出现窗口后这里会自动关闭。",
     keepInBackground: "在后台继续",
     sent: "已导入 {n} 张：{dir}",
     sentStaged: "（目标文件夹非空，已放入子文件夹 → 在 LrC 里按该路径导入）",
