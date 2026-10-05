@@ -6,8 +6,11 @@
 // 临时脚本 + 仓库自带 esbuild 转译后跑 Node 断言, 用完即删; 不引 vitest)。
 //
 // 四条不变式(改动前先读):
-// 1. **档位读取只认显式值**: "on"/"ask" 之外(缺省/损坏/拼错)一律 off ——
-//    "默认不碰用户的卡"是绝对约束, 读取时宁可少开一档。
+// 1. **档位读取只认显式值**: "off"/"ask"/"on" 之外(缺省/损坏/拼错)一律
+//    [`DEFAULT_XMP_MODE`] —— 读取时不做任何猜测。
+//    真正的绝对约束是"**永不静默写卡**": 缺省档位由会话 ⑥ 从 `off` 改为 `ask`,
+//    于是首次写盘会**问一次**(用户点"只写本机"即回到 off 的行为), 但任何路径都
+//    不会在用户不知情的情况下往卡上写字节。
 // 2. **边车只在"真的有值"时覆盖本地**(rating/label 为 null 一律保留本地),
 //    否则"卡格式化后新照片占用同名路径"会被当成"边车说是 0"。
 // 3. **提交载荷只带用户真的改过的字段**(字段集合), 值在 flush 时现读 ——
@@ -19,7 +22,7 @@
 import { isLabel, type Label } from "./labels";
 import type { DecisionRead, DecisionWrite } from "./types";
 
-/** 三档开关(docs §5.2)。默认 off = 只写本机, 完全不碰卡。 */
+/** 三档开关(docs §5.2)。缺省 = [`DEFAULT_XMP_MODE`]("询问")。 */
 export type XmpMode = "off" | "ask" | "on";
 
 /** localStorage key —— 与 imagefilter-ratings / imagefilter-labels 都无关 */
@@ -36,17 +39,31 @@ export function isXmpMode(v: unknown): v is XmpMode {
 }
 
 /**
- * 读档位。**只有显式 "on" / "ask" 才算**(不变式 1): 缺省、损坏、被别的版本
- * 写成别的东西 → 一律 off。
+ * 缺省档位 = **"ask"(询问)**。
+ *
+ * 会话 ⑥ 由用户改的(原文记录是"默认关闭", 已被推翻): 星级只留在这台电脑上毫无意义,
+ * 而大多数人不会主动去设置里翻那三档。`ask` 是"既不静默碰卡、也不至于让用户永远
+ * 发现不了这个功能"的折中 —— 首次将要写盘时弹**一次**问询, 作答后落成明确档位,
+ * 本会话不再问(见 useScanner::queueXmpWrite / resolveXmpAsk)。
+ *
+ * 与 `off` 的实质差别: `off` 是"永不写盘、也永不询问"; 缺省改成 `ask` 之后,
+ * 首次评分/打标会看到一次弹窗。用户点"只写本机"即回到 `off` 的行为。
+ */
+export const DEFAULT_XMP_MODE: XmpMode = "ask";
+
+/**
+ * 读档位。**只有显式 "off" / "ask" / "on" 才算**: 缺省、损坏、被别的版本写成
+ * 别的东西 → 一律 [`DEFAULT_XMP_MODE`]。
+ *
  * 刻意不用 useLocalStorageSetting: 那个 hook 原样读回字符串(会话 ① 已否决过它
  * 处理布尔值的写法), 绕不过校验; 与 autoAdvance / labelModifier 同款防御写法。
  */
 export function readXmpMode(): XmpMode {
   try {
     const raw = localStorage.getItem(XMP_MODE_STORAGE_KEY);
-    return isXmpMode(raw) ? raw : "off";
+    return isXmpMode(raw) ? raw : DEFAULT_XMP_MODE;
   } catch {
-    return "off";
+    return DEFAULT_XMP_MODE;
   }
 }
 

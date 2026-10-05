@@ -27,7 +27,8 @@ export default {
     autoAdvanceDesc: "Auto-next after rating (← back)",
     labelKeys: "Color label shortcut",
     labelKeysDesc: "Label modifier (Alt if taken)",
-    // Phase 5 · XMP sidecar (three-step switch, default "Off" = local only, never touches the card)
+    // Phase 5 · XMP sidecar (three-step switch, default "Ask" — changed from "Off" in session 6,
+    // see src/xmp.ts::DEFAULT_XMP_MODE)
     // Status text shares this row's desc on purpose (adding a row means re-checking total height)
     // Kept to one line each (session ⑤ cleanup); the buttons carry the rest
     xmpMode: "Write ratings/labels to .xmp",

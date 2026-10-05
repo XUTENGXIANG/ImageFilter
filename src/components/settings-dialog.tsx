@@ -168,7 +168,7 @@ export function SettingsDialog({
             </div>
           </SettingRow>
 
-          {/* Phase 5: XMP 边车三档。默认"关闭" = 只写本机、完全不碰卡(docs §5.2) */}
+          {/* Phase 5: XMP 边车三档。默认"询问"(会话 ⑥ 由"关闭"改来, 见 src/xmp.ts::DEFAULT_XMP_MODE) */}
           <SettingRow
             title={t("settings.xmpMode")}
             desc={`${t("settings.xmpModeDesc")}${xmpStatusText ? ` · ${xmpStatusText}` : ""}`}
