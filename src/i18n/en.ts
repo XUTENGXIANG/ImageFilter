@@ -324,6 +324,8 @@ export default {
     send: "Import to LrC",
     sendTip: "Import the selected photos into the destination folder, then open Lightroom's Import dialog showing only this batch",
     sending: "Working…",
+    importingPhotos: "Importing photos…",
+    startingLightroom: "Starting Lightroom (this can take a while)…",
     sent: "Imported {n} photo(s): {dir}",
     sentStaged: " (destination was not empty — placed in a subfolder; import from that path in LrC)",
     runningTitle: "Lightroom is already running",

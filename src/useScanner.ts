@@ -21,7 +21,7 @@ import {
 } from "./xmp";
 import {
   lrcErrKey, planLrcImport, readLrcMode, writeLrcMode,
-  type LrcNotice, type LrcSendMode, type LrcSentInfo,
+  type LrcNotice, type LrcPhase, type LrcSendMode, type LrcSentInfo,
 } from "./lightroom";
 
 function entryToNode(entry: FolderEntry): FolderNode {
@@ -817,6 +817,11 @@ export function useScanner() {
    * **绝不擅自杀用户的进程**(未保存的调整会丢, 这个决定必须由用户做)。
    */
   const [lrcAlreadyRunning, setLrcAlreadyRunning] = useState(false);
+  /**
+   * 这条链走到哪一步。导入与启动各自可能要几十秒, 中间不给反馈用户会以为按钮没反应。
+   * "launching" 期间界面会明确显示"正在启动 Lightroom…"。
+   */
+  const [lrcPhase, setLrcPhase] = useState<LrcPhase>("idle");
   /** 失败提示的请求位 + state: 与 xmpNotice 同款(不在渲染期 setState) */
   const lrcNoticeRef = useRef<LrcNotice | null>(null);
   const lrcSeqRef = useRef(0);
@@ -1109,6 +1114,7 @@ export function useScanner() {
 
       // 3. 导入(原文件逐字节复制 + 双端 MD5, 与手动导入同一条实现)
       setLrcSent(null);
+      setLrcPhase("importing");
       const summary = await runImport(paths, plan.destDir, plan.staged ? "" : scheme.folder);
       if (!summary) return; // runImport 内部已经提示过错误
 
@@ -1121,6 +1127,8 @@ export function useScanner() {
       // 5. 交给 LrC(目录里此刻正好是这批)
       //    **必须冷启动**: LrC 已在运行时 Adobe 会忽略路径参数(实测 + FastRawViewer
       //    作者的说明), 此时不当作错误闪一下 toast 就算, 而是弹对话框让用户决定。
+      //    启动 Lightroom 本身要几十秒(大目录库更久), 这里先切到"启动中"给用户反馈。
+      setLrcPhase("launching");
       await invoke<string>("send_to_lightroom", { folderPath: plan.destDir });
       setLrcSent({ folder: plan.destDir, count: summary.imported, staged: plan.staged });
     } catch (err) {
@@ -1136,6 +1144,7 @@ export function useScanner() {
     } finally {
       lrcImportingRef.current = false;
       setLrcSending(false);
+      setLrcPhase("idle");
     }
   }, [destDir, scheme.folder, pickDestDir, runImport, notifyLrc]);
 
@@ -1150,6 +1159,7 @@ export function useScanner() {
     if (lrcImportingRef.current) return;
     lrcImportingRef.current = true;
     setLrcSending(true);
+    setLrcPhase("launching"); // 关掉 + 重新打开, 同样要几十秒, 期间要让用户看到
     try {
       await invoke("force_close_lightroom");
       setLrcAlreadyRunning(false);
@@ -1162,6 +1172,7 @@ export function useScanner() {
     } finally {
       lrcImportingRef.current = false;
       setLrcSending(false);
+      setLrcPhase("idle");
     }
   }, [importToLightroom, notifyLrc]);
 
@@ -1278,5 +1289,7 @@ export function useScanner() {
     lrcSending, lrcSent, lrcNotice, importToLightroom,
     // Phase 7 · "Lightroom 已在运行"的处理: 弹窗标志 + 关闭它并重试
     lrcAlreadyRunning, setLrcAlreadyRunning, forceCloseLightroomAndRetry,
+    // 这条链当前在哪一步(idle/importing/launching) —— UI 用它显示"正在启动 Lightroom…"
+    lrcPhase,
   };
 }

@@ -339,6 +339,8 @@ export default {
     send: "导入到 LrC",
     sendTip: "先把选中的照片导入到目标文件夹，再打开 Lightroom 的导入页面（页面上只有这批照片）",
     sending: "处理中…",
+    importingPhotos: "正在导入照片…",
+    startingLightroom: "正在启动 Lightroom（可能较慢，请稍候）…",
     sent: "已导入 {n} 张：{dir}",
     sentStaged: "（目标文件夹非空，已放入子文件夹 → 在 LrC 里按该路径导入）",
     runningTitle: "Lightroom 正在运行",

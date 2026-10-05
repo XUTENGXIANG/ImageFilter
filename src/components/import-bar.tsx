@@ -8,7 +8,7 @@ import { Tip } from "./tip";
 import type { ImportProgress, ImportSummary, LightroomProbe } from "../types";
 import type { ImportHistoryApi } from "../import-history";
 import type { ImportSchemeApi } from "../import-rules";
-import type { LrcSentInfo } from "../lightroom";
+import type { LrcPhase, LrcSentInfo } from "../lightroom";
 
 interface Props {
   destDir: string | null;
@@ -34,6 +34,8 @@ interface Props {
   /** Phase 7: LrC 探测结果。found=false 时整个「导入到 LrC」入口隐藏 */
   lrcProbe: LightroomProbe | null;
   lrcSending: boolean;
+  /** 这条链走到哪一步 —— 决定显示"正在导入…"还是"正在启动 Lightroom…" */
+  lrcPhase: LrcPhase;
   /** 上一次成功发送的信息(含"还有 N 个文件夹没发"的实话) */
   lrcSent: LrcSentInfo | null;
   onSendToLightroom: () => void;
@@ -64,6 +66,7 @@ export function ImportBar({
   selectedCount,
   lrcProbe,
   lrcSending,
+  lrcPhase,
   lrcSent,
   onSendToLightroom,
   onPickDestDir,
@@ -122,6 +125,15 @@ export function ImportBar({
            selectedCount === 0 ? t("import.needSelect") :
            importing ? t("import.importing") : ""}
         </span>
+        {/* Phase 7 · 「导入到 LrC」这条链的即时反馈。
+            导入与启动 Lightroom 各自可能要几十秒(大目录库更久), 这段黑屏期必须说话:
+            否则用户以为按钮没反应, 会去重复点。用天蓝色与"导入中"的灰字区分开 ——
+            这两件事的等待时间差一个数量级, 混成一句会让人以为卡住了。 */}
+        {lrcPhase !== "idle" && (
+          <span className="text-[10px] text-sky-400 animate-pulse shrink-0">
+            {lrcPhase === "launching" ? t("lrc.startingLightroom") : t("lrc.importingPhotos")}
+          </span>
+        )}
         <button
           disabled={!destDir || selectedCount === 0 || importing}
           onClick={onImport}

@@ -227,6 +227,15 @@ export function planLrcImport(
   return { destDir: stageDir, staged: true, stageDir };
 }
 
+/**
+ * 「导入到 LrC」这条链当前走到哪一步 —— 只用于界面反馈。
+ *
+ * 为什么要分步: 整条链是"**导入**(可能要几十秒) → **启动 Lightroom**(又要几十秒,
+ * 大目录库更久)"。中间那段黑屏期用户看不到任何反馈, 会以为按钮没反应而重复点。
+ * 所以把两步分开报告, 让 UI 能说清"现在在干什么"。
+ */
+export type LrcPhase = "idle" | "importing" | "launching";
+
 /** 交给 LrC 失败时前端要展示的东西 */
 export interface LrcNotice {
   /** 单调递增序号: 同样的失败连续发生两次也要能再触发一次提示 */

@@ -243,6 +243,7 @@ function App() {
     lrcAlreadyRunning,
     setLrcAlreadyRunning,
     forceCloseLightroomAndRetry,
+    lrcPhase,
   } = useScanner();
 
   // 图片查看器: viewerIndex=null 关闭, 数字=打开第N张
@@ -847,6 +848,7 @@ function App() {
           lrcProbe={lrcProbe}
           lrcSending={lrcSending}
           lrcSent={lrcSent}
+          lrcPhase={lrcPhase}
           onSendToLightroom={importToLightroom}
           onPickDestDir={pickDestDir}
           onOpenFolder={(dir) => invoke("open_folder", { path: dir })}
