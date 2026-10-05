@@ -59,6 +59,13 @@
 
 跑浏览器脚本时注意路径：它们把 `playwright-core` 按本机 DSH profile 解析，换机器用 `PW_BASE` 环境变量覆盖。
 
+> ⚠️ **同时只跑一个 dev server。** 实测开两个 Vite 实例（比如另起一个 `vite --port 1421` 专供探针）时，
+> 其中一个会把某些模块**服务成旧版本**——连 F5 都没用，因为它重新下载的还是那份旧模块。
+> 表现出来是"改了代码、界面只变一半"（例如新 `App.tsx` 配旧子组件 → 布局变了但滚动失效）。
+> 排查手法：直接抓服务出来的模块比对特征字符串，别靠肉眼看界面。
+> `curl http://localhost:1420/src/components/xxx.tsx` 然后 grep 你刚加的那个标识。
+
+
 `verify-os-default.mjs` 会在自己旁边写出 `os-win11.png` / `os-win10.png` 两张截图（就是设置面板里那一行），按本仓库约定**不入库** —— 跑完看到这两个未跟踪文件是正常的，可以直接删。
 
 > 跑 `lrc-logic.test.ts` / `i18n-parity.cjs` 时注意路径：它们按仓库根在 `A:/tenent` 写的，换机器要改 `import`/读文件路径。
