@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
+import { Collapse } from "./collapse";
 import {
   isSeqRule, keepsOriginalWithSeq, schemeOptions, toggleKeepOriginalRule, toggleSeqRule,
   type ImportSchemeApi,
@@ -71,11 +72,20 @@ export function AdvancedOptions({
           if (!open) scheme.load();
           setOpen(!open);
         }}
-        className="text-[10px] leading-4 py-1 inline-flex items-center text-zinc-600 hover:text-zinc-400"
+        className="text-[10px] leading-4 py-1 inline-flex items-center gap-1 text-zinc-600 hover:text-zinc-400"
       >
-        {open ? `▾ ${t("import.advanced")}` : `▸ ${t("import.advanced")}`}
+        {/* 箭头用同一个 ▸ 旋转, 而不是 ▸/▾ 换字形 —— 换字形是文本内容变化,
+            CSS 过渡无从插值(与文件夹树的箭头同一个理由)。 */}
+        <i
+          aria-hidden="true"
+          className="not-italic inline-block transition-transform duration-[160ms]"
+          style={{ transform: open ? "rotate(90deg)" : "none" }}
+        >
+          ▸
+        </i>
+        {t("import.advanced")}
       </button>
-      {open && (
+      <Collapse open={open}>
         <div className="mt-1 pb-1.5 space-y-1">
           {/* ── 命名方案(Phase 6 / 6.2) ── */}
           <div className="flex items-center gap-1.5 flex-wrap">
@@ -164,7 +174,7 @@ export function AdvancedOptions({
             )}
           </label>
         </div>
-      )}
+      </Collapse>
     </div>
   );
 }

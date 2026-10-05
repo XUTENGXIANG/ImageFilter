@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { UpOne, SortAmountUp, SortAmountDown } from "@icon-park/react";
 import { CollapsibleBar } from "./collapsible-bar";
+import { Collapse } from "./collapse";
 import { ThumbSizeSlider } from "./thumb-size-slider";
 import { Tip } from "./tip";
 import { LABEL_BG, LABEL_ORDER, type Label } from "../labels";
@@ -155,7 +156,7 @@ export function PhotoToolbar({
           </Tip>
           </div>
         </div>
-        {filterOpen && (
+        <Collapse open={filterOpen}>
           <div className="flex items-center flex-wrap gap-2 px-4 pb-2 -mt-1 text-[10px] text-zinc-600">
             <span className="shrink-0 whitespace-nowrap text-zinc-500">{t("label.title")}</span>
             <button
@@ -193,7 +194,7 @@ export function PhotoToolbar({
               className="ml-auto shrink-0 whitespace-nowrap px-2 py-0.5 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-300"
             >{t("toolbar.clearFilters")}</button>
           </div>
-        )}
+        </Collapse>
         </>
       ) : (
         <div className="flex items-center px-4 h-9 gap-2 text-[10px] text-zinc-600">
