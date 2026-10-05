@@ -36,7 +36,11 @@ export function useLocalStorageNumber(
 ): [number, (v: number) => void] {
   const [value, setValue] = useState<number>(() => {
     try {
-      const v = Number(localStorage.getItem(key));
+      // 注意: key 不存在时 localStorage.getItem 返回 null, 而 Number(null) === 0
+      // 且 Number.isFinite(0) 为真 —— 直接 Number(...) 会让"没存过"误判成 0,
+      // 再被 clamp 成 min, initial 永远用不上(实测: 玻璃透明度 70% 退化成 0%)。
+      const raw = localStorage.getItem(key);
+      const v = raw === null ? NaN : Number(raw);
       return Number.isFinite(v) ? Math.min(max, Math.max(min, v)) : initial;
     } catch {
       return initial;
