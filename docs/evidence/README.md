@@ -46,5 +46,12 @@
 | `lrc-logic.test.ts` | `src/lightroom.ts` 的纯逻辑断言（17 条） | 两行见文件头注释（esbuild + node，不引 vitest —— 项目既有约定） |
 | `lrc-logic.mjs` | 上面那份转译后的产物 | `node lrc-logic.mjs` |
 | `i18n-parity.cjs` | 校验 zh/en 叶子 key 完全对齐 | `node i18n-parity.cjs` |
+| `tree-motion.test.ts` | `src/components/folder-tree-motion.ts` 的阶段判定断言（10 条） | 见 `folder-tree-motion/EVIDENCE.md` §9 |
+| `verify-tree-motion.mjs` | 文件夹树展开的**容器高度轨迹**（判据：台阶数 > 3 且单帧跨度 ≤ 总行程 35%；退出码 0/1） | `node verify-tree-motion.mjs <卡速ms>`，需先跑 `npm run tauri dev` |
+| `verify-tree-inert.mjs` | 收起后的子树是否真的不可 Tab 到，以及嵌套展开有没有被裁 | 同上 |
+| `verify-tree-row-geometry.mjs` | 树行 24px / 箭头同字形靠 transform 旋转 / `aria-expanded` 的有无 / 可访问名不含箭头 | 同上 |
+| `tree-mock.js` | 上面三个脚本共用的 Tauri IPC 桩（`browse_directory` 只返回一层子目录，与 Rust 一致） | 由脚本读取，`?gap=N` 模拟卡速 |
+
+跑浏览器脚本时注意路径：它们把 `playwright-core` 按本机 DSH profile 解析，换机器用 `PW_BASE` 环境变量覆盖。
 
 > 跑 `lrc-logic.test.ts` / `i18n-parity.cjs` 时注意路径：它们按仓库根在 `A:/tenent` 写的，换机器要改 `import`/读文件路径。
