@@ -140,6 +140,50 @@ img {
   transform: rotate(90deg);
 }
 
+/* ── 左侧面板：可点行的"按下"反馈 ──
+   设备行、刷新、根目录、树行原本都只有 hover, 没有任何按下状态 —— 点下去一点回应都没有,
+   而项目里 shadcn 那套按钮本来就有 active 反馈(ui/button.tsx 的 active:translate-y-px)。
+   这一层只统一"更暗一档"的底色, 不做位移: 列表行整行下沉 1px 在密集列表里显得像掉出来了,
+   而色块变化没有布局副作用。
+
+   颜色写字面量而不是 var(--color-zinc-700): Tailwind v4 只为"实际用到"的颜色生成
+   --color-* 变量, emerald-800 在本项目里没有任何地方用到, 写 var() 会解析成空值、
+   按下时直接没反应(这个坑 .badge-glass 那段已经踩过一次)。 */
+.press-row {
+  transition: background-color 100ms ease-out, color 100ms ease-out;
+}
+.press-row:active {
+  background-color: #3f3f46b3; /* zinc-700 @70% */
+}
+/* 选中态的行按下时要更"深"一点, 否则在已经发绿的行上按下去反而看不出变化 */
+.press-row[data-selected="true"]:active {
+  background-color: #065f46a6; /* emerald-800 @65% */
+}
+/* 主按钮(刷新)是实底, 按下的方向相反 —— 往亮走 */
+.press-solid:active {
+  background-color: #52525b; /* zinc-600 */
+}
+
+/* ── 设备树"到达"时的入场 ──
+   点设备后先显示"扫描中…"(一段静默), 然后整棵树**一次性蹦出来** —— 与文件夹树当初同一个毛病。
+   这里给它一个短入场, 让"出现"这件事有个方向感。
+   用 animation 而不是 transition: 它是挂载时的一次性事件, 没有"变化前"的状态可供过渡。
+   fill-mode 用 both: 减少动效偏好会把 animation-duration 压到 0.01ms, 那时元素直接停在终态
+   (可见), 不会因为动画被压掉就留在 opacity: 0 上。 */
+.tree-enter {
+  animation: tree-enter 180ms ease-out both;
+}
+@keyframes tree-enter {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
 /* 子树容器。高度由组件按内容 scrollHeight 实测后写在行内(JS 不知道 24 这个数)。
    transition 常驻、只翻值 —— 与 collapsible-bar.tsx 同一写法;
    时长必须与 folder-tree-motion.ts 的 EXPAND_MS 一致。 */

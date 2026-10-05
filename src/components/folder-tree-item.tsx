@@ -108,7 +108,8 @@ export function FolderTreeItem({
           onSelect(node.path);
         }}
         aria-expanded={canExpand ? open : undefined}
-        className={`tree-row w-full text-left rounded text-[11px] flex items-center gap-1 ${
+        data-selected={isActive}
+        className={`press-row tree-row w-full text-left rounded text-[11px] flex items-center gap-1 ${
           isActive
             ? "bg-emerald-900/30 text-emerald-300"
             : "text-zinc-400 hover:bg-zinc-800/50"

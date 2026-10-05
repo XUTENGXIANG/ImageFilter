@@ -120,3 +120,50 @@ node docs/evidence/scripts/verify-tree-row-geometry.mjs       # 行高 / 箭头 
 
 三个浏览器脚本的退出码都是 0 = 通过、1 = 失败，可直接用于自动化。
 `playwright-core` 的解析路径默认按本机 DSH profile 写，换机器可用 `PW_BASE` 环境变量覆盖。
+
+## 10. 追加：设备栏的"按下"反馈 + 设备树入场
+
+同一天追加的两处，起因是"设备栏的点击动画也要"。
+
+### 10.1 按下反馈（改动前设备行、刷新、根目录、树行全都没有）
+
+原先这些行**只有 hover、没有任何按下状态** —— 按下去一点回应都没有，而项目里 shadcn 那套按钮
+本来就有 active 反馈（`src/components/ui/button.tsx` 的 `active:not-aria-[haspopup]:translate-y-px`）。
+
+统一成一档更暗的底色而不是位移：列表行整行下沉 1px 在密集列表里显得像掉出来了，色块变化没有布局副作用。
+`.press-row` / `.press-solid` 定义在 `src/index.css`。
+
+实测（真的把鼠标按住再读计算样式，而不是只看截图）：
+
+| 状态 | 背景色 |
+|---|---|
+| 静置 | `rgba(0, 0, 0, 0)` |
+| 悬停 | 透明（Tailwind v4 的 `hover:` 变体被包在 `@media (hover: hover)` 里，无头环境报 no-hover；`:active` 不受这层门控，所以触屏/手写笔上按下反馈照样生效） |
+| **按下（未选中）** | `rgba(63, 63, 70, 0.7)` |
+| **按下（选中）** | `rgba(6, 95, 70, 0.65)` |
+
+注意颜色是写字面量的，没写成 `var(--color-emerald-800)` —— Tailwind v4 只为"实际用到"的颜色生成
+`--color-*`，emerald-800 在本项目里没有任何地方用到，写 `var()` 会解析成空值、按下时直接没反应
+（这个坑 `.badge-glass` 那段已经踩过一次）。
+
+### 10.2 设备树入场（改动前是"扫描中…"闪一下，然后整棵树一次性蹦出来）
+
+与文件夹树当初同一个毛病，只是发生在"点设备"这一层。给树容器加了 `.tree-enter`
+（`animation: tree-enter 180ms ease-out both`，从 `opacity: 0` + `translateY(-4px)` 起）。
+
+用 `animation` 而不是 `transition`：它是挂载时的一次性事件，没有"变化前"的状态可供过渡。
+`fill-mode: both` 是必要的 —— 减少动效偏好把 `animation-duration` 压到 0.01ms 时，元素要停在终态
+（可见），不能因为动画被压掉就留在 `opacity: 0` 上。
+
+实测 opacity 轨迹（不是只截一张"已经好了"的图）：
+
+```
+0 → 0.051 → 0.1 → 0.149 → 0.197 → … → 0.981 → 1      （31 个中间帧，首帧 transform 带 -4px）
+```
+
+### 10.3 这次没归档的探针
+
+`verify-device-press.mjs`（按下状态的量法与树入场的 opacity 轨迹量法那个脚本）留在
+gitignore 的 `.design-audit/_probe/` 里，未入库 —— 这两处是新加的便捷反馈，不是会被后续改动
+反复回归的核心行为。若以后要常态化回归，再按 §1 的做法把它相对化后收进来。
+

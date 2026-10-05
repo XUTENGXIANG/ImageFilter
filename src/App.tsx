@@ -640,7 +640,7 @@ function App() {
           //{ label: "刷新设备列表", action: detectDrives },
         ]}>
         <div className="px-3 pt-2 pb-1 flex items-center">
-          <button onClick={() => selectedDrive && browseDrive(selectedDrive!)} className="text-[10px] leading-4 px-3 py-1 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-400 transition-colors">{t("devices.refresh")}</button>
+          <button onClick={() => selectedDrive && browseDrive(selectedDrive!)} className="press-solid text-[10px] leading-4 px-3 py-1 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-400 transition-colors">{t("devices.refresh")}</button>
         </div>
         {/* 设备列表 — 每个设备独立右键菜单, 可移动设备含"弹出设备" */}
         <div className="px-2.5 pb-1 space-y-0.5 max-h-36 overflow-auto no-scrollbar">
@@ -659,7 +659,8 @@ function App() {
             ].filter(Boolean) as MenuItem[]}>
             <button
               onClick={() => browseDrive(d.mountPoint)}
-              className={`w-full text-left px-1.5 py-1.5 rounded text-xs flex items-center gap-1.5 ${
+              data-selected={selectedDrive === d.mountPoint}
+              className={`press-row w-full text-left px-1.5 py-1.5 rounded text-xs flex items-center gap-1.5 ${
                 selectedDrive === d.mountPoint
                   ? "bg-emerald-900/30 text-emerald-300"
                   : "hover:bg-zinc-800/50 text-zinc-400"
@@ -684,11 +685,12 @@ function App() {
               {t("devices.scanning")}
             </p>
           ) : folderTree ? (
-            <div>
+            <div className="tree-enter">
               <div className="border-t border-zinc-800/50 mb-1.5" />
               <button
                 onClick={() => loadFolder(folderTree.path)}
-                className={`w-full text-left px-2 py-1 rounded border text-[11px] mb-1 ${
+                data-selected={activeFolder === folderTree.path}
+                className={`press-row w-full text-left px-2 py-1 rounded border text-[11px] mb-1 ${
                   activeFolder === folderTree.path
                     ? "bg-emerald-900/30 border-emerald-800/50 text-emerald-300"
                     : "bg-zinc-800/20 border-zinc-800/30 text-zinc-400 hover:bg-zinc-800/40"
