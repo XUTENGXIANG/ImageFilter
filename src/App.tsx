@@ -698,10 +698,17 @@ function App() {
         </div>
 
         <div className="flex-1 overflow-auto px-1.5 py-1.5 no-scrollbar">
-          {showScanning ? (
-            <p className="text-[11px] text-emerald-500 px-1 animate-pulse">
-              {t("devices.scanning")}
-            </p>
+          {/* 整个区域由 browsing 把门：正在扫描时, 除了"等久了才出现"的提示, 什么都不显示。
+              为什么必须这么写: 这条链是 扫描中 → 树 → 未扫描/选择设备。如果把"扫描中"改成
+              延迟出现却不把门, 那 150ms 里链子就会掉到最后一段 —— 而 browseDrive 已经设上了
+              selectedDrive, 于是闪的不再是"扫描目录结构"而是"未扫描"(实测 0ms 档 1 帧)。
+              门内留空, 外面就永远看不到中间态。 */}
+          {browsing ? (
+            showScanning ? (
+              <p className="text-[11px] text-emerald-500 px-1 animate-pulse">
+                {t("devices.scanning")}
+              </p>
+            ) : null
           ) : folderTree ? (
             <div className="tree-enter">
               <div className="border-t border-zinc-800/50 mb-1.5" />
