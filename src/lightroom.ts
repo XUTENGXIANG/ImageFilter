@@ -21,6 +21,7 @@ export const LRC_ERR_CODES = [
   "launchFailed",
   "notSupported",
   "notImplemented",
+  "noNewPhotos",
   "unknown",
 ] as const;
 
@@ -146,24 +147,100 @@ export function pickFolderForLightroom(
   };
 }
 
-/** send_to_lightroom 失败时前端要展示的东西 */
+// ── "导入到哪 + 交给谁" 的决策(核心) ─────────────────────────────────
+//
+// 需求(用户原话, 会话 ⑥ 定): 点「导入 LrC」后
+//   1. 没选目标文件夹 → 先弹窗让用户选;
+//   2. 有目标文件夹 → 先把选中的照片**导入**到那里(原文件逐字节复制);
+//   3. 再打开 LrC 的导入页面, 页面上**只有刚导入的那些照片**;
+//   4. 用户在 LrC 里点一次「导入」即可。
+//
+// 第 3 条是这个功能的难点: LrC 的导入页面会列出**它拿到的那个文件夹的全部内容**。
+// 所以:
+//   · 目标文件夹**是空的** → 直接导进去, 把目标文件夹交给 LrC(里面正好只有这批);
+//   · 目标文件夹**已有东西** → 导进一个新建的子文件夹, 把**子文件夹**交给 LrC。
+// 这样"页面上只有选中的照片"是确定成立的, 不用赌 LrC 的判断。
+
+/** 子文件夹名前缀。用户可据此一眼认出是 ImageFilter 建的。 */
+export const LRC_STAGE_PREFIX = "ImageFilter";
+
+/**
+ * 生成子文件夹名(带时间戳, 便于多批共存且可读)。
+ *
+ * 为什么不用 `_` 开头: Windows 资源管理器把下划线开头的项排在最前, 反而更显眼;
+ * 而这个名字是要给用户看的(他会去里面挪文件), 清楚比短更重要。
+ */
+export function stageFolderName(now: Date): string {
+  const p = (n: number, w = 2) => String(n).padStart(w, "0");
+  return (
+    LRC_STAGE_PREFIX +
+    "_" +
+    now.getFullYear() +
+    p(now.getMonth() + 1) +
+    p(now.getDate()) +
+    "_" +
+    p(now.getHours()) +
+    p(now.getMinutes())
+  );
+}
+
+/** 拼接子文件夹路径(不依赖 Node 的 path 模块, 前端要能在浏览器里跑) */
+function joinPath(dir: string, name: string): string {
+  const trimmed = dir.replace(/[\\/]+$/, "");
+  // 注意: 分隔符必须在**剥掉末尾分隔符之前**判断 —— 否则 `D:\` 会退化成 "D",
+  // 判成"没有反斜杠"从而拼出 `D/ImageFilter_...`(单测里就是这么被抓出来的)。
+  const sep = /\\/.test(dir) ? "\\" : "/";
+  return trimmed + sep + name;
+}
+
+export interface LrcImportPlan {
+  /** 真正要导入到的目录(即最终交给 LrC 的那个) */
+  destDir: string;
+  /** true = 目标文件夹非空, destDir 是新建的子文件夹 */
+  staged: boolean;
+  /** 子文件夹的完整路径(staged=false 时为 null) */
+  stageDir: string | null;
+}
+
+/**
+ * 依据"目标文件夹是否为空"决定导入去向。
+ *
+ * @param destDir      用户选的目标文件夹
+ * @param destIsEmpty  Rust 侧 is_dir_empty 的结果
+ * @param now          注入当前时间(纯函数, 便于单测)
+ */
+export function planLrcImport(
+  destDir: string,
+  destIsEmpty: boolean,
+  now: Date
+): LrcImportPlan {
+  if (destIsEmpty) {
+    return { destDir, staged: false, stageDir: null };
+  }
+  const stageDir = joinPath(destDir, stageFolderName(now));
+  return { destDir: stageDir, staged: true, stageDir };
+}
+
+/** 交给 LrC 失败时前端要展示的东西 */
 export interface LrcNotice {
   /** 单调递增序号: 同样的失败连续发生两次也要能再触发一次提示 */
   seq: number;
   code: LrcErrCode;
+  /** 可选计数(noNewPhotos 用: "选中的 N 张都已经在里面了") */
+  n: number;
 }
 
 /**
- * 成功提示的文案参数。刻意把"漏掉了别的文件夹"显式带出来 ——
- * 否则用户会以为选中的 20 张全进对话框了, 而实际只发了其中 12 张所在的目录。
+ * 成功提示的文案参数。
+ *
+ * 一定要说清"是否另建了子文件夹": 用户导完要去那个子文件夹里挪文件,
+ * 不告诉他路径等于活干了一半。
  */
 export interface LrcSentInfo {
-  /** 已交给 LrC 的文件夹 */
+  /** 交给 LrC 的文件夹(可能就是目标文件夹, 也可能是新建的子文件夹) */
   folder: string;
-  /** 该文件夹里被选中的照片数 */
+  /** 本次真正导入进去的照片数(不含跳过) */
   count: number;
-  /** 选中的照片还散布在其它 N 个文件夹(0 = 全部都在同一个文件夹里) */
-  alsoInOtherFolders: number;
-  /** true = 没有勾选, 发的是"当前浏览的文件夹" */
-  fromActiveFolder: boolean;
+  /** true = 目标文件夹非空, folder 是新建的子文件夹 */
+  staged: boolean;
 }

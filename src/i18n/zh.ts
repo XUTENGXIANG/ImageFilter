@@ -336,19 +336,19 @@ export default {
   // 错误码与 src-tauri/src/lightroom.rs 的 LrcError::code() 一一对应
   // (前端白名单校验后拼 `lrc.err.<code>`, 未知码落到 unknown)。单括号插值。
   lrc: {
-    send: "发送到 LrC",
-    sendTip: "打开 Lightroom Classic 的导入对话框并定位到选中照片所在文件夹",
-    sending: "启动中…",
-    sent: "已交给 Lightroom：{dir}（选中 {n} 张）",
-    sentActiveFolder: "已交给 Lightroom：{dir}（当前文件夹）",
-    sentPartial: "另有 {n} 个文件夹里的选中照片未发送（一次只能发一个文件夹）",
-    toastFailed: "发送到 Lightroom 失败：{reason}",
+    send: "导入到 LrC",
+    sendTip: "先把选中的照片导入到目标文件夹，再打开 Lightroom 的导入页面（页面上只有这批照片）",
+    sending: "处理中…",
+    sent: "已导入 {n} 张：{dir}",
+    sentStaged: "（目标文件夹非空，已放入子文件夹 → 在 LrC 里按该路径导入）",
+    toastFailed: "交给 Lightroom 失败：{reason}",
     err: {
       notFound: "未找到 Lightroom，请在设置里点“重新检测”",
-      noFolder: "没有可发送的文件夹",
+      noFolder: "没有可用的目标文件夹",
       launchFailed: "启动 Lightroom 失败",
       notSupported: "该平台暂不支持",
-      notImplemented: "静默导入尚未实现（需先在 Lightroom 里配置自动导入）",
+      notImplemented: "该模式尚未实现",
+      noNewPhotos: "选中的 {n} 张在目标里都已经有了（内容相同），没有新照片可导入",
       unknown: "未知错误",
     },
   },

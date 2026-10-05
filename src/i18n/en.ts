@@ -320,19 +320,19 @@ export default {
   // Error codes mirror LrcError::code() in src-tauri/src/lightroom.rs (whitelisted on the
   // front end, then used as the dynamic prefix `lrc.err.<code>`; unknown falls back).
   lrc: {
-    send: "Send to LrC",
-    sendTip: "Open Lightroom Classic's Import dialog pointed at the folder of the selected photos",
-    sending: "Launching…",
-    sent: "Handed to Lightroom: {dir} ({n} selected)",
-    sentActiveFolder: "Handed to Lightroom: {dir} (current folder)",
-    sentPartial: "{n} other folder(s) hold selected photos that were not sent (one folder at a time)",
-    toastFailed: "Failed to send to Lightroom: {reason}",
+    send: "Import to LrC",
+    sendTip: "Import the selected photos into the destination folder, then open Lightroom's Import dialog showing only this batch",
+    sending: "Working…",
+    sent: "Imported {n} photo(s): {dir}",
+    sentStaged: " (destination was not empty — placed in a subfolder; import from that path in LrC)",
+    toastFailed: "Failed to hand off to Lightroom: {reason}",
     err: {
       notFound: "Lightroom was not found — use “Re-detect” in Settings",
-      noFolder: "no folder to send",
+      noFolder: "no usable destination folder",
       launchFailed: "failed to launch Lightroom",
       notSupported: "not supported on this platform",
-      notImplemented: "silent import is not implemented yet (configure Auto Import in Lightroom first)",
+      notImplemented: "that mode is not implemented",
+      noNewPhotos: "all {n} selected photo(s) already exist at the destination with identical content — nothing new to import",
       unknown: "unknown error",
     },
   },

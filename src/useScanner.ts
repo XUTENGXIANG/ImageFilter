@@ -20,7 +20,7 @@ import {
   type XmpField, type XmpMode, type XmpNotice, type XmpStatus,
 } from "./xmp";
 import {
-  lrcErrKey, pickFolderForLightroom, readLrcMode, writeLrcMode,
+  lrcErrKey, planLrcImport, readLrcMode, writeLrcMode,
   type LrcNotice, type LrcSendMode, type LrcSentInfo,
 } from "./lightroom";
 
@@ -799,8 +799,17 @@ export function useScanner() {
   // 不该出现一个点了只会报错的按钮)。
   const [lrcProbe, setLrcProbe] = useState<LightroomProbe | null>(null);
   const [lrcMode, setLrcModeState] = useState<LrcSendMode>(readLrcMode);
+  /** true = 正在"导入 + 启动 LrC"这一整条链上(按钮显示"启动中…"并禁用) */
   const [lrcSending, setLrcSending] = useState(false);
-  /** 成功提示(带"漏了别的文件夹"的实话, 见 src/lightroom.ts 不变式 2) */
+  /**
+   * "导入 LrC"的互斥闸门。
+   *
+   * 为什么不用 state: 这个函数里要 `await pickDestDir()`(可能弹原生目录选择器)
+   * 与 `await import_photos`, 期间用户可能再点一次。用 ref 是**同步**的, 双击也挡得住;
+   * state 要等重渲染才生效(交接 §4.2 那套"原子代次/标志"的同一个理由)。
+   */
+  const lrcImportingRef = useRef(false);
+  /** 成功提示(含"是否另建了子文件夹") */
   const [lrcSent, setLrcSent] = useState<LrcSentInfo | null>(null);
   /** 失败提示的请求位 + state: 与 xmpNotice 同款(不在渲染期 setState) */
   const lrcNoticeRef = useRef<LrcNotice | null>(null);
@@ -829,53 +838,81 @@ export function useScanner() {
     }
   }, []);
 
-  const notifyLrc = useCallback((code: string) => {
+  const notifyLrc = useCallback((code: string, n = 0) => {
     lrcSeqRef.current += 1;
-    lrcNoticeRef.current = { seq: lrcSeqRef.current, code: lrcErrKey(code) };
+    lrcNoticeRef.current = { seq: lrcSeqRef.current, code: lrcErrKey(code), n };
   }, []);
 
   /**
-   * 把选中的照片所在文件夹交给 Lightroom。
+   * 导入的共用实现(startImport 与 importToLightroom 都走这里)。
    *
-   * 为什么只发一个文件夹: 实测只验证过 `Lightroom.exe "<文件夹>"` 这一种形式,
-   * 多路径行为无证据(见 src/lightroom.ts 不变式 1)。跨文件夹时取"包含最多选中照片"
-   * 的那个, 并把"还有 N 个文件夹没发"如实回给 UI —— 不静默丢。
+   * 抽出来的唯一理由: 两条路径必须**行为完全一致**(同样的进度、同样的错误处理、
+   * 同样的 ImportSummary 口径) —— 复制一份实现迟早会漂移。
+   *
+   * @param destOverride  指定目标目录; 不传则用当前 destDir
+   * @param folderOverride 指定文件夹模板; 不传则用当前方案
+   * @returns 成功时返回 ImportSummary; 失败时已提示并返回 null(调用方直接 return)
    */
-  const sendToLightroom = useCallback(async () => {
-    if (lrcSending) return;
-    // 模式 1(送进 LrC 的自动导入监听文件夹)尚未实现: 设置里那一档是禁用的,
-    // 但档位可能来自旧版本写下的 localStorage, 所以这里再挡一次, 给出明确错误码。
-    if (lrcMode === "silent") {
-      notifyLrc("notImplemented");
-      return;
-    }
-    const pick = pickFolderForLightroom(
-      [...selectedPathsRef.current],
-      activeFolderRef.current,
-      dirOfPath
-    );
-    if (!pick.folder) {
-      notifyLrc("noFolder");
-      return;
-    }
-    setLrcSending(true);
-    setLrcSent(null);
-    try {
-      await invoke<string>("send_to_lightroom", { folderPath: pick.folder });
-      setLrcSent({
-        folder: pick.folder,
-        count: pick.count,
-        alsoInOtherFolders: pick.alsoInOtherFolders,
-        fromActiveFolder: pick.fromActiveFolder,
-      });
-    } catch (err) {
-      // Rust 侧返回的是闭集错误码字符串(xmp.rs 同款契约), 未知码由 lrcErrKey 兜底
-      console.error("send_to_lightroom:", err);
-      notifyLrc(String(err));
-    } finally {
-      setLrcSending(false);
-    }
-  }, [lrcSending, lrcMode, notifyLrc]);
+  const runImport = useCallback(
+    async (
+      paths: string[],
+      destOverride?: string,
+      folderOverride?: string
+    ): Promise<ImportSummary | null> => {
+      const dest = destOverride ?? destDir;
+      if (!dest || paths.length === 0) return null;
+
+      setImporting(true);
+      setImportProgress([]);
+      setImportDone(0);
+
+      const onProgress = new Channel<ImportProgress>();
+      onProgress.onmessage = (p: ImportProgress) => {
+        if (p.status === "done") setImportDone((n) => n + 1);
+        // 只保留最近 100 条, 避免大导入时数组/重渲染无限增长
+        setImportProgress((prev) => {
+          const next = prev.length >= 100 ? prev.slice(prev.length - 99) : prev;
+          return [...next, p];
+        });
+      };
+
+      try {
+        // Phase 6 / 6.3: 返回值是 ImportSummary(契约变更)。计数口径**归 Rust**,
+        // 前端不再做 `paths.length - count` —— 那个算法把"跳过"错算成了"失败"。
+        //
+        // customFolder 一律为空: "导入到子文件夹"是用户在高级选项里的选择, 而 Phase 7
+        // 已经用自己的子文件夹机制处理了"目标非空"的情况, 两者叠加会多套一层。
+        const summary = await invoke<ImportSummary>("import_photos", {
+          filePaths: paths,
+          destDir: dest,
+          folderTemplate: folderOverride ?? scheme.folder,
+          fileTemplate: scheme.file,
+          customFolder: "",
+          onProgress,
+        });
+        setImportError(null);
+        setImportResult(summary);
+        setTimeout(() => setImportResult(null), 5000);
+        return summary;
+      } catch (err: any) {
+        console.error("import failed:", err);
+        setImportError(String(err));
+        return null;
+      } finally {
+        setImporting(false);
+      }
+    },
+    [destDir, scheme.folder, scheme.file]
+  );
+
+  const startImport = useCallback(
+    async (paths: string[]) => {
+      // 手动导入清掉上一次"导入后交给 LrC"的残留提示, 免得两条信息同时挂在导入栏上
+      setLrcSent(null);
+      await runImport(paths);
+    },
+    [runImport]
+  );
 
   // 探测一次即可: 装/卸 Lightroom 属于"下次启动才对"的变化, 不做轮询
   useEffect(() => {
@@ -1024,44 +1061,69 @@ export function useScanner() {
     return dir;
   }, []);
 
-  /** Start importing selected or all photos */
-  const startImport = useCallback(async (paths: string[]) => {
-    if (!destDir || paths.length === 0) return;
-    setImporting(true);
-    setImportProgress([]);
-    setImportDone(0);
 
-    const onProgress = new Channel<ImportProgress>();
-    onProgress.onmessage = (p: ImportProgress) => {
-      if (p.status === "done") setImportDone((n) => n + 1);
-      // 只保留最近 100 条, 避免大导入时数组/重渲染无限增长
-      setImportProgress((prev) => {
-        const next = prev.length >= 100 ? prev.slice(prev.length - 99) : prev;
-        return [...next, p];
-      });
-    };
+  /**
+   * Phase 7 · 「导入 LrC」= 先导入 + 再打开 LrC 的导入页面(页面上只有这批照片)。
+   *
+   * 与 `startImport` 的关系: **共用同一套进度/结果状态**(用户看到的手感一致),
+   * 区别只有三点:
+   *   1. 目标目录可能是"新建的子文件夹"(取决于目标文件夹是否为空);
+   *   2. 目标为空时**不带文件夹模板** —— 直接落进目标根, 否则会多套一层日期目录,
+   *      而 LrC 拿到的路径也会跟着变深(用户要的是"就在这个文件夹里");
+   *   3. 导入完再调 send_to_lightroom。
+   *
+   * 失败一律只提示、不半途改动用户的数据: 导入失败就不启动 LrC(否则 LrC 会打开
+   * 一个空/旧的目录, 用户会以为导入成功了)。
+   */
+  const importToLightroom = useCallback(async () => {
+    if (lrcImportingRef.current) return;
+    const paths = [...selectedPathsRef.current];
+    if (paths.length === 0) return;
 
+    lrcImportingRef.current = true;
+    setLrcSending(true);
     try {
-      // Phase 6 / 6.3: 返回值是 ImportSummary(契约变更)。计数口径**归 Rust**,
-      // 前端不再做 `paths.length - count` —— 那个算法把"跳过"错算成了"失败"。
-      const summary = await invoke<ImportSummary>("import_photos", {
-        filePaths: paths,
-        destDir,
-        folderTemplate: scheme.folder,
-        fileTemplate: scheme.file,
-        customFolder: useCustomFolder ? customFolder : "",
-        onProgress,
-      });
-      setImportError(null);
-      setImportResult(summary);
-      setTimeout(() => setImportResult(null), 5000);
-    } catch (err: any) {
-      console.error("import failed:", err);
-      setImportError(String(err));
+      // 1. 目标文件夹: 没选就让用户选(与"导入"按钮用的是同一个选择器)
+      let dest = destDir;
+      if (!dest) {
+        const picked = await pickDestDir();
+        dest = (picked as string | null) ?? null;
+      }
+      if (!dest) return; // 用户取消
+
+      // 2. 目标为空 → 直接导进去; 非空 → 建带时间戳的子文件夹
+      //    (is_dir_empty 失败时按"非空"处理: 宁可多一层子文件夹, 也不能把整目录暴露给 LrC)
+      let destIsEmpty = false;
+      try {
+        destIsEmpty = await invoke<boolean>("is_dir_empty", { dirPath: dest });
+      } catch (err) {
+        console.error("is_dir_empty:", err);
+      }
+      const plan = planLrcImport(dest, destIsEmpty, new Date());
+
+      // 3. 导入(原文件逐字节复制 + 双端 MD5, 与手动导入同一条实现)
+      setLrcSent(null);
+      const summary = await runImport(paths, plan.destDir, plan.staged ? "" : scheme.folder);
+      if (!summary) return; // runImport 内部已经提示过错误
+
+      // 4. 一张都没进去(全跳过) → 别打开 LrC, 否则那里是空的
+      if (summary.imported === 0) {
+        notifyLrc("noNewPhotos", paths.length);
+        return;
+      }
+
+      // 5. 交给 LrC(目录里此刻正好是这批)
+      await invoke<string>("send_to_lightroom", { folderPath: plan.destDir });
+      setLrcSent({ folder: plan.destDir, count: summary.imported, staged: plan.staged });
+    } catch (err) {
+      // Rust 侧返回的是闭集错误码字符串(xmp.rs 同款契约), 未知码由 lrcErrKey 兜底
+      console.error("importToLightroom:", err);
+      notifyLrc(String(err));
     } finally {
-      setImporting(false);
+      lrcImportingRef.current = false;
+      setLrcSending(false);
     }
-  }, [destDir, scheme.folder, scheme.file, customFolder, useCustomFolder]);
+  }, [destDir, scheme.folder, pickDestDir, runImport, notifyLrc]);
 
   /** Stop ongoing analysis */
   const stopAnalysis = useCallback(() => {
@@ -1170,9 +1232,9 @@ export function useScanner() {
     // Phase 5: XMP 边车 —— 档位 / ask 弹窗 / 设置页状态行 / 一次性提示。
     // 队列、flush、探测都是内部实现, **不导出**(组件里不许直接 invoke write_decisions)
     xmpMode, setXmpMode, xmpAskPending, resolveXmpAsk, xmpStatus, xmpNotice,
-    // Phase 7: Lightroom 衔接 —— 探测结果 / 发送模式 / 发送动作 / 成功与失败提示。
+    // Phase 7: Lightroom 衔接 —— 探测结果 / 发送模式 / 导入并交给 LrC / 提示。
     // probeLightroom 也导出: 用户可能在应用运行期间才装/开 LrC, 设置页给一个"重新检测"。
     lrcProbe, probeLightroom, lrcMode, setLrcMode,
-    lrcSending, lrcSent, lrcNotice, sendToLightroom,
+    lrcSending, lrcSent, lrcNotice, importToLightroom,
   };
 }

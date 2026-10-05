@@ -31,12 +31,7 @@ interface Props {
   /** Phase 6 / 6.2: 命名方案(方案下拉 + 另存为) */
   scheme: ImportSchemeApi;
   selectedCount: number;
-  /**
-   * Phase 7: 是否允许在"一张都没勾"时也能发送 —— 此时发的是当前浏览的文件夹。
-   * 由 App 传 activeFolder 是否非空决定(没有浏览任何文件夹时这个入口没有意义)。
-   */
-  lrcCanUseActiveFolder: boolean;
-  /** Phase 7: LrC 探测结果。found=false 时整个"发送到 Lightroom"入口隐藏 */
+  /** Phase 7: LrC 探测结果。found=false 时整个「导入到 LrC」入口隐藏 */
   lrcProbe: LightroomProbe | null;
   lrcSending: boolean;
   /** 上一次成功发送的信息(含"还有 N 个文件夹没发"的实话) */
@@ -67,7 +62,6 @@ export function ImportBar({
   history,
   scheme,
   selectedCount,
-  lrcCanUseActiveFolder,
   lrcProbe,
   lrcSending,
   lrcSent,
@@ -101,14 +95,14 @@ export function ImportBar({
           </Tip>
         )}
         <div className="flex-1" />
-        {/* Phase 7 · 一键交给 Lightroom Classic。
-            只发"选中照片所在的那一个文件夹"(实测只验证过这一种形式), 由 LrC
-            自己打开导入对话框 —— 所以本按钮的语义是"打开 LrC 并定位到这批照片",
-            不是"无声导入"。LrC 未安装时整块隐藏(不给一个点了只会报错的按钮)。 */}
+        {/* Phase 7 · 一键「导入到 LrC」。
+            语义是"**先导入**这批选中的照片, 再打开 Lightroom 的导入页面"——
+            页面上只有这一批, 用户在 LrC 里点一次导入即可。所以必须**先勾选**:
+            没有选区就没有要导入的东西。LrC 未安装时整块隐藏。 */}
         {lrcProbe?.found && (
           <Tip label={t("lrc.sendTip")}>
           <button
-            disabled={lrcSending || (selectedCount === 0 && !lrcCanUseActiveFolder)}
+            disabled={lrcSending || selectedCount === 0}
             onClick={onSendToLightroom}
             className="text-[10px] px-2 py-1 rounded bg-zinc-800 hover:bg-zinc-700 text-sky-400 disabled:bg-zinc-800/50 disabled:text-zinc-600 shrink-0"
           >
@@ -141,20 +135,15 @@ export function ImportBar({
       {importError && (
         <div className="px-3 pb-1 text-[10px] text-red-400">{t("import.error", { msg: importError })}</div>
       )}
-      {/* Phase 7 · 交给 LrC 之后的实话。
-          必须显式说出"发的是哪个文件夹"和"还有 N 个文件夹没发": 只发一个文件夹是
-          实测限制(见 src/lightroom.ts 不变式 2), 静默只发一部分会让用户以为全发了。 */}
+      {/* Phase 7 · 导入后交给 LrC 的结果。
+          说的其实是两件事: ①真的导入了几张(数字来自 Rust 的 ImportSummary);
+          ②交给 LrC 的是哪个文件夹 —— 若目标文件夹非空, 那是一个新建的子文件夹,
+          用户导完要去那里挪文件, 不说清楚等于活干了一半。 */}
       {lrcSent && (
-        <div className="px-3 pb-1 text-[10px] text-sky-400 space-y-0.5">
-          <div>
-            {lrcSent.fromActiveFolder
-              ? t("lrc.sentActiveFolder", { dir: lrcSent.folder })
-              : t("lrc.sent", { n: lrcSent.count, dir: lrcSent.folder })}
-          </div>
-          {lrcSent.alsoInOtherFolders > 0 && (
-            <div className="text-amber-400">
-              {t("lrc.sentPartial", { n: lrcSent.alsoInOtherFolders })}
-            </div>
+        <div className="px-3 pb-1 text-[10px] text-sky-400">
+          {t("lrc.sent", { n: lrcSent.count, dir: lrcSent.folder })}
+          {lrcSent.staged && (
+            <span className="text-amber-400">{t("lrc.sentStaged")}</span>
           )}
         </div>
       )}

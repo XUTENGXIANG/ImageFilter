@@ -69,7 +69,8 @@ function xmpNoticeText(t: TFunction, n: XmpNotice): string {
  * 在 App 里用 i18n 拼, hook 只给闭集错误码)。
  */
 function lrcNoticeText(t: TFunction, n: LrcNotice): string {
-  return t("lrc.toastFailed", { reason: t(`lrc.err.${lrcErrKey(n.code)}`) });
+  const reason = t(`lrc.err.${lrcErrKey(n.code)}`, { n: n.n });
+  return t("lrc.toastFailed", { reason });
 }
 
 /**
@@ -238,7 +239,7 @@ function App() {
     lrcSending,
     lrcSent,
     lrcNotice,
-    sendToLightroom,
+    importToLightroom,
   } = useScanner();
 
   // 图片查看器: viewerIndex=null 关闭, 数字=打开第N张
@@ -840,11 +841,10 @@ function App() {
           history={importHistory}
           scheme={importScheme}
           selectedCount={selectedPaths.size}
-          lrcCanUseActiveFolder={!!activeFolder}
           lrcProbe={lrcProbe}
           lrcSending={lrcSending}
           lrcSent={lrcSent}
-          onSendToLightroom={sendToLightroom}
+          onSendToLightroom={importToLightroom}
           onPickDestDir={pickDestDir}
           onOpenFolder={(dir) => invoke("open_folder", { path: dir })}
           onImport={() => startImport([...selectedPaths])}

@@ -42,6 +42,15 @@ pub enum LrcError {
     /// 非 Windows 平台(macOS 走 `open`, 尚未验证, 所以先明确报"不支持")
     #[cfg_attr(target_os = "windows", allow(dead_code))]
     NotSupported,
+    /// 未实现的模式(前端挡下的"静默导入"档)。Rust 侧不构造, 与前端闭集对照用。
+    #[cfg_attr(target_os = "windows", allow(dead_code))]
+    NotImplemented,
+    /// 目标里这批照片全都已存在(内容相同) → 没有新东西可给 LrC 导入。
+    ///
+    /// 由**前端**判定并提示(summary.imported == 0), Rust 侧不构造这个码 —— 与上一条
+    /// 同理, 放在这里只是为了让错误码闭集与前端 LRC_ERR_CODES 一一对应, 便于对照。
+    #[cfg_attr(target_os = "windows", allow(dead_code))]
+    NoNewPhotos,
     Unknown,
 }
 
@@ -52,6 +61,8 @@ impl LrcError {
             LrcError::NoFolder => "noFolder",
             LrcError::LaunchFailed => "launchFailed",
             LrcError::NotSupported => "notSupported",
+            LrcError::NotImplemented => "notImplemented",
+            LrcError::NoNewPhotos => "noNewPhotos",
             LrcError::Unknown => "unknown",
         }
     }
@@ -74,6 +85,8 @@ fn detail_of(e: LrcError) -> &'static str {
         LrcError::NoFolder => "目标文件夹不存在或不是目录",
         LrcError::LaunchFailed => "启动 Lightroom 失败",
         LrcError::NotSupported => "该平台暂不支持与 Lightroom 衔接",
+        LrcError::NotImplemented => "该模式尚未实现",
+        LrcError::NoNewPhotos => "选中的照片在目标里都已存在, 没有新照片",
         LrcError::Unknown => "未知错误",
     }
 }
@@ -532,8 +545,7 @@ pub async fn probe_lightroom() -> LightroomProbe {
 ///
 /// 返回 exe 路径(前端只用于文案/排查)。
 #[tauri::command]
-pub async fn send_to_lightroom(folder_path: String) -> Result<String, String> {
-    if folder_path.trim().is_empty() {
+pub async fn send_to_lightroom(folder_path: String) -> Result<String, String> {    if folder_path.trim().is_empty() {
         return Err(LrcError::NoFolder.to_string());
     }
     let folder = PathBuf::from(&folder_path);
@@ -592,9 +604,65 @@ pub async fn send_to_lightroom(folder_path: String) -> Result<String, String> {
     }
 }
 
+// ── "这个文件夹是不是空的" ─────────────────────────────────────────────
+
+/// 目录是否存在且**完全没有条目**(文件和子目录都算)。
+///
+/// 为什么需要它: Phase 7 的"导入后交给 LrC"要求 Lightroom 的导入页面里
+/// **只有刚导入的那几张**。若目标文件夹本来就是空的, 直接导进去即可; 若里面
+/// 已经有东西(旧照片、子目录、甚至用户的 Lightroom 目录库), 就必须导进一个
+/// 新建的子文件夹 —— 否则 LrC 会把整个文件夹的内容都列出来。
+///
+/// 语义细节(都在单测里钉住):
+///   · **路径不存在按"空"处理** —— 导入会自己 `create_dir_all`, 调用方不必区分
+///     "还没有这个目录"和"目录是空的";
+///   · **只有子目录也算非空** —— 用户自己的分类目录不该被当成空目录塞照片;
+///   · 不递归: 只看这一层。
+fn is_dir_empty_inner(dir: &Path) -> bool {
+    match std::fs::read_dir(dir) {
+        Ok(mut entries) => entries.next().is_none(),
+        Err(_) => true, // 不存在 / 读不了 → 交给后续的导入去报真正的错
+    }
+}
+
+/// 前端在"导入后交给 LrC"之前调一次, 决定是直接用目标文件夹还是另建子文件夹。
+#[tauri::command]
+pub async fn is_dir_empty(dir_path: String) -> Result<bool, String> {
+    tokio::task::spawn_blocking(move || is_dir_empty_inner(Path::new(&dir_path)))
+        .await
+        .map_err(|e| format!("{}", e))
+}
+
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn is_dir_empty_reports_missing_and_empty_and_nonempty() {
+        let base = std::env::temp_dir().join(format!("ifx_isempty_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+
+        // 不存在的路径: 按"空"处理 —— 导入会自己建目录, 调用方不必区分
+        assert!(is_dir_empty_inner(&base.join("nope")));
+
+        // 真空目录
+        let empty = base.join("empty");
+        std::fs::create_dir_all(&empty).unwrap();
+        assert!(is_dir_empty_inner(&empty));
+
+        // 有文件(哪怕只是一个无关文件)
+        std::fs::write(empty.join("a.txt"), b"x").unwrap();
+        assert!(!is_dir_empty_inner(&empty));
+
+        // 只有子目录也算非空(用户自己的分类目录不该被塞进照片)
+        let withsub = base.join("withsub");
+        std::fs::create_dir_all(withsub.join("child")).unwrap();
+        assert!(!is_dir_empty_inner(&withsub));
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
 
     #[test]
     fn expand_env_vars_replaces_known_and_keeps_unknown() {
@@ -638,11 +706,13 @@ mod tests {
 
     #[test]
     fn error_codes_are_the_contract_used_by_i18n() {
-        // 前端 src/lightroom.ts 的白名单必须与此完全一致(改这里就要改那边)
+        // 前端 src/lightroom.ts 的 LRC_ERR_CODES 必须与此完全一致(改这里就要改那边)
         assert_eq!(LrcError::NotFound.code(), "notFound");
         assert_eq!(LrcError::NoFolder.code(), "noFolder");
         assert_eq!(LrcError::LaunchFailed.code(), "launchFailed");
         assert_eq!(LrcError::NotSupported.code(), "notSupported");
+        assert_eq!(LrcError::NotImplemented.code(), "notImplemented");
+        assert_eq!(LrcError::NoNewPhotos.code(), "noNewPhotos");
         assert_eq!(LrcError::Unknown.code(), "unknown");
     }
 
