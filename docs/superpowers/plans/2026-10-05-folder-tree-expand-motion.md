@@ -11,7 +11,9 @@
 ## Global Constraints
 
 - **不新增任何依赖**，`package.json` 不动。测试走 `npx esbuild` + `node`，与 `docs/evidence/scripts/lrc-logic.test.ts` 同一套。
-- **`24px` 在代码库里只出现一次** —— `src/index.css` 的 `.tree-row` 规则里。JS 里不出现这个数。
+- **树行高度只在 `src/index.css` 的 `.tree-row` 规则里声明一次。** JS 里不出现这个数。
+  （说清楚：`24px` 这个长度在别处另有用途 —— `.bg-grid` 的点阵步长、`.hit-24` 的命中区下界、
+  `thumb-size-slider.tsx` 的盒高 —— 那些与本方案无关，不是重复。约束针对的是"树行高度"这一个语义。）
 - 子树高度**一律由 `inner.scrollHeight` 实测得出**，不写死像素。
 - **不使用 `transitionend` / `onTransitionEnd`**。`src/index.css` 末尾的全局 reduced-motion 块注释里写明"项目内没有任何代码依赖 transitionend"，`src/` 下 grep 也为零。收尾一律用定时器。
 - 动效时长/缓动与既有令牌一致：**200ms / `ease-in-out`**（同 `src/components/collapsible-bar.tsx:21`）。
@@ -107,19 +109,37 @@ console.log("行数:", before.length, " 去重行高:", heights.join(", "));
 const badH = before.filter((r) => r.h !== 24);
 console.log(badH.length ? `FAIL 行高不是 24: ${badH.map((r) => r.text + "=" + r.h).join(", ")}` : "ok  所有行高 24px");
 
-// 断言 2：展开一个分支后，其它行的文字横向位置不变（修掉 ▶/▼ 换字形造成的 1px 抖动）。
-// 注意必须按行文本对齐再比 —— 展开会**新增**子行，按下标比会拿错行。
-const beforeMap = Object.fromEntries(
-  before.filter((r) => !r.text.includes("102EOSR5")).map((r) => [r.text, r.nameLeft]));
+// 断言 2：箭头必须是**同一个字形 + 靠 transform 旋转**，而不是换字形。
+// ⚠️ 别写成"展开后其它行的文字不位移" —— 旧实现里箭头那层 span 是固定的
+//    w-3 flex-shrink-0，后面的文字本来就不会动，那种断言在改动前就已经通过，
+//    没有任何鉴别力。这一条在改动前会真的失败：旧实现渲染 ▶/▼ 两个不同字符，
+//    且完全没有 transform。
+const caretOf = (name) => page.evaluate((n) => {
+  const root = [...document.querySelectorAll("button")].find((b) => b.textContent.includes("根目录"));
+  const row = [...root.parentElement.querySelectorAll("button")].find((r) => r.textContent.includes(n));
+  if (!row) return { err: "no row " + n };
+  // 新旧实现里箭头都在行内第一个 span 里，所以这个取法两边都成立
+  const span = row.querySelector(".tree-caret") || row.querySelector("span");
+  const el = span.querySelector("i") || span.firstElementChild || span;
+  return { glyph: (el.textContent || "").trim(), transform: getComputedStyle(el).transform };
+}, name);
+
+const closedCaret = await caretOf("102EOSR5");
 await clickText("102EOSR5");
 await page.waitForTimeout(800);
+const openCaret = await caretOf("102EOSR5");
+console.log("收起态箭头:", JSON.stringify(closedCaret));
+console.log("展开态箭头:", JSON.stringify(openCaret));
+
+const sameGlyph = !!closedCaret.glyph && closedCaret.glyph === openCaret.glyph;
+const rotated = closedCaret.transform === "none" && openCaret.transform !== "none";
+console.log(sameGlyph
+  ? `ok   两个状态是同一个字形 "${closedCaret.glyph}"`
+  : `FAIL 箭头换了字形: "${closedCaret.glyph}" → "${openCaret.glyph}"`);
+console.log(rotated
+  ? `ok   靠 transform 旋转（${openCaret.transform}）`
+  : `FAIL 展开态没有 transform: ${openCaret.transform}`);
 const after = await tree();
-const afterMap = Object.fromEntries(after.map((r) => [r.text, r.nameLeft]));
-const shifted = Object.keys(beforeMap).filter(
-  (k) => afterMap[k] !== undefined && afterMap[k] !== beforeMap[k]);
-console.log(shifted.length
-  ? `FAIL 展开后有行文字横向位移: ${shifted.map((k) => k + " " + beforeMap[k] + "→" + afterMap[k]).join(", ")}`
-  : `ok  展开不引起横向抖动（比对了 ${Object.keys(beforeMap).length} 行）`);
 
 // 断言 3：可展开的行有 aria-expanded，叶子没有
 const branches = after.filter((r) => r.text.includes("EOSR5") || r.text.includes("DCIM"));
@@ -147,14 +167,17 @@ Expected: `FAIL 行高不是 24: ...=20.5`，以及 `可展开行 aria-expanded:
    行高 24px: WCAG 2.5.8 的目标尺寸下限。原先靠 11px 字号 + 上下各 2px 内边距隐式得到
    20.5px, 是左侧面板里唯一低于 24px 的行(面板收起按钮/刷新 24、设备行 28、根目录 26.5),
    而它恰恰是数量最多、最常点的那个。
-   24px 在整个代码库里只出现这一次 —— 占位行复用 .tree-row, 所以自动同高,
+   树行高度只在这一处声明 —— 占位行复用 .tree-row, 所以自动同高,
    JS 里不需要知道这个数(子树高度一律由 scrollHeight 实测)。 */
 .tree-row {
   height: 24px;
 }
 
-/* 箭头用同一个 ▶ 字形旋转, 而不是 ▶/▼ 换字形 ——
-   两个字符的推进宽度不同, 展开时后面的文字会横向抖 1px。 */
+/* 箭头改成同一个 ▶ 字形旋转, 而不是 ▶/▼ 换字形。
+   真正的理由: **换字形没法做过渡** —— 它是文本内容的变化, CSS transition 无从插值,
+   而 Task 3 需要展开时箭头转过去(160ms), 所以必须是一个能 transform 的元素。
+   (顺带说明一个曾经写错过的点: 这不是为了修"文字横向抖动"。旧实现里箭头那层 span 是
+    固定的 w-3 flex-shrink-0, 后面的文字本来就不会动。) */
 .tree-caret i {
   display: inline-block;
   font-style: normal;
@@ -204,7 +227,8 @@ Expected: `FAIL 行高不是 24: ...=20.5`，以及 `可展开行 aria-expanded:
 - [ ] **Step 5: 跑探针，确认三处断言都通过**
 
 Run: `node .design-audit\_probe\verify-tree-row-geometry.mjs`
-Expected: `ok  所有行高 24px`、`ok  展开不引起横向抖动`、可展开行的 `aria-expanded` 至少有一个 `"true"`、叶子行是 `null`、`page errors: none`。
+Expected: `ok  所有行高 24px`、`ok   两个状态是同一个字形 "▶"`、`ok   靠 transform 旋转（matrix(...)）`、可展开行的 `aria-expanded` 至少有一个 `"true"`、叶子行是 `null`、`page errors: none`。
+（`tree()` 里可以顺手删掉已不再使用的 `nameLeft`。）
 
 - [ ] **Step 6: 看图确认旋转后的 ▶ 读起来是"向下"且光学居中**
 
