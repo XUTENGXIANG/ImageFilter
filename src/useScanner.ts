@@ -10,7 +10,7 @@ import {
 } from "./undo";
 import { LABELS_STORAGE_KEY, readLabels, type Label } from "./labels";
 import {
-  XMP_MODE_STORAGE_KEY, XMP_QUEUE_LIMIT, buildDecisionWrite, isVolumeFatal,
+  XMP_MODE_STORAGE_KEY, XMP_QUEUE_LIMIT, buildDecisionWrite, dirOfPath, isDowngradeCandidate,
   mergeRemoteLabels, mergeRemoteRatings, readXmpMode,
   type XmpField, type XmpMode, type XmpNotice, type XmpStatus,
 } from "./xmp";
@@ -176,6 +176,23 @@ export function useScanner() {
     setXmpStatus((prev) => (prev ? { ...prev, pending: 0 } : prev));
   }, []);
 
+  /**
+   * 原始探测(无副作用), 结果进缓存。抽出来是为了两个用途:
+   * ① 档位切到 on / 打开文件夹时先确认可写; ② **写入失败后重新探测** ——
+   * 单文件只读与整卷写保护是同一个错误码, 只能靠"目录现在还可写吗"来区分。
+   */
+  const probeXmpTargetRaw = useCallback(async (dir: string): Promise<XmpProbe | null> => {
+    if (!dir) return null;
+    try {
+      const p = await invoke<XmpProbe>("probe_xmp_target", { dirPath: dir });
+      xmpProbedRef.current.set(dir, p);
+      return p;
+    } catch (err) {
+      console.error("probe_xmp_target:", err);
+      return null;
+    }
+  }, []);
+
   /** 防抖调度(600ms)。已有定时器就复用 —— 连续操作只落一次盘 */
   const scheduleXmpFlush = useCallback((delay = 600) => {
     if (xmpModeRef.current !== "on") return;
@@ -234,13 +251,22 @@ export function useScanner() {
       const failures = summary?.failures ?? [];
       for (const f of failures) xmpFailedRef.current.add(f.path);
       if (failures.length > 0) notifyXmp("failed", failures[0].code, failures.length);
-      const fatal = failures.find((f) => isVolumeFatal(f.code));
+      const fatal = failures.find((f) => isDowngradeCandidate(f.code));
       if (fatal) {
-        // 只读卡/写保护/权限不足 → 自动降级为 off + 一次提示(docs §5.3 红线),
-        // 绝不"每次评分都弹错"。
-        dropXmpQueue();
-        applyXmpMode("off");
-        notifyXmp("downgraded", fatal.code, 0);
+        // ⚠️ **不能凭一次写入失败就降级**: 单个文件只读 / 单文件 ACL 与"整卷写保护"
+        // 是同一个错误码(实机踩过: 把一个 .xmp 设成只读, 整个 on 档被关掉了, 而按
+        // docs §6 的规矩"单文件问题不降级")。所以重新探测它所在的目录:
+        // 探测说可写 → 只是那个文件的问题, 提示一次、档位不动;
+        // 探测也说不可写 → 才是真的整目录不可写, 降级 off, 并把原因记进状态行
+        // (否则用户只能在 4 秒的 toast 里瞥一眼原因)。
+        const dir = dirOfPath(fatal.path);
+        const p = await probeXmpTargetRaw(dir);
+        if (p && !p.writable) {
+          dropXmpQueue();
+          applyXmpMode("off");
+          setXmpStatus({ dir, writable: false, code: p.code ?? fatal.code, pending: 0, network: p.network, degraded: false });
+          notifyXmp("downgraded", p.code ?? fatal.code, 0);
+        }
       }
       setXmpStatus((prev) =>
         prev
@@ -254,30 +280,22 @@ export function useScanner() {
       xmpInFlightRef.current = false;
       if (xmpModeRef.current === "on" && xmpQueueRef.current.size > 0) scheduleXmpFlush(0);
     }
-  }, [applyXmpMode, dropXmpQueue, notifyXmp, scheduleXmpFlush]);
+  }, [applyXmpMode, dropXmpQueue, notifyXmp, probeXmpTargetRaw, scheduleXmpFlush]);
   xmpFlushRef.current = flushXmpQueue;
 
-  /** 探测目录可写性(每个目录每会话只探一次)。不可写 → 立刻降级 off + 一次性提示 */
+  /** 探测目录可写性(每个目录每会话只真探一次)。不可写 → 立刻降级 off + 一次性提示 */
   const probeXmpTarget = useCallback(async (dir: string) => {
     if (!dir) return;
     const cached = xmpProbedRef.current.get(dir);
-    if (cached) {
-      setXmpStatus({ dir, writable: cached.writable, code: cached.code, pending: xmpQueueRef.current.size, network: cached.network, degraded: false });
-      return;
+    const p = cached ?? (await probeXmpTargetRaw(dir));
+    if (!p) return;
+    setXmpStatus({ dir, writable: p.writable, code: p.code, pending: xmpQueueRef.current.size, network: p.network, degraded: false });
+    if (!p.writable) {
+      dropXmpQueue();
+      applyXmpMode("off");
+      notifyXmp("downgraded", p.code, 0);
     }
-    try {
-      const p = await invoke<XmpProbe>("probe_xmp_target", { dirPath: dir });
-      xmpProbedRef.current.set(dir, p);
-      setXmpStatus({ dir, writable: p.writable, code: p.code, pending: xmpQueueRef.current.size, network: p.network, degraded: false });
-      if (!p.writable) {
-        dropXmpQueue();
-        applyXmpMode("off");
-        notifyXmp("downgraded", p.code, 0);
-      }
-    } catch (err) {
-      console.error("probe_xmp_target:", err);
-    }
-  }, [applyXmpMode, dropXmpQueue, notifyXmp]);
+  }, [applyXmpMode, dropXmpQueue, notifyXmp, probeXmpTargetRaw]);
 
   /** 用户在设置里改档位 */
   const setXmpMode = useCallback((m: XmpMode) => {

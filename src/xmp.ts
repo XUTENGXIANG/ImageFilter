@@ -80,12 +80,19 @@ export function xmpErrKey(code: unknown): XmpErrCode {
 }
 
 /**
- * 是不是"整卷/整目录不可写"。命中 → 自动降级为 off 并提示;
- * 单文件问题(diskFull / busy / notXmp / tooLarge / encoding) **不降级** ——
- * 那些是暂时的或只影响一张, 降级会让用户以为功能坏了。
+ * 这几个错误码**可能**意味着"整卷/整目录不可写"，但**不足以据此降级** ——
+ * 单个文件只读、单个文件 ACL 拒绝都会落到同样这几个码上（实测：把一个 .xmp 设成
+ * 只读，会让整个功能被关掉，而按 docs §6 的规矩"单文件问题不降级"）。
+ * 所以调用方的正确姿势是：命中这些码 → **重新探测该目录** → 探测也说不可写才降级。
  */
-export function isVolumeFatal(code: unknown): boolean {
+export function isDowngradeCandidate(code: unknown): boolean {
   return code === "writeProtect" || code === "readOnly" || code === "permission";
+}
+
+/** 取父目录（`\` 与 `/` 都认，UNC 路径也适用）；用于"失败后重新探测这个目录" */
+export function dirOfPath(path: string): string {
+  const i = Math.max(path.lastIndexOf("\\"), path.lastIndexOf("/"));
+  return i > 0 ? path.slice(0, i) : "";
 }
 
 // ── 合并(边车 → 本机 map) ──────────────────────────────────────────
