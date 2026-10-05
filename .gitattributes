@@ -1,0 +1,31 @@
+# 行尾统一：仓库里一律存 LF，工作区由各人系统决定。
+#
+# 为什么需要这个文件(实测踩过):
+# 本机 core.autocrlf=true, 而仓库里同时存在 LF 与 CRLF 的文件, 于是
+# `src-tauri/Cargo.toml` 这类文件会**长期显示为已修改** —— 但 `git diff` 是空的,
+# 内容一模一样, 纯粹是"checkout 时转 CRLF / 提交换回 LF"的往返造成的。
+# 光看 git status 会以为有未提交改动, 反复 add/checkout 也消不掉。
+#
+# 关键: 必须把 `text` 显式写成 auto 或 eol=lf。只写 `-text`(当作二进制)是不够的 ——
+# 那只是不再转换, 但索引里已有的行尾差异不会消失。
+* text=auto
+
+# Windows 专用脚本：CRLF 更符合这些环境里的习惯, 且 PowerShell 对 LF 的 .ps1
+# 在旧版本上有解析问题(本项目的 _probe/probe-lrc.ps1 就因此改成过纯 ASCII + CRLF 友好写法)。
+*.ps1 text eol=crlf
+*.cmd text eol=crlf
+*.bat text eol=crlf
+
+# 明确按二进制处理的(别让 git 去猜, 也别在 diff 里显示乱码)
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.ico binary
+*.icns binary
+*.woff2 binary
+*.dll binary
+*.exe binary
+*.msi binary
+
+# Cargo.lock 由 cargo 生成, 但入库利于可复现构建; 按文本处理便于 review
+Cargo.lock text
