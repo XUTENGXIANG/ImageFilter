@@ -718,14 +718,18 @@ Expected: 四档都是 `ok   平滑`（台阶数 > 10），退出码 0。
 **再加一条跨文件的断言：CSS 的过渡时长必须等于 `EXPAND_MS`。** 这两处是同一个值写在两个地方（`src/index.css` 的 `.tree-kids` 与 `src/components/folder-tree-motion.ts` 的 `EXPAND_MS`），而 TS 侧的单测只能钉住自己那一半 —— CSS 漂走了没有任何东西会失败，症状是 `height: auto` 的收尾时刻错位（早于过渡结束 → 看得见一跳；晚太多 → 把嵌套展开被裁的窗口拉长）。在同一个探针里量：
 
 ```js
+// 按行取它自己的 .tree-kids：每个可展开节点都有一个 .tree-kids（Step 6 会解释为什么
+// 不能直接 querySelector 第一个），只读 computed style 时取哪个结果都一样，
+// 但这里不想示范那个坏模式。
 const dur = await page.evaluate(() => {
-  const kids = document.querySelector(".tree-kids");
+  const row = [...document.querySelectorAll(".tree-row")].find((r) => r.textContent.includes("DCIM"));
+  const kids = row.parentElement.querySelector(".tree-kids");
   const cs = getComputedStyle(kids);
   return cs.transitionDuration + " / " + cs.transitionProperty;
 });
 console.log("CSS 过渡:", dur);
-const expectS = (EXPAND_MS / 1000).toFixed(3).replace(/0+$/, "").replace(/\.$/, "");
-// getComputedStyle 返回秒为单位、可能带尾零，这里做归一后比对
+// getComputedStyle 返回的是秒、且可能带尾零（"0.2s" 也可能写成 "0.200s"），
+// 所以解析成数字再比，不要比字符串。
 const okDur = dur.split(" / ")[0].split(",").some((v) => parseFloat(v) === EXPAND_MS / 1000);
 console.log(okDur ? "ok   CSS 过渡时长与 EXPAND_MS 一致" : `FAIL CSS 过渡时长与 EXPAND_MS(${EXPAND_MS}ms) 不一致: ${dur}`);
 ```
