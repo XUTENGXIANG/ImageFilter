@@ -56,4 +56,6 @@
 
 跑浏览器脚本时注意路径：它们把 `playwright-core` 按本机 DSH profile 解析，换机器用 `PW_BASE` 环境变量覆盖。
 
+`verify-os-default.mjs` 会在自己旁边写出 `os-win11.png` / `os-win10.png` 两张截图（就是设置面板里那一行），按本仓库约定**不入库** —— 跑完看到这两个未跟踪文件是正常的，可以直接删。
+
 > 跑 `lrc-logic.test.ts` / `i18n-parity.cjs` 时注意路径：它们按仓库根在 `A:/tenent` 写的，换机器要改 `import`/读文件路径。
