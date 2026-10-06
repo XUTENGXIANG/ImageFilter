@@ -10,9 +10,12 @@
 
 ## Global Constraints
 
-- **桌面端基线**：`v1.1.2`，HEAD 从 `d03c996` 起。本计划**不发布**，不动版本号。
+- **桌面端基线**：`v1.1.2`。本计划**不发布**，不动版本号。每个任务的 BASE 以**它自己提交时的父提交**为准——执行期间会有并行的 docs 提交，**别把某个固定 SHA 当成永远的事实**（Task 1 就踩过：它的父提交是 `a1dcd60` 而不是开工时的 `b3ccad8`）。
 - **命令一律在 `A:\tenent\src-tauri` 下执行** `cargo test --lib` / `cargo check --lib`。
-- **`cargo test --lib` 每个任务后必须全绿**，通过/忽略的测试数与 Task 1 钉死的基线**一致**（Task 2 会加一个 `#[ignore]` 探针，届时 `ignored` +1 是预期且唯一允许的增量）。
+- **`cargo test --lib` 每个任务后必须全绿**，且通过/忽略的测试数与基线**一致**。
+  **基线已实测钉死：`passed = 67, failed = 0, ignored = 3`（共 70 个）**。Task 2 会加一个 `#[ignore]` 探针 → 届时 `ignored` 变 4 是**预期且唯一允许**的增量。
+- **warning 的验收线是"相对基线无新增"，不是"零 warning"**：基线本身就有 1 个既存 warning —— `importer.rs:331` 的 `copy_one is never used`（它只被同文件里的测试调用，生产走 `copy_one_reporting`）。交接文档 §8 原先那句 `cargo check --lib # 应无警告` 是**错的**，已订正。
+- **环境危险项：用户机器上可能装着并运行着正式版 ImageFilter**（`%LOCALAPPDATA%\ImageFilter\`）。它与开发构建**共用同一个 SQLite**（`%APPDATA%\com.imagefilter.app\image-filter.db`）。遇到莫名的 DB 锁 / 迁移失败，**先怀疑它**；但**绝不要擅自结束用户的进程**——那是用户的程序，不是我们的残留。
 - **源码风格**：文件头两行 `// Copyright (c) 2026 XUTENGXIANG` + `// SPDX-License-Identifier: MIT`；注释与提交信息用**中文**；conventional commits。
 - **改动限于规格 §6 列出的 11 个文件**。**禁止**动 `App.tsx` 布局、`viewer.tsx`、`index.css`、`analyzer.rs`、`importer.rs`、`db.rs`。
 - **服务层不许另写一套**缩略图/预览/边车/扫描逻辑——只能调用既有函数。降采样与编码必须复用 `resize_max_edge`（Lanczos3，`images.rs:27`）与 `save_jpeg_quality` 拆出来的编码入口（`images.rs:58`）。
