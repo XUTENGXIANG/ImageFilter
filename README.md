@@ -89,16 +89,6 @@
 
 示例：`{date}/{camera}/{seq}.{ext}` 生成 `2026-08-10/Sony_A7M4/0001.ARW`
 
-## 技术栈
-
-| 层 | 技术 |
-|----|------|
-| 框架 | Tauri 2, React 19, TypeScript |
-| UI | Tailwind CSS 4, shadcn/ui, IconPark |
-| RAW 解码 | rawler, WIC, tinydng, zune-jpeg |
-| 缩略图 | Windows Shell（IShellItemImageFactory） |
-| 图像分析 | imgfprint, 纯算法（拉普拉斯/直方图） |
-| 存储 | SQLite |
 
 ## 开发
 
@@ -109,21 +99,7 @@
 git clone https://github.com/XUTENGXIANG/ImageFilter.git
 cd ImageFilter
 
-# 安装依赖
-npm install
 
-# 开发模式（热重载）
-npx tauri dev
-
-# 构建安装包
-npx tauri build
-```
-
-构建产物输出到 `src-tauri/target/release/bundle/`。
-
-> **参与开发 / 接手这个项目，请先读 [docs/ImageFilter-交接与上手.md](docs/ImageFilter-交接与上手.md)** —— 代码地图、关键机制（三级解码链、查看器状态机、并发与取消模式）、必守坑位、未修问题与优化建议、发版计划。
-
----
 ### dev 启动
 
 `npx tauri dev` 
@@ -131,24 +107,7 @@ npx tauri build
 
 
 
-## 项目结构
 
-```
-src/                  # React 前端
-  App.tsx             # 主界面（三栏布局 + 浮窗工具条）
-  useScanner.ts       # 状态管理与业务逻辑
-  viewer.tsx          # 图片查看器（渐进加载）
-  i18n/               # 中英文翻译（zh / en）
-  components/         # 浮窗面板/工具条/照片卡片等组件
-src-tauri/            # Rust 后端
-  src/
-    scanner/          # 设备/浏览/EXIF/图片解码模块
-    analyzer.rs       # 模糊/曝光/重复检测
-    importer.rs       # 导入引擎
-    win_wic.rs        # Windows WIC 解码
-    tinydng.rs        # DNG 解码（FFI）
-  third_party/tinydng # DNG 解码器 C++ 源码
-```
 
 ## 许可
 
@@ -156,7 +115,5 @@ src-tauri/            # Rust 后端
 
 可以自由使用、修改、分发，包括商业闭源使用；只需在副本或实质性部分中**保留版权声明与许可证文本**。软件按「原样」提供，不含任何形式的担保。
 
-版权所有者：**XUTENGXIANG**（2026）。
 
-这条要求在分发路径上都落实了：安装包（Windows NSIS / MSI）的安装向导里会显示这份协议，安装目录里还会放一份 `LICENSE.txt`（卸载时一并删除）；每个源文件头部都带 `SPDX-License-Identifier: MIT`。
 
