@@ -66,7 +66,18 @@
 
 **为什么单独成任务**：后面每一步都依赖它，而它是本计划唯一会碰"系统环境"的地方。全部装进用户目录、全部校验官方哈希。
 
-> **本任务没有单测，这是有意的**：它不产出代码，产出的是"可用的工具链 + 一份实测证据"。验收线是 Step 6 的三条命令有正确输出、Step 7 的证据文件入库。评审时请按"环境任务"评判，**不要以"缺少测试"判缺陷**——那会逼出为环境步骤写假测试的坏结果。
+> **本任务没有单测，这是有意的**：它不产出代码，产出的是"可用的工具链 + 一份实测证据"。验收线是 Step 6 的命令有正确输出、Step 7 的证据文件入库。评审时请按"环境任务"评判，**不要以"缺少测试"判缺陷**——那会逼出为环境步骤写假测试的坏结果。
+
+> **实测环境结论（2026-10-07；工具链已按下面这套装好，实现者可直接复用，不要重新摸索）**
+>
+> 1. **JDK 21 = Temurin 21.0.12.1 LTS**，装在 `%LOCALAPPDATA%\Programs\jdk-21\jdk-21.0.12.1+1`。取包策略：**大文件走国内镜像**（TUNA），**SHA256 走 GitHub 官方 `.sha256.txt`**——GitHub 直连实测只有 67KB/s 且会中途卡死。
+> 2. **cmdline-tools**：腾讯 `mirrors.cloud.tencent.com/AndroidSDK/` 与官方大小/哈希一致。**解析官方清单时，size + checksum + url 必须绑定在同一个 `<complete>` 块内取**——向后取一段窗口会拿到**相邻条目**（macOS arm64）的值，从而拒绝掉本来正确的下载。
+> 3. **`sdkmanager` 已被 Google 标记弃用**，继承者是 `cmdline-tools\latest\bin\android.exe`（`android sdk list` 实测可用）。但 sdkmanager 目前仍能装包。
+> 4. **`sdkmanager --version` 会失败（exit -1）**——验收命令改用 `--list_installed` 或 `android sdk list`。`--licenses` 也不再需要（会提示 "no longer needed"）。
+> 5. **调 `sdkmanager.bat` 必须经 `cmd /c` 并显式加引号**：PowerShell 直接调会把 `"platforms;android-35"` 按 `;` **拆成两个包名**（报 `Package platforms not found`）。正确写法：`cmd /c '"<sm>" --sdk_root="<sdk>" "platforms;android-35"'`。
+> 6. **绝不要把 sdkmanager 的输出管进 `Select-Object -First N`**：管道提前关闭会**把正在下载的进程杀掉**（表现为莫名的 exit -1 与半截下载）。输出重定向到文件再看。
+> 7. **Gradle 必须用 JDK 21 启动**：不设 `JAVA_HOME` 时它会用系统里的 Java 25（实测 `Daemon JVM: C:\Program Files\Java\jdk-25.0.3`），而 **AGP 不支持 JDK 25**，会直接构建失败。设了之后实测 `Launcher JVM: 21.0.12.1 (Eclipse Adoptium)` ✓。
+> 8. **本机有意不设全局 `JAVA_HOME`**（保护使用者现有的 Java 25 环境不被改变）。所以**每条安卓构建命令都要显式** `$env:JAVA_HOME = '%LOCALAPPDATA%\Programs\jdk-21\jdk-21.0.12.1+1'`。`ANDROID_HOME` 与 PATH 已加到用户级，无需再动。
 
 **Files:**
 - Create: `docs/evidence/android-toolchain/REPORT.txt`（记录实际版本与路径）
