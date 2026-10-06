@@ -954,8 +954,6 @@ use std::path::Path;
 
 /// 服务端预览的编码质量。**必须是显式值** —— `img.save()` 会走 JPEG 默认质量 ≈75。
 const PREVIEW_JPEG_QUALITY: u8 = 88;
-/// 缩略图也显式给质量（避免与桌面端网格观感不一致）。
-const THUMB_JPEG_QUALITY: u8 = 85;
 
 /// 缩略图字节。直接复用桌面端的 `thumbnails_v2` 缓存。
 pub async fn thumbnail_bytes(path: &str, size: u32) -> Result<Vec<u8>, ApiError> {
@@ -1012,16 +1010,9 @@ pub async fn preview_bytes(path: &str, max: u32, full: bool) -> Result<Vec<u8>, 
     .await
     .map_err(|_| ApiError::Internal)?
 }
-
-/// 供 `thumb` 端点显式转码时使用（当 `thumbnails_v2` 里的缓存不是 JPEG 时兜底）。
-#[allow(dead_code)]
-pub(crate) fn reencode(img: &image::DynamicImage) -> Result<Vec<u8>, ApiError> {
-    let mut out = Vec::new();
-    crate::scanner::images::encode_jpeg_quality(img, &mut out, THUMB_JPEG_QUALITY)
-        .map_err(|_| ApiError::Internal)?;
-    Ok(out)
-}
 ```
+
+**不要**在这里加"缩略图兜底转码"之类的函数：`thumb_single` 永远把缓存写成 `.jpg`（`images.rs:480` 的缓存名就带 `.jpg`），所以没有需要兜底的格式。写了就是死代码，review 会（正确地）当缺陷提出来。
 
 在 `server/mod.rs` 顶部加 `pub mod media;`。
 
