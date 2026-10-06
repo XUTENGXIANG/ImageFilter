@@ -389,6 +389,7 @@ AI 协作下，**token 成本 ≈ 需要人读的代码量 + 需要设备验证�
 6. **手机端不引 Room**、不引 `SubsamplingScaleImageView`——每一项都是要读代码的负担。
 7. **一个里程碑一个会话**。
 8. **脚本按 PowerShell 7 写，并用「自举」而不是 `#Requires`**。实测结论（见附录 B #12）：本 harness 的 shell **写死**为 `C:\WINDOWS\System32\WindowsPowerShell\v1.0\powershell.exe`，装了 PS7 并写入用户 PATH 之后**当前会话依然不变**（父进程环境陈旧，`$env:Path` 里根本没有新目录）。所以 `#Requires -Version 7` 会让脚本在 5.1 下**直接失败**——改为脚本开头检测版本并**自己切到 PS7 再跑**（`-File` 通路已实测可用，脚本内引号不会丢）。另有一条同样实测出来的坑：**从 harness 内联调用 PS7 时，`-Command` 的引号会被多一层解析吃掉**（内层双引号被剥掉导致语法错误），跑内联代码要用 `-EncodedCommand`（base64 / UTF-16LE，完全免疫引号层）。
+  同源的第三条陷阱：**PS 5.1 对没有 BOM 的文件一律按 ANSI(GBK) 解码**。后果有两面——① `.ps1` 里的中文注释会让**解析错位**（实测报出与实际行号不符的语法错误），所以脚本必须存成 **UTF-8 带 BOM**；② `Get-Content` 会把无 BOM 的 UTF-8 文件**显示成 mojibake**，而文件内容其实是好的（**别被显示骗了，用 `[System.IO.File]::ReadAllText` 或 `Get-Content -Encoding UTF8` 复核**）。
 9. **证据输出要短**：验证命令只回传断言结果与关键数字，不要 dump 整页 UI 树 / 完整 JSON。
 
 ---
