@@ -1,0 +1,31 @@
+# M0' RAW 内嵌预览分辨率分布 · 2026-10-07 · 样张来源 F:\壁纸
+结论: arw 5/5 命中、最大长边 1616; dng 3/3 命中、最大长边 1024; 8 张里没有一张的内嵌预览长边 >= 2048
+影响: 默认预览(max=2048) 拿不到 2048 —— 手机放大到 1:1 只能看到 1616x1080(ARW) / 1024x683(DNG, HDR 那张仅 256x171), 验对焦远不够 → 这些格式的「高清查看」必须走 full=1(桌面端全解码), 不是可选项
+
+原始输出 —— IMAGEFILTER_PROBE_DIR=F:\壁纸 ; cargo test --lib probe_embedded_preview -- --ignored --nocapture
+
+running 1 test
+file                                  MB    embedded   jpegMB     ms
+DSC08725.ARW                        23.9   1616x1080     0.55     18
+DSC08735.ARW                        24.0   1616x1080     0.63     22
+DSC08775.ARW                        23.7   1616x1080     0.40     18
+DSC08775-已增强-降噪.dng                 50.6    1024x683     0.04     47
+DSC08813.ARW                        23.5   1616x1080     0.19     17
+DSC08823.ARW                        23.6   1616x1080     0.27     17
+DSC08823-已增强-降噪.dng                 28.3    1024x683     0.03     26
+DSC08823-已增强-降噪-HDR.dng              6.9     256x171     0.01      5
+
+按扩展名汇总:
+ext          总数     命中       最大长边    >=2048 张数
+arw           5      5       1616            0
+dng           3      3       1024            0
+
+结论提示: 若某扩展名的「最大长边」或「>=2048 张数」偏低, 该格式在手机上放大到 1:1 会不够看, 需要走 full=1。
+test scanner::images::tests::probe_embedded_preview ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 71 filtered out; finished in 0.18s
+
+
+--- cargo stderr ---
+    Finished `test` profile [optimized + debuginfo] target(s) in 0.98s
+     Running unittests src\lib.rs (target\debug\deps\image_filter_lib-1beaa7d18dbc275c.exe)

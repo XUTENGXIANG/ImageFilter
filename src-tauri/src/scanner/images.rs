@@ -690,4 +690,94 @@ mod tests {
         assert_eq!(jpeg_dimensions(&[0xFF, 0xD8]), None);
         assert_eq!(jpeg_dimensions(b"\x89PNG\r\n\x1a\n"), None);
     }
+
+    /// 探针(M0′, 默认忽略): RAW **内嵌预览的分辨率分布**。
+    ///
+    /// 它回答的不是"手机能不能读 RAW"（解码在电脑上），而是
+    /// **"手机看到的预览有多大"** —— 即画质上界。规格 §5.2 明示:
+    /// 默认预览的画质上界就是这张内嵌 JPEG, 不是 RAW 的画质。
+    /// Sony ARW 的最大内嵌预览常见仅 1616×1080, 放大到 1:1 验对焦是不够的。
+    ///
+    /// 运行: $env:IMAGEFILTER_PROBE_DIR="D:\样张"; cargo test --lib probe_embedded_preview -- --ignored --nocapture
+    #[test]
+    #[ignore = "M0' probe — 需要真实 RAW 样张目录"]
+    fn probe_embedded_preview() {
+        let dir = match std::env::var("IMAGEFILTER_PROBE_DIR") {
+            Ok(v) if !v.is_empty() => v,
+            _ => {
+                println!("未设置 IMAGEFILTER_PROBE_DIR, 跳过");
+                return;
+            }
+        };
+
+        // 按扩展名汇总: (张数, 命中数, 最大长边, 长边>=2048 的张数)
+        let mut by_ext: std::collections::BTreeMap<String, (usize, usize, u32, usize)> =
+            std::collections::BTreeMap::new();
+        println!("{:<32} {:>7} {:>11} {:>8} {:>6}", "file", "MB", "embedded", "jpegMB", "ms");
+
+        for entry in walkdir::WalkDir::new(&dir).into_iter().filter_map(|e| e.ok()) {
+            if !entry.file_type().is_file() {
+                continue;
+            }
+            let p = entry.path();
+            let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+            if !crate::scanner::RAW_EXTENSIONS.contains(&ext.as_str()) {
+                continue;
+            }
+            let size = std::fs::metadata(p).map(|m| m.len()).unwrap_or(0);
+            let name = p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+            let t0 = std::time::Instant::now();
+            let got = extract_largest_preview_full(p);
+            let ms = t0.elapsed().as_millis();
+
+            let slot = by_ext.entry(ext).or_insert((0, 0, 0, 0));
+            slot.0 += 1;
+            match got {
+                Some((w, h, bytes)) => {
+                    let long = w.max(h);
+                    // 两条**与样本集无关**的真断言: 它们不判断"这个格式支不支持内嵌预览",
+                    // 只判断"扫描逻辑有没有坏"。所以这个探针既保留了测量用途, 又能在
+                    // 扫描回归时自己失败 —— 而不是打印一屏 MISS 让人以为是样张问题。
+                    // （没有断言的话, 它在评审规则里就是"断言为空的测试", 属于缺陷。）
+                    assert!(
+                        bytes.len() >= 4 && bytes[0] == 0xFF && bytes[1] == 0xD8,
+                        "{} 提取出的东西不是 JPEG(缺 SOI) —— 扫描逻辑出了问题", name
+                    );
+                    assert!(w > 0 && h > 0, "{} 解析出非法尺寸 {}x{}", name, w, h);
+                    slot.1 += 1;
+                    slot.2 = slot.2.max(long);
+                    if long >= 2048 {
+                        slot.3 += 1;
+                    }
+                    println!(
+                        "{:<32} {:>7.1} {:>11} {:>8.2} {:>6}",
+                        name, size as f64 / 1_048_576.0,
+                        format!("{}x{}", w, h),
+                        bytes.len() as f64 / 1_048_576.0, ms
+                    );
+                }
+                None => println!(
+                    "{:<32} {:>7.1} {:>11} {:>8} {:>6}",
+                    name, size as f64 / 1_048_576.0, "MISS", "-", ms
+                ),
+            }
+        }
+
+        // 目录给错了、或样本扩展名不在 RAW_EXTENSIONS 里时, 下面那张表会全空 ——
+        // 与其让人对着空表猜, 不如直接失败。
+        assert!(
+            !by_ext.is_empty(),
+            "IMAGEFILTER_PROBE_DIR={} 下没找到任何 RAW 文件 —— 目录给错了, 或样本扩展名不在 RAW_EXTENSIONS 里",
+            dir
+        );
+
+        println!("\n按扩展名汇总:");
+        println!("{:<8} {:>6} {:>6} {:>10} {:>12}", "ext", "总数", "命中", "最大长边", ">=2048 张数");
+        for (ext, (n, hit, maxlong, big)) in &by_ext {
+            println!("{:<8} {:>6} {:>6} {:>10} {:>12}", ext, n, hit, maxlong, big);
+        }
+        println!(
+            "\n结论提示: 若某扩展名的「最大长边」或「>=2048 张数」偏低, 该格式在手机上放大到 1:1 会不够看, 需要走 full=1。"
+        );
+    }
 }
