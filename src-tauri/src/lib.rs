@@ -6,7 +6,7 @@ mod exif_common;
 mod importer;
 mod lightroom;
 mod scanner;
-mod server;
+pub mod server;
 mod tinydng;
 mod win_wic;
 mod xmp;
