@@ -248,12 +248,13 @@
 | `src-tauri/src/server/routes.rs` | 新建 | 端点实现（**全部调用既有 command 的内部实现**） |
 | `src-tauri/src/server/dto.rs` | 新建 | 请求/响应结构（与 `src/types.ts` 的既有形状对齐） |
 | `src-tauri/src/mover.rs` | 新建 | 移动照片 + 边车，沿用"绝不覆盖"纪律 |
+| `src-tauri/src/scanner/images.rs` | 改 | **行为等价的小重构**：把 `save_jpeg_quality`（`images.rs:58`）拆出可写入任意 `Write` 的 `encode_jpeg_quality`，让服务端能把 JPEG 编进内存。不做这一步就只能另写一套编码，而 §5.2 明令不许 |
 | `src-tauri/src/lib.rs` | 改 | 注册服务启停命令；启动时按配置决定是否拉起服务 |
 | `src/components/settings-dialog.tsx` | 改 | **服务面板**：开关、监听地址、token（复制/轮换）、配对二维码、共享根管理、已连接来源、四条排查提示 |
 | `src/useScanner.ts` | 改 | 订阅 `decisions-changed` 事件 → 合并（复用既有 `mergeRemoteRatings` / `mergeRemoteLabels`） |
 | `src/i18n/zh.ts` + `src/i18n/en.ts` | 改 | 新增文案，**两边必须齐**（仓库有 `i18n-parity.cjs` 检查脚本） |
 
-**Token 纪律约束**：改动**限于上表 10 个文件**。**禁止**动 `App.tsx` 的布局、`viewer.tsx`、`index.css` 与 `analyzer.rs` / `importer.rs` 的既有逻辑。
+**Token 纪律约束**：改动**限于上表 11 个文件**。**禁止**动 `App.tsx` 的布局、`viewer.tsx`、`index.css` 与 `analyzer.rs` / `importer.rs` 的既有逻辑。
 
 ---
 
@@ -382,7 +383,7 @@ AI 协作下，**token 成本 ≈ 需要人读的代码量 + 需要设备验证�
 
 1. **单文件 ≲ 300 行**。超了就拆（`server/` 按职责分 `mod/auth/routes/dto` 四个文件就是为了这个）。
 2. **可单测面积最大化**。鉴权、白名单、错误码映射、移动纪律全部放 Rust 单测；手机端数据层放 JVM 单测。**跑测试的输出是短的，跑模拟器截图 + logcat 的输出是贵的**。
-3. **桌面端改动限于 §6 列出的 10 个文件**。禁止顺手重构 `App.tsx`（48KB）/ `useScanner.ts`（65KB）/ `index.css`（19KB）/ `viewer.tsx`（30KB）。
+3. **桌面端改动限于 §6 列出的 11 个文件**。禁止顺手重构 `App.tsx`（48KB）/ `useScanner.ts`（65KB）/ `index.css`（19KB）/ `viewer.tsx`（30KB）。
 4. **禁止在实施会话里读大文档全文**：`ImageFilter-功能实施方案.md`（167KB）与 `ImageFilter-架构与机制走查.md`（50KB）只按需 grep 小节；本规格 + 交接文档 §0/§4/§5 足够。
 5. **i18n 双文件必须齐**（zh/en），改完跑 `docs/evidence/scripts/i18n-parity.cjs`。
 6. **手机端不引 Room**、不引 `SubsamplingScaleImageView`——每一项都是要读代码的负担。
