@@ -3,6 +3,16 @@
 //! 图库服务的契约测试。直接打 Router（`tower::ServiceExt::oneshot`），
 //! 不占端口、不引 HTTP 客户端 —— 快且不会因端口占用而闪断。
 
+/// 测试专用: 从字节解出宽高（测试里不在乎这次解码开销）。
+///
+/// `image 0.25` 没有"从字节读尺寸"的公开 API, 所以这里真解一次内存图 —— 断言看的是
+/// "服务端确实产出了这个尺寸的像素", 而不是它自称的尺寸。
+fn image_dimensions_from_bytes(b: &[u8]) -> Option<(u32, u32)> {
+    // `dimensions()` 来自 trait(`DynamicImage` 只自带 width/height), 所以要显式引入
+    use image::GenericImageView;
+    image::load_from_memory(b).ok().map(|i| i.dimensions())
+}
+
 #[test]
 fn ensure_within_accepts_paths_inside_a_share() {
     let root = std::env::temp_dir().join(format!("ifshare_ok_{}", std::process::id()));
@@ -132,3 +142,108 @@ fn ensure_within_rejects_symlink_escape() {
 // 鉴权原语的单测放在 auth.rs 自己的 `mod tests` 里（见 Step 4）—— 同一段断言在两个
 // 文件里各写一份，在评审规则里就是"逐字重复的逻辑块"，属于缺陷。
 // 集成测试只负责"必须用真实文件系统才能验"的那部分：越界判定。
+
+// ── media(缩略图/预览字节)的画质契约 ─────────────────────────────────────────
+//
+// 为什么这几条必须用**真文件 + 真解码**而不是 mock: 三条契约里最贵的两条
+// (不放大 / 方向只上一次)只有在真走完"取缓存路径 → 解码 → 重采样"之后才看得见。
+// 尤其是"方向只上一次"—— 它取决于源路径与缓存路径的分工, 假数据根本构造不出来。
+//
+// 另外: 断言一律从**产出的字节**再解一次尺寸, 不看服务端自报的数字,
+// 否则"服务端说自己缩到了 2048"这种谎话会被原样放过。
+
+/// 造一张真 JPEG（指定尺寸），并可选地写入 EXIF Orientation=6（旋转 90°）。
+fn write_test_jpeg(path: &std::path::Path, w: u32, h: u32, orientation: Option<u16>) {
+    let img = image::RgbImage::from_fn(w, h, |x, y| image::Rgb([(x % 256) as u8, (y % 256) as u8, 90]));
+    let mut buf: Vec<u8> = Vec::new();
+    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buf, 90)
+        .encode_image(&img)
+        .unwrap();
+    // 简易 EXIF(仅 Orientation): APP1 段
+    if let Some(o) = orientation {
+        let mut app1: Vec<u8> = Vec::new();
+        app1.extend_from_slice(b"Exif\0\0");
+        app1.extend_from_slice(b"MM\x00\x2a"); // 大端 TIFF
+        app1.extend_from_slice(&8u32.to_be_bytes()); // IFD0 偏移
+        app1.extend_from_slice(&1u16.to_be_bytes()); // 1 个条目
+        app1.extend_from_slice(&0x0112u16.to_be_bytes()); // Orientation
+        app1.extend_from_slice(&3u16.to_be_bytes()); // SHORT
+        app1.extend_from_slice(&1u32.to_be_bytes()); // count
+        app1.extend_from_slice(&o.to_be_bytes());
+        app1.extend_from_slice(&0u16.to_be_bytes()); // padding 到 4 字节
+        app1.extend_from_slice(&0u32.to_be_bytes()); // next IFD = 0
+        let mut out = vec![0xFFu8, 0xD8];
+        out.extend_from_slice(&[0xFF, 0xE1]);
+        out.extend_from_slice(&((app1.len() + 2) as u16).to_be_bytes());
+        out.extend_from_slice(&app1);
+        out.extend_from_slice(&buf[2..]); // 去掉 SOI 后拼接
+        buf = out;
+    }
+    std::fs::write(path, &buf).unwrap();
+}
+
+// media 的三个 API 都是 async 的, 所以用 `#[tokio::test]` 而不是 `#[test]`(Future 没有 `unwrap`)。
+#[tokio::test]
+async fn preview_downsamples_to_max_and_never_upscales() {
+    let dir = std::env::temp_dir().join(format!("ifmedia_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let big = dir.join("big.jpg");
+    write_test_jpeg(&big, 4000, 3000, None);
+    let small = dir.join("small.jpg");
+    write_test_jpeg(&small, 800, 600, None);
+
+    let got = image_filter_lib::server::media::preview_bytes(big.to_str().unwrap(), 2048, false)
+        .await
+        .unwrap();
+    let (w, h) = image_dimensions_from_bytes(&got).unwrap();
+    assert_eq!(w.max(h), 2048, "超限必须降到 max");
+    assert_eq!((w, h), (2048, 1536), "必须保持宽高比");
+
+    let got2 = image_filter_lib::server::media::preview_bytes(small.to_str().unwrap(), 2048, false)
+        .await
+        .unwrap();
+    let (w2, h2) = image_dimensions_from_bytes(&got2).unwrap();
+    assert_eq!((w2, h2), (800, 600), "小于 max 时绝不放大");
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[tokio::test]
+async fn preview_applies_exif_orientation_exactly_once() {
+    let dir = std::env::temp_dir().join(format!("iforient_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let p = dir.join("rot.jpg");
+    write_test_jpeg(&p, 1000, 500, Some(6)); // Orientation=6 → 应旋转成 500x1000
+
+    let a = image_filter_lib::server::media::preview_bytes(p.to_str().unwrap(), 2048, false)
+        .await
+        .unwrap();
+    let (w1, h1) = image_dimensions_from_bytes(&a).unwrap();
+    assert_eq!((w1, h1), (500, 1000), "Orientation=6 必须让宽高互换(只转一次)");
+
+    // 再请求一次（走同一条路径）: 结果必须完全一致, 证明没有累积旋转
+    let b = image_filter_lib::server::media::preview_bytes(p.to_str().unwrap(), 2048, false)
+        .await
+        .unwrap();
+    let (w2, h2) = image_dimensions_from_bytes(&b).unwrap();
+    assert_eq!((w1, h1), (w2, h2), "重复请求不能再次旋转");
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[tokio::test]
+async fn thumbnail_returns_jpeg_bytes() {
+    let dir = std::env::temp_dir().join(format!("ifthumb_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let p = dir.join("t.jpg");
+    write_test_jpeg(&p, 2000, 1500, None);
+
+    let bytes = image_filter_lib::server::media::thumbnail_bytes(p.to_str().unwrap(), 300)
+        .await
+        .unwrap();
+    assert_eq!(&bytes[..2], &[0xFF, 0xD8], "必须是 JPEG(SOI)");
+    let (w, h) = image_dimensions_from_bytes(&bytes).unwrap();
+    assert!(w.max(h) <= 300, "缩略图长边不得超过请求的 size");
+
+    std::fs::remove_dir_all(&dir).ok();
+}

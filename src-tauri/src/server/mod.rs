@@ -9,6 +9,7 @@
 
 pub mod auth;
 pub mod config;
+pub mod media;
 pub mod paths;
 
 use axum::{

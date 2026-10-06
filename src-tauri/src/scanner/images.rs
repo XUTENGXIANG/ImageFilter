@@ -24,7 +24,9 @@ fn cache_hash(file_path: &str, mtime_secs: u64) -> u64 {
     h.finish()
 }
 
-fn resize_max_edge(img: image::DynamicImage, max_edge: u32) -> image::DynamicImage {
+/// 缩放到长边不超过 `max_edge`。**只降不升** —— 放大只会把插值糊出来的像素
+/// 当成真实分辨率交给调用方(手机端会以为拿到了 2048 的细节)。
+pub(crate) fn resize_max_edge(img: image::DynamicImage, max_edge: u32) -> image::DynamicImage {
     if img.width().max(img.height()) > max_edge {
         img.resize(max_edge, max_edge, image::imageops::FilterType::Lanczos3)
     } else {
@@ -61,7 +63,18 @@ fn save_jpeg_quality(
     quality: u8,
 ) -> Result<(), String> {
     let file = std::fs::File::create(path).map_err(|e| format!("Create: {}", e))?;
-    let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(file, quality);
+    encode_jpeg_quality(img, file, quality)
+}
+
+/// 把 JPEG 编进任意 `Write`（服务端要编进内存, 而不是落盘）。
+/// 抽出来的目的只有一个: **编码参数只允许有一处**——否则服务端另写一套,
+/// 就会出现"手机上的预览比电脑上的缩略图还糙"这种找不到原因的差异。
+pub(crate) fn encode_jpeg_quality<W: std::io::Write>(
+    img: &image::DynamicImage,
+    w: W,
+    quality: u8,
+) -> Result<(), String> {
+    let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(w, quality);
     img.write_with_encoder(encoder)
         .map_err(|e| format!("Encode: {}", e))
 }
@@ -78,7 +91,11 @@ fn transpose_image(img: &image::DynamicImage) -> image::DynamicImage {
     image::DynamicImage::ImageRgb8(out)
 }
 
-fn apply_exif_orientation(
+/// 按 EXIF 物理校正方向。
+///
+/// **调用方必须自己保证只调一次**: 桌面端已经在写缓存时校正过(RAW 预览/全图),
+/// 服务端若对"已经是校正过的缓存"再调一次, 结果就是多转 90°。
+pub(crate) fn apply_exif_orientation(
     path: &std::path::Path,
     img: image::DynamicImage,
 ) -> image::DynamicImage {
