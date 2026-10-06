@@ -40,7 +40,7 @@
 cd A:\tenent
 npx tauri dev          # Vite(1420) + Rust 增量编译 + 自动弹窗
 npx tauri build        # 产物在 src-tauri/target/release/bundle/
-cargo test --lib       # 在 src-tauri/ 下执行；26 活跃 + 3 忽略
+cargo test --lib       # 在 src-tauri/ 下执行；67 活跃 + 3 忽略（2026-10-07 实测，见 §7/§8）
 ```
 
 | 坑 | 现象 / 处理 |
@@ -228,7 +228,7 @@ asset 协议 scope **收紧为空**（`tauri.conf.json`），启动只放行缓�
 ```bash
 cd src-tauri
 cargo test --lib          # 67 活跃 + 3 忽略
-cargo check --lib         # 应无警告
+cargo check --lib         # 只应有一个既存警告：importer.rs:331 的 copy_one is never used（仅测试调用，生产走 copy_one_reporting）
 cargo test --release --lib bench_analyze_cache -- --ignored --nocapture   # 生产构建下的分析耗时
 ```
 
