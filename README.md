@@ -102,18 +102,17 @@ cd ImageFilter
 
 ### dev 启动
 
-`npx tauri dev` 
+`npx tauri dev`
+
+
 ---
 
 
+### 许可
 
+本项目使用 **MIT 许可证**，完整文本见 [LICENSE](LICENSE)（[协议原文](https://opensource.org/license/mit)）
 
-
-## 许可
-
-本项目使用 **MIT 许可证**，完整文本见 [LICENSE](LICENSE)（[协议原文](https://opensource.org/license/mit)）。
-
-可以自由使用、修改、分发，包括商业闭源使用；只需在副本或实质性部分中**保留版权声明与许可证文本**。软件按「原样」提供，不含任何形式的担保。
+可以自由使用、修改、分发，包括商业闭源使用；只需在副本或实质性部分中**保留版权声明与许可证文本**。软件按「原样」提供，不含任何形式的担保
 
 
 
