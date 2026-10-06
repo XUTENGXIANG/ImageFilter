@@ -1237,7 +1237,35 @@ fun mergeChildren(
 ): Map<String, List<FolderEntryDto>> = index + (parentPath to children.sortedBy { it.name.lowercase() })
 ```
 
-补一个 JVM 单测：同一父节点重复合并时以最新为准（避免慢盘上两次响应乱序导致旧数据覆盖新的）。
+配一个 JVM 单测（**断言必须是真的**——同一父节点重复合并以最新为准，避免慢盘上两次响应乱序导致旧数据覆盖新的）：
+
+```kotlin
+class BrowseMergeTest {
+    private fun child(name: String) = FolderEntryDto(path = "D:\\p\\$name", name = name)
+
+    @Test
+    fun merge_replaces_the_previous_children_of_the_same_parent() {
+        val first = mergeChildren(emptyMap(), "D:\\p", listOf(child("b"), child("a")))
+        // 子目录按名字排序 —— 用户看到的顺序应当是稳定的, 不随文件系统返回顺序抖动
+        assertEquals(listOf("a", "b"), first["D:\\p"]!!.map { it.name })
+
+        val second = mergeChildren(first, "D:\\p", listOf(child("c")))
+        assertEquals(listOf("c"), second["D:\\p"]!!.map { it.name })
+        assertEquals(1, second.size, "同一父节点只应留一份")
+    }
+
+    @Test
+    fun merge_keeps_other_parents_untouched() {
+        var idx = mergeChildren(emptyMap(), "D:\\p", listOf(child("a")))
+        idx = mergeChildren(idx, "D:\\p\\a", listOf(child("x")))
+        assertEquals(2, idx.size)
+        assertEquals(listOf("a"), idx["D:\\p"]!!.map { it.name })
+        assertEquals(listOf("x"), idx["D:\\p\\a"]!!.map { it.name })
+    }
+}
+```
+
+放 `android/app/src/test/kotlin/com/imagefilter/mobile/BrowseMergeTest.kt`，并确认 `FolderEntryDto` 已 import。
 > 若要防乱序，给每次请求带一个代次号（桌面端 `xmpGenRef` / `COUNT_GENERATION` 就是这个模式，交接文档 §4.2）。**M1′ 先用"最新覆盖"并写测试钉住**，代次号等出现真实乱序再加。
 
 - [ ] **Step 2: 实现 BrowseScreen**
@@ -1282,6 +1310,8 @@ git commit -m "feat(android): 共享根与懒加载目录树"
 - **预取策略先保持简单**：Coil 自己的 `LazyGrid` 可见区加载已经够用；**不要手写预取**（桌面端有 IntersectionObserver 预加载，那是 Web 的补偿手段，Compose 里 LazyGrid 已经做了）
 - 空文件夹、全是 RAW、服务端返回 0 张 —— 三种都要有明确文案，别显示空白网格
 - 顶部显示当前文件夹名与张数（来自 `scan` 的返回长度）；点击格子暂时只弹出一个"查看器在 M2′ 实现"的占位提示（**不要**在 M1′ 里顺手把查看器做掉）
+
+**这一任务没有 JVM 单测，是有意的**：它是纯 UI 装配（`LazyVerticalGrid` + `AsyncImage`），没有值得单测的纯逻辑——**凡是可测的派生逻辑都已经在别处被测了**（筛选归 M2′ 的 `Filters` 纯函数、树合并归 Task 4 的 `mergeChildren`、URL 拼接与编码归 Task 2 的 `ApiClient`）。它的验收是下面 Step 3 的真机清单 5 项。评审时请按"UI 装配任务"评判，不要以"缺少测试"判缺陷。
 
 - [ ] **Step 1: 实现 ImageLoader**
 
