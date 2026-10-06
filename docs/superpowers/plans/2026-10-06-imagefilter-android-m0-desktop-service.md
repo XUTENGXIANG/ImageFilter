@@ -385,7 +385,8 @@ git commit -m "test(probe): RAW 内嵌预览分辨率分布探针(M0'), 用于�
 // SPDX-License-Identifier: MIT
 //! 图库服务的契约测试。直接打 Router（`tower::ServiceExt::oneshot`），
 //! 不占端口、不引 HTTP 客户端 —— 快且不会因端口占用而闪断。
-use std::path::PathBuf;
+// 这里**不要**写 `use std::path::PathBuf;` —— 路径类型一律用全限定名, 否则会产生
+// unused import 警告, 与"相对基线无新增 warning"直接冲突(Task 3 实测踩到)。
 
 #[test]
 fn ensure_within_accepts_paths_inside_a_share() {
@@ -1191,7 +1192,8 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
 use serde::Deserialize;
-use std::path::PathBuf;
+// 这里**不要**写 `use std::path::PathBuf;` —— 路径类型一律用全限定名, 否则会产生
+// unused import 警告, 与"相对基线无新增 warning"直接冲突(Task 3 实测踩到)。
 
 /// Bearer 校验。规格 §5.2: token 长度固定且公开, 长度不同直接拒不算泄露。
 fn check_auth(state: &ServerState, headers: &HeaderMap) -> Result<(), ApiError> {
