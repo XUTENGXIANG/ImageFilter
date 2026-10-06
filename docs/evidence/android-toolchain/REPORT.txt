@@ -1,0 +1,100 @@
+# Android 工具链安装实测 · 2026-10-07 · 免管理员 · 全部官方校验通过
+
+结论: **工具链就绪** —— JDK 21.0.12.1(Temurin LTS) + cmdline-tools 23.0.0 + platform-tools 37.0.1(adb)
+      + platforms/android-35 + build-tools/35.0.0 + Gradle 8.11.1，全部装在用户目录，未使用管理员权限。
+关键约束: **每条安卓构建命令都必须显式设 `JAVA_HOME` 指向 JDK 21** —— 否则 Gradle 会用系统里的
+      Java 25，而 AGP 不支持它，构建会直接失败。
+磁盘占用: SDK 424MB + JDK 328MB + Gradle 144MB ≈ 896MB。
+
+---
+
+## 一、安装位置
+
+| 组件 | 路径 | 校验 |
+|---|---|---|
+| JDK 21 (Temurin 21.0.12.1+1 LTS) | `%LOCALAPPDATA%\Programs\jdk-21\jdk-21.0.12.1+1` | SHA256 `f9d6e191ab098c0d416e7d588a24420a8621cd2f4720dab2459b8b7b2d2d8b4e` |
+| Android SDK | `%LOCALAPPDATA%\Android\Sdk` | — |
+| cmdline-tools (latest) | `%LOCALAPPDATA%\Android\Sdk\cmdline-tools\latest` | SHA1 `57d04f2d75eb8e8fffc5000a987e5de4b5a63e9d`，154957218 字节 |
+| Gradle 8.11.1 | `%LOCALAPPDATA%\Programs\gradle-8.11.1\gradle-8.11.1` | SHA256 `f397b287023acdba1e9f6fc5ea72d22dd63669d59ed4a289a29b1a76eee151c6` |
+
+环境变量（用户级）: `ANDROID_HOME` 已设；PATH 已追加 `platform-tools`、`cmdline-tools\latest\bin`、
+`gradle\bin`。**`JAVA_HOME` 有意未设**（保护使用者现有的 Java 25 环境不被改变，见下第 7 条）。
+
+## 二、取包策略：镜像只当带宽，校验值只认官方
+
+GitHub 直连实测 **67 KB/s 且会中途卡死**（curl 的 `--speed-limit` 不触发，因为它算的是平均速度）。
+因此：**大文件走国内镜像取字节，校验值从官方源取**。
+
+| 文件 | 字节来自 | 校验值来自 |
+|---|---|---|
+| JDK 21 | TUNA `mirrors.tuna.tsinghua.edu.cn/Adoptium/...` | GitHub 官方 release 的 `.sha256.txt`（117 字节，秒下） |
+| cmdline-tools | 腾讯 `mirrors.cloud.tencent.com/AndroidSDK/` | `dl.google.com` 的 `repository2-3.xml` |
+| Gradle | 腾讯 `mirrors.cloud.tencent.com/gradle/` | `services.gradle.org` 的 `.sha256` |
+
+镜像是否可信因此不再是问题：**校验不过就删档换源**。
+
+## 三、8 条实测环境结论（都是踩出来的，后续任务直接复用）
+
+1. **`Invoke-WebRequest` 对非文本资产把 `.Content` 返回为 `byte[]`** —— 不解码就 `-split`，拿到的是**字节值**
+   （实测 `expect=102`，其实是首字符 `'f'` 的十进制值）。为此白下过一次 205MB。
+2. **`Write-Host "..{0}.." -f $x` 会被解析成 `-ForegroundColor` 的缩写** —— 必须写成 `Write-Host (".." -f $x)`。
+3. **原生命令往 stderr 写非错误信息时**（`java -version` 就是），在 `$ErrorActionPreference='Stop'` 下会变成
+   终止性的 `NativeCommandError` —— 这类探测要在 `'Continue'` 下跑。
+4. **不要把参数命名为 `$Args`** —— 它是 PowerShell 的自动变量，赋值无效（`java -version` 因此收到空参数、
+   打印了帮助文本）。
+5. **解析官方清单必须把 size + checksum + url 绑定在同一个 `<complete>` 块内** —— 按位置向后取窗口会拿到
+   **相邻条目**（macOS arm64）的值，从而拒绝掉本来正确的下载。
+6. **`sdkmanager` 已被 Google 标记弃用**，继承者是 `cmdline-tools\latest\bin\android.exe`（`android sdk list` 可用）；
+   但 sdkmanager 目前仍能装包。**`sdkmanager --version` 会失败（exit -1）**，验收要用 `--list_installed`；
+   `--licenses` 也不再需要。
+7. **调 `sdkmanager.bat` 必须经 `cmd /c` 并显式加引号**：PowerShell 直接调会把 `"platforms;android-35"` 按 `;`
+   **拆成两个包名**（报 `Package platforms not found`，但 **exit 仍是 0** —— 静默失败）。
+   另：**绝不要把它的输出管进 `Select-Object -First N`**，管道提前关闭会**杀掉正在下载的进程**。
+8. **Gradle 必须在 JDK 21 下启动**。不设 `JAVA_HOME` 时实测 `Daemon JVM: C:\Program Files\Java\jdk-25.0.3`；
+   AGP 不支持 JDK 25。设了之后实测 `Launcher JVM: 21.0.12.1 (Eclipse Adoptium)` ✓。
+
+## 四、原始输出
+
+### 1) java -version
+```
+openjdk version "21.0.12.1" 2026-08-18 LTS
+OpenJDK Runtime Environment Temurin-21.0.12.1+1 (build 21.0.12.1+1-LTS)
+OpenJDK 64-Bit Server VM Temurin-21.0.12.1+1 (build 21.0.12.1+1-LTS, mixed mode, sharing)
+```
+
+### 2) android sdk list（新 CLI）
+```
+Installed packages:
+  build-tools/35.0.0           35.0.0                      Android SDK Build-Tools 35
+  cmdline-tools/latest         unknown   ->        23.0.0  Android SDK Command-line Tools (latest)
+  platform-tools               37.0.1                      Android SDK Platform-Tools
+  platforms/android-35         2.0.0                       Android SDK Platform 35
+```
+
+### 3) adb version
+```
+Android Debug Bridge version 1.0.41
+Version 37.0.1-15733141
+```
+
+### 4) gradle -v（带 JAVA_HOME=JDK21）
+```
+Gradle 8.11.1
+Kotlin:        2.0.20
+Launcher JVM:  21.0.12.1 (Eclipse Adoptium 21.0.12.1+1-LTS)
+Daemon JVM:    C:\Users\11\AppData\Local\Programs\jdk-21\jdk-21.0.12.1+1 (no JDK specified, using current Java home)
+```
+
+### 5) 对比：不带 JAVA_HOME 时的 Gradle（证明第 8 条）
+```
+Gradle 8.11.1
+Launcher JVM:  25.0.3 (Oracle Corporation 25.0.3+9-LTS-195)
+Daemon JVM:    C:\Program Files\Java\jdk-25.0.3 (no JDK specified, using current Java home)
+```
+
+### 6) 用户级环境变量
+```
+ANDROID_HOME = C:\Users\11\AppData\Local\Android\Sdk
+JAVA_HOME(User) = (未设置 —— 有意为之)
+PATH(User) 追加: ...\Android\Sdk\platform-tools; ...\Android\Sdk\cmdline-tools\latest\bin; ...\gradle-8.11.1\gradle-8.11.1\bin
+```
