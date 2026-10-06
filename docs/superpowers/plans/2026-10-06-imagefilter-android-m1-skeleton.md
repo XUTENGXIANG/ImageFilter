@@ -445,11 +445,13 @@ dependencies {
 
     <application
         android:label="ImageFilter"
-        android:icon="@mipmap/ic_launcher"
         android:allowBackup="false"
         android:supportsRtl="true"
         android:usesCleartextTraffic="true"
         android:theme="@style/Theme.ImageFilterMobile">
+        <!-- 刻意**不声明** android:icon: 本项目此刻没有任何 mipmap 资源, 而声明一个
+             不存在的 @mipmap 会让资源链接失败、assembleDebug 直接报错。应用图标是
+             M4′ 发布任务的一部分(见该计划), 到那时再补并同时加回这一行。 -->
         <!-- usesCleartextTraffic=true 的理由: 服务端故意不做 TLS(规格 §4.3),
              加密由 EasyTier/Tailscale 隧道或局域网边界提供。**这是有意为之, 不是疏忽**;
              等 M4′ 做"打通引导"时会在 UI 上把风险讲清楚。 -->

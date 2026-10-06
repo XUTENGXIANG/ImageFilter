@@ -249,6 +249,23 @@ git commit -m "feat(android): 只读模式下的界面收敛与提示"
 **Files:**
 - Modify: `android/app/build.gradle.kts`、`.github/workflows/build.yml`、`android/.gitignore`
 
+- [ ] **Step 0: 补应用图标（M1′ Task 1 刻意留空的那一项）**
+
+M1′ 的 manifest **故意没有声明 `android:icon`**——当时项目里没有任何 mipmap 资源，而声明一个不存在的 `@mipmap` 会让资源链接失败、`assembleDebug` 直接报错。发版前必须补上：
+
+1. 用 **XML 自适应图标**，不要引入二进制图片（保持仓库轻，也便于在纯文本里评审）：
+   - `android/app/src/main/res/values/ic_launcher_background.xml`：`<color name="ic_launcher_background">#101014</color>`
+   - `android/app/src/main/res/drawable/ic_launcher_foreground.xml`：一个简单矢量（`viewportWidth/Height="108"`）
+   - `android/app/src/main/res/mipmap-anydpi-v26/ic_launcher.xml`：
+     ```xml
+     <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+         <background android:drawable="@color/ic_launcher_background" />
+         <foreground android:drawable="@drawable/ic_launcher_foreground" />
+     </adaptive-icon>
+     ```
+2. 在 manifest 的 `<application>` 上加回 `android:icon="@mipmap/ic_launcher"`，并**删掉那句"刻意不声明"的注释**（它已经完成使命了）。
+3. 验证：`assembleRelease` 成功 + 装到手机上，启动器里能看到图标（不是系统默认的灰块）。
+
 - [ ] **Step 1: 生成固定签名 keystore（一次，永久保留）**
 
 ```powershell
