@@ -103,7 +103,7 @@
 │        认证 · 重试 · 超时 · 错误码映射                          │
 │ rust/  UniFFI 绑定 → libimagefilter_mobile.so                  │
 └────────────────────────────┬───────────────────────────────────┘
-                      UniFFI（6 个纯函数，见 §3.5）
+                      UniFFI（7 个纯函数，见 §3.5）
 ┌────────────────────────────▼───────────────────────────────────┐
 │ Rust: crates/imagefilter-core（无网络、无平台分支、可单测）        │
 │  xmp        : read_decision_from_text / apply_decision /        │
@@ -147,11 +147,12 @@ crates/
 
 `imagefilter-mobile` 用 `cargo-ndk` 编译，产物 ABI：**`arm64-v8a` + `x86_64`**。后者不是给手机用的——**是为了让 x86_64 模拟器能装**（理由见 §9 风险 6）。
 
-### 3.5 UniFFI 接口面（6 个函数）
+### 3.5 UniFFI 接口面（7 个函数）
 
 ```
 raw_extensions() -> Vec<String>                          // 扩展名清单的唯一来源
-sidecar_names(file_name: String) -> Vec<String>          // 边车命名规则（stem 优先, full-name 兜底）
+sidecar_names(file_name: String) -> Vec<String>          // 边车候选名（stem 优先, full-name 兜底）
+write_target_index(has_first: bool, has_second: bool) -> u8  // 该写哪一个候选（跟随用户既有习惯）
 read_decision_from_text(text: String) -> Decision        // Decision { rating: Option<u8>, label: Option<String> }
 apply_decision(existing: Option<String>, rating: Option<u8>,
                label: Option<String>, clear_label: bool)
@@ -164,7 +165,9 @@ extract_largest_preview(data: &[u8]) -> Option<Preview>  // Preview { width, hei
 其中 `raw_extensions()` 与 `sidecar_names()` 是**必须由 Rust 提供**的，因为：
 
 - `raw_extensions()`：这个仓库已有"同一套规则在两处写死"的教训——`importer.rs:229/741` 与 `xmp.rs:681 sidecar_candidates` 两条命名规则是靠**注释**维持一致的（见 `xmp.rs:681` / `importer.rs:741` 的对照注释）。手机端不要再复制第三份。
-- `sidecar_names()`：把 `sidecar_candidates` 的命名规则抽成纯函数供两端共用。实施时 `sidecar_candidates` 应改为调用它（**搬迁之外只允许两处行为等价改造：① 内嵌预览改成 `&[u8]` 入口；② 本条命名规则抽成纯函数。两处都必须有测试覆盖**）。
+- `sidecar_names()`：把 `sidecar_candidates` 的命名规则抽成纯函数供两端共用。实施时 `sidecar_candidates` / `write_target` 应改为调用它们（**搬迁之外只允许三处行为等价改造：① 内嵌预览改成 `&[u8]` 入口；② 本条命名规则抽成纯函数；③ `read_one` / `write_one` / `Outcome` / `detail_of` 可见性放宽为 `pub`（为了让三个 Tauri 命令包装留在 `src-tauri`）。三处都必须有测试覆盖，③ 由现有测试直接覆盖**）。
+
+`write_target_index()` 是拆出来的一半规则：桌面端 `write_target` 有"已经有 `full.xmp` 就写它、否则写 `stem.xmp`"的习惯跟随逻辑，手机端必须用同一条，否则会写出第二个边车——而"两个边车各说各话"正是 `xmp.rs:701-702` 明确要避免的事。
 
 ---
 
@@ -377,7 +380,8 @@ extract_largest_preview(data: &[u8]) -> Option<Preview>  // Preview { width, hei
 | # | 内容 | 验收线 |
 |---|---|---|
 | **M0** | **探路 spike**：对真实 NAS 跑能力探测（见 §12） | 探测结果记入 `docs/evidence/`；**结论会直接改设计**，必须先做 |
-| **M1** | 抽核：`crates/imagefilter-core` + 桌面端 shim；UniFFI 能被最小 Kotlin 工程调到 | `cargo test --lib` 全绿且断言数与基线一致；桌面端手测"评分→写边车→重开文件夹读回"。**不碰 UI** |
+| **M1a** | 抽核：`crates/imagefilter-core` + 桌面端 shim + `&[u8]` 入口 + 边车命名纯函数 | `cargo test --lib` 全绿且断言数与基线一致；桌面端手测"评分→写边车→重开文件夹读回"与"RAW 预览/分析正常"。**不碰 UI、不需要安卓工具链** |
+| **M1b** | `crates/imagefilter-mobile`（UniFFI cdylib）+ Android 工程骨架 + `cargo-ndk` | `cargo ndk` 出 so、Gradle 出 APK、真机/模拟器能调到 7 个函数 |
 | **M2** | 数据层：WebDAV 客户端 + Room + 缓存 | MockWebServer 单测全绿；真机"连上 NAS 列出目录并出缩略图" |
 | **M3** | 筛片闭环：网格 + 查看器 + 星级/色标 + 写边车 | **桌面端真的能读到**（端到端价值点） |
 | **M4** | 滑卡 + 移动分类：滑卡栈 + 撤销 + 未同步面板 + MOVE 边车随行 + 孤儿清单 | 真机手测 §8.3 清单 |
@@ -393,7 +397,7 @@ extract_largest_preview(data: &[u8]) -> Option<Preview>  // Preview { width, hei
 | 1 | **RAW 内嵌预览覆盖率是最大未知**。交接文档 §6 明写：CR3(ISOBMFF)/RAF 能否取到 EXIF **未验证、无真实样本**。桌面端还有 WIC/rawler 全解码兜底，**手机端没有兜底**——它几乎完全押在内嵌预览上，风险显著高于桌面端 | M0 用你机型的真实样张验证；扫不到内嵌 JPEG 时显示占位并提供"下载原图"，或明确标记该格式不支持，**不要显示空白让人以为坏了** |
 | 2 | **本机不能验证 UI** → 最大风险是"写完不知道对不对" | M1/M2 全部留在可单测范围；§8.3 真机清单写死 |
 | 3 | **WebDAV 服务端差异**（群晖/威联通/Nextcloud 能力不一致） | M0 探测；结果入库为证据 |
-| 4 | **要碰 51KB 的 `xmp.rs`** | **分两个 commit**：第一个纯搬移（逻辑零改动、测试全绿），第二个才做 `&[u8]` 入口与 `sidecar_names` 两处等价改造；外加桌面端手测"评分→写边车→重开文件夹读回" |
+| 4 | **要碰 51KB 的 `xmp.rs`** | **一步一个 commit**：先纯搬移（逻辑零改动、测试全绿），再做 `&[u8]` 入口 / 边车命名纯函数 / 可见性放宽这三处等价改造（见 M1a）；外加桌面端手测"评分→写边车→重开文件夹读回" |
 | 5 | **版本号纪律从 4 处变 5 处**（交接文档 §9.2 规定 4 处，安卓还要加 `build.gradle.kts` 的 versionName/versionCode） | 首次发版**手工同步 5 处**；"改成单一来源生成"作为独立小步另议（见 §11），不与本案混在一起 |
 | 6 | **ABI 与模拟器冲突**：x86_64 宿主**跑不了 arm64 系统镜像**（QEMU 直接 `PANIC: Avd's CPU Architecture 'arm64' is not supported by the QEMU2 emulator on x86_64 host`，[android-emulator-runner #386](https://github.com/ReactiveCircus/android-emulator-runner/issues/386)）；反过来 x86_64 镜像跑只有 arm64-v8a 的 so 要靠 ARM 转译，不可靠 | **ABI 出 `arm64-v8a` + `x86_64`**：debug 两个都要（模拟器能装），release 侧载包可只留 arm64 |
 | 7 | **模拟器不可作为性能验收依据** | 性能结论只来自真机 + `screenrecord` 掉帧统计 + GPU 渲染条形图 |
