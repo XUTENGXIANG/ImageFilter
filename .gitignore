@@ -13,3 +13,6 @@ skills-lock.json
 mkshortcut.ps1
 .mcp.json
 .design-audit/
+
+# 临时脚本/截图工作区(不入库), 见 SDD 流程
+.scratch/
