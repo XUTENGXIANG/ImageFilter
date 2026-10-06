@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Copyright (c) 2026 XUTENGXIANG / SPDX-License-Identifier: MIT -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- 只要网络。**不要加存储权限** —— 本 App 的所有照片都在电脑上, 手机不落原始文件。 -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <!-- 用于"当前是否在 WiFi 下"的判断(决定要不要预取预览图), 供 M3′ 使用 -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
+    <application
+        android:label="ImageFilter"
+        android:allowBackup="false"
+        android:supportsRtl="true"
+        android:usesCleartextTraffic="true"
+        android:theme="@style/Theme.ImageFilterMobile">
+        <!-- usesCleartextTraffic=true 的理由: 服务端故意不做 TLS(规格 §4.3),
+             加密由 EasyTier/Tailscale 隧道或局域网边界提供。这是有意为之, 不是疏忽。
+             注: 刻意不声明 android:icon —— 还没有图标资源, 声明一个不存在的 @mipmap
+             会直接让构建失败; 发版前再补(见 M4′ 发布任务)。 -->
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:windowSoftInputMode="adjustResize">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>
