@@ -2223,7 +2223,24 @@ git commit -m "feat(server): 服务生命周期/配置持久化/Tauri 命令接�
 创建 `docs/evidence/scripts/verify-server.ps1`：
 
 ```powershell
-#Requires -Version 7
+# ── PS7 自举（**不要**改用 #Requires -Version 7，见下方说明）─────────
+# 实测：本 harness 的 shell 写死为 C:\WINDOWS\System32\WindowsPowerShell\v1.0\powershell.exe，
+# 即使已安装 PS7 并写了用户 PATH，当前会话也不会刷新。所以 #Requires 会让脚本直接失败；
+# 正确做法是自己切到 PS7 再跑（-File 通路实测可用，脚本内引号不会丢）。
+if ($PSVersionTable.PSVersion.Major -lt 7) {
+    $pwsh = Join-Path $env:LOCALAPPDATA 'Programs\PowerShell\7\pwsh.exe'
+    if (-not (Test-Path -LiteralPath $pwsh)) {
+        throw "需要 PowerShell 7，但未找到：$pwsh"
+    }
+    # 原样转发参数（含命名参数）后退出
+    $fwd = foreach ($k in $PSBoundParameters.Keys) {
+        $v = $PSBoundParameters[$k]
+        if ($v -is [switch]) { if ($v.IsPresent) { "-$k" } } else { "-$k"; "$v" }
+    }
+    & $pwsh -NoProfile -File $PSCommandPath @fwd
+    exit $LASTEXITCODE
+}
+
 # Copyright (c) 2026 XUTENGXIANG
 # SPDX-License-Identifier: MIT
 <#

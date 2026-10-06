@@ -388,7 +388,7 @@ AI 协作下，**token 成本 ≈ 需要人读的代码量 + 需要设备验证�
 5. **i18n 双文件必须齐**（zh/en），改完跑 `docs/evidence/scripts/i18n-parity.cjs`。
 6. **手机端不引 Room**、不引 `SubsamplingScaleImageView`——每一项都是要读代码的负担。
 7. **一个里程碑一个会话**。
-8. **脚本按 PowerShell 7 写**：每个脚本开头写 `#Requires -Version 7`，在 5.1 上**明确报错而不是静默跑错**（5.1 不只缺 `-SkipHttpErrorCheck` / `-SkipCertificateCheck`，还缺 `??`、`ConvertFrom-Json -AsHashtable` 等）。当前环境实测是 `5.1.26100.9444`，用户将在计划定下来后安装 7；**装完必须实测一次 `$PSVersionTable.PSVersion`，确认 Agent 的 shell 真的用到了 7** —— 这个 harness 的 `pwsh` 目前解析到 5.1，不确认就可能一直在旧版上跑。
+8. **脚本按 PowerShell 7 写，并用「自举」而不是 `#Requires`**。实测结论（见附录 B #12）：本 harness 的 shell **写死**为 `C:\WINDOWS\System32\WindowsPowerShell\v1.0\powershell.exe`，装了 PS7 并写入用户 PATH 之后**当前会话依然不变**（父进程环境陈旧，`$env:Path` 里根本没有新目录）。所以 `#Requires -Version 7` 会让脚本在 5.1 下**直接失败**——改为脚本开头检测版本并**自己切到 PS7 再跑**（`-File` 通路已实测可用，脚本内引号不会丢）。另有一条同样实测出来的坑：**从 harness 内联调用 PS7 时，`-Command` 的引号会被多一层解析吃掉**（内层双引号被剥掉导致语法错误），跑内联代码要用 `-EncodedCommand`（base64 / UTF-16LE，完全免疫引号层）。
 9. **证据输出要短**：验证命令只回传断言结果与关键数字，不要 dump 整页 UI 树 / 完整 JSON。
 
 ---
@@ -437,4 +437,4 @@ AI 协作下，**token 成本 ≈ 需要人读的代码量 + 需要设备验证�
 | 9 | 单文件夹 1000+ 张时 `/scan` 的响应体积与手机端解析耗时 | 需要分页 |
 | 10 | **本机真实 RAW 样张的内嵌预览分辨率分布**（尤其 Sony ARW 是否只有 1616×1080） | 决定"默认预览够不够 1:1 验对焦"，以及 `full=1` 的必要性有多高。**这一条是纯本机可测的，不需要手机**（沿用旧计划的探针思路：`#[ignore]` 测试遍历样张目录并打印每张 `embedded` 尺寸） |
 | 11 | `full=1` 的单张耗时（RAW 全解码 + Lanczos3 降采样到 2048）与内存峰值 | 决定它是"长按逐张触发"还是"可以整屏预取" |
-| 12 | 装好 PowerShell 7 后，Agent 的 shell 实际版本（`$PSVersionTable.PSVersion`） | 若仍解析到 5.1，则所有脚本的 `#Requires -Version 7` 都会直接失败，必须先在环境层面解决 |
+| 12 | ~~装好 PowerShell 7 后 Agent 的 shell 版本~~ **已实测闭环** | **结论**：PS **7.6.6** 已装在 `%LOCALAPPDATA%\Programs\PowerShell\7`（非管理员、zip 方式、**官方 SHA256 校验通过**、已写入用户 PATH），但 **harness 的 shell 仍是 5.1**——它的进程路径写死为 `System32\WindowsPowerShell\v1.0\powershell.exe`，且父进程环境不刷新。**解法**：① 脚本用「检测 5.1 → 自举切 PS7（`-File` 通路）」；② Agent 跑内联 PS7 代码用 `-EncodedCommand` 绕开引号层；③ 两者均已实测可用 |
