@@ -204,13 +204,13 @@ git commit -m "feat(android): 配对页加入打通引导与四条排查清单"
 **Interfaces:**
 - Produces:
   - `ServerConfig` 加 `read_only: bool`（默认 `false`）
-  - 只读时 `PUT /decisions`、`POST /move` 返回 `403 forbiddenPath`（**复用既有码，不新造**）+ 一句 detail
+  - 只读时 `PUT /decisions`、`POST /move` 返回 `403 forbiddenPath`（**复用既有码，不新造**）。**body 只有 `{ code }`，不带 `detail`** —— 见规格 §5.3：文案由手机端按 code 本地化，不把中文塞进 Rust
   - `GET /api/v1/clients` → 最近 N 次请求的来源 IP 与时间（内存环形缓冲，最多 50 条）
 
 - [ ] **Step 1: 实现只读模式（服务端）**
 
 - 中间件层统一拦：对 `PUT /decisions` 与 `POST /move` 两个路由加一层检查
-- **错误码复用 `forbiddenPath`**：手机端已经有对应的可执行文案（"这个目录不在电脑的共享根里"），但只读场景的 detail 要不同——所以手机端文案要按 `detail` 区分，或给只读单独用 `403` + detail。**这里允许的唯一让步**：手机端把 `forbiddenPath` 的文案改成"电脑上不允许这个操作（可能是只读模式，或路径不在共享根）"，一句覆盖两种，避免新造码。
+- **错误码复用 `forbiddenPath`**：手机端已经有对应的可执行文案（"这个目录不在电脑的共享根里"），**且不靠 `detail` 区分场景**（服务端压根不发 `detail`，见规格 §5.3）——不要把场景差异塞进响应体。手机端把 `forbiddenPath` 的文案改成"电脑上不允许这个操作（可能是只读模式，或路径不在共享根）"，一句覆盖两种，避免新造码。
 - 加单测：只读时两个写端点都返回 403；读取端点仍正常
 
 - [ ] **Step 2: 已连接来源（内存环形缓冲）**
@@ -247,14 +247,22 @@ git commit -m "feat(android): 只读模式下的界面收敛与提示"
 ### Task 4: 发布（固定签名 + CI 出 APK）
 
 **Files:**
-- Modify: `android/app/build.gradle.kts`、`.github/workflows/build.yml`、`android/.gitignore`
+- Create: `android/app/src/main/res/values/ic_launcher_background.xml`、`android/app/src/main/res/drawable/ic_launcher_foreground.xml`、`android/app/src/main/res/mipmap-anydpi-v26/ic_launcher.xml`
+- Modify: `android/app/build.gradle.kts`、`android/app/src/main/AndroidManifest.xml`、`.github/workflows/build.yml`、`android/.gitignore`
 
 - [ ] **Step 0: 补应用图标（M1′ Task 1 刻意留空的那一项）**
 
 M1′ 的 manifest **故意没有声明 `android:icon`**——当时项目里没有任何 mipmap 资源，而声明一个不存在的 `@mipmap` 会让资源链接失败、`assembleDebug` 直接报错。发版前必须补上：
 
 1. 用 **XML 自适应图标**，不要引入二进制图片（保持仓库轻，也便于在纯文本里评审）：
-   - `android/app/src/main/res/values/ic_launcher_background.xml`：`<color name="ic_launcher_background">#101014</color>`
+   - `android/app/src/main/res/values/ic_launcher_background.xml`：**必须包在 `<resources>` 根元素里**（`res/values` 下的文件都要有它，漏掉会编译失败）：
+     ```xml
+     <?xml version="1.0" encoding="utf-8"?>
+     <!-- Copyright (c) 2026 XUTENGXIANG / SPDX-License-Identifier: MIT -->
+     <resources>
+         <color name="ic_launcher_background">#101014</color>
+     </resources>
+     ```
    - `android/app/src/main/res/drawable/ic_launcher_foreground.xml`：一个简单矢量（`viewportWidth/Height="108"`）
    - `android/app/src/main/res/mipmap-anydpi-v26/ic_launcher.xml`：
      ```xml

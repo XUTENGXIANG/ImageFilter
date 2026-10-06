@@ -438,6 +438,8 @@ fn ensure_within_rejects_prefix_lookalike_directory() {
     std::fs::remove_dir_all(&base).ok();
 }
 
+> **以文件为准**：提交进去的 `src-tauri/tests/server_contract.rs` 比上面这个块**多 3 条** —— `ensure_within_rejects_an_existing_path_outside_every_share`、`ensure_within_survives_a_missing_share_root`，以及 lookalike 那条里的**正对照断言**（同一共享根内的文件必须被接受）。**本块与文件不一致时，以文件为准**（见提交 `cf05524`）；不要照本块重写文件，否则会把那 3 条覆盖掉。
+
 #[cfg(target_os = "windows")]
 #[test]
 fn ensure_within_rejects_symlink_escape() {
@@ -1965,7 +1967,17 @@ git commit -m "feat(server): 移动照片端点(边车随行/绝不覆盖/半成
   - `add_share(path: String) -> Result<Vec<String>, String>` / `remove_share(path: String)`
   - 事件 `decisions-changed`（payload: `{ paths: Vec<String> }`）
 
-> **启动路径绝不许 panic（用户的首要约束：别把桌面端弄坏）**。当前 `auth::new_token()` 用 `getrandom(...).expect(...)`，而 `ServerConfig::load()` 在配置缺失/损坏时会回落到 `Default` —— 也就是说**一次随机数失败会让整个桌面端崩在启动路径上**，而不是让服务降级。这是不可接受的失败模式，即使概率极低。做法：让 `ServerConfig::default()` 不再生成 token（`token: String::new()`），改为**在启服务时生成并持久化**，把失败作为 `Result` 往上抛（服务不启动 + 界面给一句提示），**应用照常可用**。
+> **启动路径绝不许 panic（用户的首要约束：别把桌面端弄坏）**
+>
+> **先说时态，别被吓到也别忽略**：这个隐患今天是**潜伏的、不可达的** —— `ServerConfig::load()` / `default()` 目前在 `src-tauri` 里**零调用点**（`lib.rs` 只声明了 `pub mod server`，`setup` 还没接服务）。它会在**本任务 Step 3 把 `load()` 接进 Tauri 的 setup 闭包的那一刻变成活的**。所以这条必须在本任务内一起处理，不能推到以后。
+>
+> 机制：`auth::new_token()` 用 `getrandom(...).expect(...)`；`ServerConfig::load()` 走 `.unwrap_or_default()`，配置缺失/损坏时落到 `Default`，而 `Default` 会调 `new_token()` —— 于是**一次随机数失败就把整个桌面端崩在启动路径上**，而不是让服务降级。概率极低，但失败模式不可接受（用户的首要约束是"别把桌面端弄坏"）。
+>
+> 做法（**注意别改出更糟的问题**）：
+> 1. 加一个**可失败**的构造函数，例如 `auth::try_new_token() -> Result<String, String>`，内部不再 `expect`。**`new_token()` 的签名保持不动** —— `auth.rs` 自己的单测和既有调用点依赖 `-> String`。
+> 2. `ServerConfig::default()` **不再生成 token**（`token: String::new()`），改为**在启服务时生成并持久化**，失败作为 `Err` 往上抛：服务不启动 + 界面给一句提示，**应用照常可用**。
+> 3. ⚠️ **空 token 必须 fail-closed —— 这一条绝不能漏**：`auth::eq_constant_time("", "")` 返回 `true`。如果鉴权中间件只是把请求头与 `cfg.token` 比较，那么 **`Authorization: Bearer `（空 token）就能通过鉴权**。所以：`start()` 见到空 token 必须返回 `Err`，**并且**中间件必须显式拒绝空 token（`cfg.token.is_empty() || presented.is_empty()` → 401）。**这条要有测试钉住**，否则"修掉一个 panic"就换来"多了一个未授权入口"。
+> 4. 生成+持久化要挂在**开启服务的那条路径**（`set_server_enabled`）上。同时注意 `config.rs` 现有的 `.filter(|t| t.len() == 64)`（"token 不合法就重新生成"）这条保证会因为 `Default` 不再生成 token 而改变语义，**别默默丢掉它**。
 
 - [ ] **Step 1: 实现 `ServerHandle` 与端口自增**
 
@@ -2348,10 +2360,13 @@ if ($fail -gt 0) { exit 1 }
 
 > **本步要顺带收掉 Task 3 评审提出的 4 条 Minor**（它们都属于"错误分支与白名单的正向保证"，正好落在本任务的职责里）：
 >
-> 1. **白名单的 3 条正向测试**（现在只有代码保证，没有测试）：① **共享根本身**必须被接受（`canon == root_canon` 这一半若被删掉，"列出共享根"会变成 403，而**没有任何测试会失败**）；② **大小写差异**（`D:\Photos` vs `d:\photos`）；③ **末尾分隔符**（`D:\photos\`）。
+> 1. **白名单的 3 条正向测试**（现在只有代码保证，没有测试）：
+>    ① **共享根本身**必须被接受 —— 但要**如实描述理由**：`canon == root_canon` 那一半其实是**冗余**的，`Path::starts_with` **自反**（`Path::new("/a").starts_with("/a")` 即为 true），所以删掉它行为不变，**"列出共享根"不会因此变成 403**。真正的问题是**这条路径从没有被测试走过**。要么保留那一半并注明它只是可读性别名，要么删掉、让 `starts_with` 独自承担 —— 但**不要再声称它是"列表根能用"的保证**（那种说法会把冗余当成功劳）；
+>    ② **大小写差异**（`D:\Photos` vs `d:\photos`）—— **必须加 `#[cfg(target_os = "windows")]` 门**：在区分大小写的文件系统上该路径根本不存在，`canonicalize` 会失败并返回 `notFound`，测试在非 Windows 上必挂；
+>    ③ **末尾分隔符**（`D:\photos\`）。
 > 2. **`XmpError::Unknown` 的映射改成 `BadRequest`**（现在是 `Conflict`）。`Unknown` 也是 `validate_photo_path` 对"非绝对路径 / 不支持的扩展名 / 空 stem"的返回（`xmp.rs:714-733`）——那是**坏请求**，告诉客户端"改名/跳过"会让它拿同一个坏路径重试。改完顺带让 `BadRequest` 这个变体不再是死码（否则闭集里宣传了一个任何路径都产生不出来的码）。
 > 3. 这两条改动都要**配测试**：`Unknown` 的映射用一条断言钉住；白名单三条各自一条测试。
-> 4. 错误体契约：规格 §5.3 已按实测改成 **`{ code }`**（原先写 `{ code, detail }` 是错的，brief 的代码块也只发 `code`）。**不要**为了对齐旧文案去加 `detail` —— 那等于把中文文案硬编码进 Rust。
+> 4. 错误体契约：规格 §5.3 已按实测改成 **`{ code }`**（原稿写 `{ code, detail }` 是错的；`src-tauri/src/server/mod.rs` 的 `IntoResponse` 实测只序列化 `code` 一个字段）。**不要**为了对齐旧文案去加 `detail` —— 那等于把中文文案硬编码进 Rust。（另：规格里"手机端也只消费 `code`"是**前向要求**，此刻 `android/` 里还没有 `ApiError` 类型。）
 
 - [ ] **Step 2: 补全集成测试里的错误分支**
 
