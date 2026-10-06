@@ -167,3 +167,10 @@ src-tauri/            # Rust backend
     tinydng.rs        # DNG decoding (FFI)
   third_party/tinydng # DNG decoder C++ sources
 ```
+
+## License
+
+Released under the **MIT License** — full text in [LICENSE](LICENSE).
+
+You may use, modify and distribute this software freely, including in closed-source commercial products; just keep the copyright notice and the license text. The software is provided "as is", without warranty of any kind.
+
