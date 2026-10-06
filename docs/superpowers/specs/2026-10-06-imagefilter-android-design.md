@@ -166,7 +166,7 @@
 | `GET /api/v1/browse?path=` | `browse_directory` | **单层**目录（与桌面端同一语义，不做递归） |
 | `GET /api/v1/scan?path=` | `scan_directory` | 照片列表（含 EXIF）；服务端按 `SUPPORTED_EXTENSIONS` 过滤 |
 | `GET /api/v1/thumb?path=&size=300` | `thumb_single` + `thumbnails_v2` | **返回 JPEG 字节** |
-| `GET /api/v1/preview?path=&max=2048` | `get_preview_image` + **新增降采样** | **返回 JPEG 字节**，长边 ≤ `max` |
+| `GET /api/v1/preview?path=&max=2048&full=0` | `get_preview_image`（`full=1` 时走 `get_full_image`）+ **新增降采样** | **返回 JPEG 字节**，长边 ≤ `max`，见 §5.2 画质契约 |
 | `GET /api/v1/decisions?paths=…` | `read_decisions` | 读边车（星级/色标） |
 | `PUT /api/v1/decisions` | `write_decisions` | 写边车；**写边车的永远是桌面端** |
 | `POST /api/v1/move` | **新增**（`mover.rs`） | 移动照片 + 同名边车；返回逐项结果 |
@@ -183,10 +183,29 @@
 - 缩略图/预览/移动同样受这条约束——没有例外。
 - 这条对应桌面端 asset scope 的既有思路：默认全关、按需放行（`allow_asset_dir`，交接文档 §4.6）。
 
-**缩略图与预览**：
-- 缩略图沿用 `thumbnails_v2`（300px，缓存键含 mtime）。
-- 预览**新增一步服务端降采样**：`get_preview_image` 给的是内嵌 JPEG 原图（可能 6000px），必须降到 `max` 长边（默认 2048、JPEG q85）再返回。手机内存与流量都可控。
-- 两个端点都必须走既有闸门（缩略图 `Semaphore(4)`；RAW 相关 `Semaphore(1)`）。
+**缩略图与预览**：两者都必须走既有闸门（缩略图 `Semaphore(4)`；RAW 相关 `Semaphore(1)`，交接文档 §4.2）。
+
+*缩略图*：沿用 `thumbnails_v2` 的 `thumb_single`（缓存名 `{hash}_{max_size}.jpg`，键含 mtime）。它优先走 Windows Shell 缩略图，失败才回落解码——**这就是桌面端网格里那张图，手机上不会更差**。默认 `size=300`。
+
+*预览（画质契约，逐项都有出处）*
+
+| 项 | 约定 | 出处 |
+|---|---|---|
+| 来源 | 默认 `get_preview_image`（RAW 的内嵌 JPEG / 非 RAW 的原图）；`full=1` 时走 `get_full_image`（WIC/rawler 全解码链） | 交接文档 §4.1 三级解码 |
+| 降采样 | **复用 `resize_max_edge`（`FilterType::Lanczos3`）**，与桌面端全图降采样同一套算法 | `images.rs:27` |
+| 编码 | **用 `save_jpeg_quality` 显式给质量**（默认 `q=88`）；**不要用 `img.save()`** —— 那走 JPEG 默认质量 ≈75 | `images.rs:58` |
+| 尺寸 | 长边 ≤ `max`（默认 2048），**绝不放大**（`resize_max_edge` 只在超限时缩） | `images.rs:28` |
+| 方向 | 返回前已完成 EXIF 物理校正 | 交接文档 §5 第 10 条 |
+| 缓存 | 落盘，键含 `mtime + max + full` | 见 §9 |
+
+**画质上界必须明示的两条**（UI 文案与文档都要说清楚，不许含糊）：
+
+1. **默认预览的画质上界 = 相机塞进 RAW 的那张内嵌 JPEG 的画质与分辨率**，不是 RAW 的画质。内嵌 JPEG 是相机渲染过的（机内色彩/锐化/降噪/白平衡），与电脑上"全解码 RAW"**不是同一个东西**——不是变差，是不同。桌面端 `FULL_MIN_EDGE = 1500` 这条规则的存在，正说明作者踩过"内嵌预览不够大"的坑；**Sony ARW 尤其要注意**：其最大内嵌预览常见仅 1616×1080，放大到 1:1 验对焦是不够的。
+2. **广色域（Adobe RGB / Display P3）照片可能偏色**：降采样用的 `image` crate 不处理 ICC。桌面端同样受此限制（属**已知的一致限制**，不是 v2 引入的）。
+
+因此 **`full=1` 不是可选项，而是必要的逃生门**：用户长按图片或点"高清"时按需请求，走 `Semaphore(1)` 闸门，UI 上表现为"加载中"，绝不阻塞其他请求。设置项 `预览画质` 给三档：`标准(2048)` / `高(3072)` / `全解码`（对应 `full=1`）。
+
+**关键约束**：服务端降采样**必须复用 `resize_max_edge` 与 `save_jpeg_quality`，不许另写一套重采样/编码**。否则会出现"手机上的预览比电脑上的缩略图还糙"这种找不到原因的观感差异——这个仓库已经有过"同一套规则在两处写死"的教训（`xmp.rs:681` 与 `importer.rs:741`）。
 
 **写决策（`PUT /api/v1/decisions`）**：
 - 请求体与桌面端 `DecisionWrite` 同形：`{ path, rating: number|null, label: string|null, clearLabel: boolean }`，`null` 表示"不动这个属性"。
@@ -292,7 +311,7 @@
 | 层 | 内容 | 归属 |
 |---|---|---|
 | 桌面端缩略图缓存 | 300px，`thumbnails_v2`，键含 mtime | **已存在**，复用 |
-| 桌面端预览缓存 | 内嵌 JPEG，`preview_v4` | **已存在**，复用 |
+| 桌面端预览缓存 | 手机请求的降采样结果，键含 `mtime + max + full` | 新增（否则每次请求都要解码 + Lanczos3，CPU 白烧） |
 | 手机端图片缓存 | Coil 内存 + 磁盘缓存（OkHttp），键 = URL（含 `?v=<mtime>`） | 新增，但**由 Coil 提供** |
 | 手机端待重试 | 写失败的决策 | DataStore，量很小 |
 
@@ -368,7 +387,7 @@ AI 协作下，**token 成本 ≈ 需要人读的代码量 + 需要设备验证�
 5. **i18n 双文件必须齐**（zh/en），改完跑 `docs/evidence/scripts/i18n-parity.cjs`。
 6. **手机端不引 Room**、不引 `SubsamplingScaleImageView`——每一项都是要读代码的负担。
 7. **一个里程碑一个会话**。
-8. **脚本按 Windows PowerShell 5.1 写**（本环境实测：`PSVersion 5.1.26100.9444`，`-SkipHttpErrorCheck` / `-SkipCertificateCheck` 不存在；HTTPS 调用前可能需要显式设 TLS 1.2）。
+8. **脚本按 PowerShell 7 写**：每个脚本开头写 `#Requires -Version 7`，在 5.1 上**明确报错而不是静默跑错**（5.1 不只缺 `-SkipHttpErrorCheck` / `-SkipCertificateCheck`，还缺 `??`、`ConvertFrom-Json -AsHashtable` 等）。当前环境实测是 `5.1.26100.9444`，用户将在计划定下来后安装 7；**装完必须实测一次 `$PSVersionTable.PSVersion`，确认 Agent 的 shell 真的用到了 7** —— 这个 harness 的 `pwsh` 目前解析到 5.1，不确认就可能一直在旧版上跑。
 9. **证据输出要短**：验证命令只回传断言结果与关键数字，不要 dump 整页 UI 树 / 完整 JSON。
 
 ---
@@ -415,3 +434,6 @@ AI 协作下，**token 成本 ≈ 需要人读的代码量 + 需要设备验证�
 | 7 | EasyTier 公共共享节点在你的网络下的实际速度 | 影响引导里的推荐措辞；必要时改为"自建共享节点"指引 |
 | 8 | 手机端从 4G 经隧道拉一张 2048px 预览的实际耗时 | 影响滑卡预取张数（现在定的是"后 2 张"） |
 | 9 | 单文件夹 1000+ 张时 `/scan` 的响应体积与手机端解析耗时 | 需要分页 |
+| 10 | **本机真实 RAW 样张的内嵌预览分辨率分布**（尤其 Sony ARW 是否只有 1616×1080） | 决定"默认预览够不够 1:1 验对焦"，以及 `full=1` 的必要性有多高。**这一条是纯本机可测的，不需要手机**（沿用旧计划的探针思路：`#[ignore]` 测试遍历样张目录并打印每张 `embedded` 尺寸） |
+| 11 | `full=1` 的单张耗时（RAW 全解码 + Lanczos3 降采样到 2048）与内存峰值 | 决定它是"长按逐张触发"还是"可以整屏预取" |
+| 12 | 装好 PowerShell 7 后，Agent 的 shell 实际版本（`$PSVersionTable.PSVersion`） | 若仍解析到 5.1，则所有脚本的 `#Requires -Version 7` 都会直接失败，必须先在环境层面解决 |
