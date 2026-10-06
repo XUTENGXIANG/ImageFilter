@@ -422,6 +422,11 @@ fn ensure_within_rejects_prefix_lookalike_directory() {
     let base = std::env::temp_dir().join(format!("ifshare_pre_{}", std::process::id()));
     let root = base.join("photos");
     let lookalike = base.join("photos2"); // 字符串前缀相同, 但 Path::starts_with 按组件比较
+    // **共享根必须真的存在**。最初的版本只建了 photos2, 于是 root.canonicalize() 失败 →
+    // 走 `continue` 跳过 → 那次拒绝其实来自"共享根不存在", 而不是"按组件比较"。
+    // 那种写法把 starts_with 换成字符串前缀也照样绿 —— 测试因错误的原因通过。
+    // (实测确认于提交 cf05524)
+    std::fs::create_dir_all(&root).unwrap();
     std::fs::create_dir_all(&lookalike).unwrap();
     let f = lookalike.join("a.jpg");
     std::fs::write(&f, b"x").unwrap();
@@ -1960,6 +1965,8 @@ git commit -m "feat(server): 移动照片端点(边车随行/绝不覆盖/半成
   - `add_share(path: String) -> Result<Vec<String>, String>` / `remove_share(path: String)`
   - 事件 `decisions-changed`（payload: `{ paths: Vec<String> }`）
 
+> **启动路径绝不许 panic（用户的首要约束：别把桌面端弄坏）**。当前 `auth::new_token()` 用 `getrandom(...).expect(...)`，而 `ServerConfig::load()` 在配置缺失/损坏时会回落到 `Default` —— 也就是说**一次随机数失败会让整个桌面端崩在启动路径上**，而不是让服务降级。这是不可接受的失败模式，即使概率极低。做法：让 `ServerConfig::default()` 不再生成 token（`token: String::new()`），改为**在启服务时生成并持久化**，把失败作为 `Result` 往上抛（服务不启动 + 界面给一句提示），**应用照常可用**。
+
 - [ ] **Step 1: 实现 `ServerHandle` 与端口自增**
 
 `server/mod.rs` 追加：
@@ -2338,6 +2345,13 @@ if ($SharePath) {
 Write-Host "`n=== 通过 $pass / 失败 $fail ==="
 if ($fail -gt 0) { exit 1 }
 ```
+
+> **本步要顺带收掉 Task 3 评审提出的 4 条 Minor**（它们都属于"错误分支与白名单的正向保证"，正好落在本任务的职责里）：
+>
+> 1. **白名单的 3 条正向测试**（现在只有代码保证，没有测试）：① **共享根本身**必须被接受（`canon == root_canon` 这一半若被删掉，"列出共享根"会变成 403，而**没有任何测试会失败**）；② **大小写差异**（`D:\Photos` vs `d:\photos`）；③ **末尾分隔符**（`D:\photos\`）。
+> 2. **`XmpError::Unknown` 的映射改成 `BadRequest`**（现在是 `Conflict`）。`Unknown` 也是 `validate_photo_path` 对"非绝对路径 / 不支持的扩展名 / 空 stem"的返回（`xmp.rs:714-733`）——那是**坏请求**，告诉客户端"改名/跳过"会让它拿同一个坏路径重试。改完顺带让 `BadRequest` 这个变体不再是死码（否则闭集里宣传了一个任何路径都产生不出来的码）。
+> 3. 这两条改动都要**配测试**：`Unknown` 的映射用一条断言钉住；白名单三条各自一条测试。
+> 4. 错误体契约：规格 §5.3 已按实测改成 **`{ code }`**（原先写 `{ code, detail }` 是错的，brief 的代码块也只发 `code`）。**不要**为了对齐旧文案去加 `detail` —— 那等于把中文文案硬编码进 Rust。
 
 - [ ] **Step 2: 补全集成测试里的错误分支**
 
