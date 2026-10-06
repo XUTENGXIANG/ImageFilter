@@ -204,7 +204,8 @@ asset 协议 scope **收紧为空**（`tauri.conf.json`），启动只放行缓�
 | `a4f6991` | 连续切换设备导致整盘遍历 / CPU 打满：计数代次取消、固定盘跳过、前端代次守卫 |
 | `8ec4eaf` | 新增本交接文档（并把过期的 `HANDOFF.md` / `PROJECT_LOG.md` 改为指针） |
 
-单测最终分布（**26 活跃 + 3 忽略**）：`analyzer` 10 / `importer` 9 / `scanner::images` 3 / `scanner::browse` 4；忽略的 3 个是 §8 的标定助手。
+单测分布（**67 活跃 + 3 忽略 = 70 个**，2026-10-07 实测）：`xmp` 23 / `importer` 15 / `analyzer` 13（其中 3 个忽略 → 10 活跃）/ `lightroom` 8 / `scanner::browse` 4 / `db` 3 / `scanner::images` 3 / `lib`（Mica 边界）1。忽略的 3 个都在 `analyzer`，即 §8 的标定助手。
+> 本节原先写的"26 活跃"与 §9.1 原先写的"66 活跃"**都已被实测取代**：两者是不同会话留下的，且前者连分母都不对（漏了 `xmp`/`lightroom`/`db` 三块）。以本行与 §8 的基线为准。
 
 关键数字（都可复现，方法见 §8）：
 
@@ -222,9 +223,11 @@ asset 协议 scope **收紧为空**（`tauri.conf.json`），启动只放行缓�
 
 ## 8. 验证与工具
 
+> 基线(2026-10-07)：67 活跃 + 3 忽略 —— 改动后必须与此一致。
+
 ```bash
 cd src-tauri
-cargo test --lib          # 26 活跃 + 3 忽略
+cargo test --lib          # 67 活跃 + 3 忽略
 cargo check --lib         # 应无警告
 cargo test --release --lib bench_analyze_cache -- --ignored --nocapture   # 生产构建下的分析耗时
 ```
@@ -251,7 +254,7 @@ cargo test --release --lib bench_analyze_cache -- --ignored --nocapture   # 生�
 > 版本号已改为 `1.1.0`（4 处），见 [ImageFilter-Phase7-Lightroom衔接.md](ImageFilter-Phase7-Lightroom衔接.md) 与 [ImageFilter-功能实施方案.md](ImageFilter-功能实施方案.md)。
 
 ### 9.1 发布前检查
-- [x] `cargo test --lib`（66 活跃 + 3 忽略）与 `npx tsc --noEmit` / `npx vite build` 全绿；i18n zh/en 各 273 叶子 key 对齐
+- [x] `cargo test --lib`（67 活跃 + 3 忽略）与 `npx tsc --noEmit` / `npx vite build` 全绿；i18n zh/en 各 273 叶子 key 对齐
 - [x] Phase 7 的完整链路已由使用者在真机验证（导入 → 打开 LrC 导入页 → 页面只含本批）
 - [ ] 在真实 SD 卡上跑一遍核心路径：浏览 → 缩略图 → 查看器（含**连续快速切换**）→ 星级筛选 → AI 分析 → 导入（校验归档层级与"跳过/改名"行为）
 - [ ] 复核两个阈值（见 §6 "未验证的假设"）：`BLUR_THRESHOLD = 75`、`DUPLICATE_MAX_DISTANCE = 5` 在更大样本上是否仍合适

@@ -21,6 +21,10 @@ tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
+# 图库服务（手机端访问）。只加 HTTP 框架与随机数, 不引 HTTP 客户端。
+axum = "0.8"
+getrandom = "0.2"
+
 # Image / photo processing
 rawler = "0.7"
 kamadak-exif = "0.5"
@@ -75,3 +79,7 @@ opt-level = 2
 
 [profile.dev.package."*"]
 opt-level = 3
+
+[dev-dependencies]
+# 契约测试直接打 Router, 不占端口、不引 HTTP 客户端
+tower = { version = "0.5", features = ["util"] }
