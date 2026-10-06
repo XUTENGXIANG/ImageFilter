@@ -253,7 +253,11 @@ git commit -m "chore(android): 记录免管理员工具链实测结果(JDK21/SDK
 **为什么先做**：把构建立起来之前写任何 Kotlin 都无法验证。这一步的验收是"`assembleDebug` 出 APK + 一个平凡 JVM 单测通过"，与业务无关。
 
 **Files:**
-- Create: `android/settings.gradle.kts`、`android/build.gradle.kts`、`android/gradle.properties`、`android/gradle/libs.versions.toml`、`android/app/build.gradle.kts`、`android/app/src/main/AndroidManifest.xml`、`android/app/src/main/kotlin/com/imagefilter/mobile/MainActivity.kt`、`android/app/src/main/kotlin/com/imagefilter/mobile/ui/theme/Theme.kt`、`android/app/src/test/kotlin/com/imagefilter/mobile/SmokeTest.kt`、`android/.gitignore`
+- Create: `android/settings.gradle.kts`、`android/build.gradle.kts`、`android/gradle.properties`、`android/gradle/libs.versions.toml`、`android/app/build.gradle.kts`、`android/app/src/main/AndroidManifest.xml`、`android/app/src/main/kotlin/com/imagefilter/mobile/MainActivity.kt`、`android/app/src/main/kotlin/com/imagefilter/mobile/ui/theme/Theme.kt`、`android/app/src/test/kotlin/com/imagefilter/mobile/SmokeTest.kt`、`android/.gitignore`、`android/app/proguard-rules.pro`（空占位）
+
+> **关于 `Theme.kt`（独立评审发现的一处清单不一致）**：它在上面的清单里被列出，但本任务的 Step 5 **从未规定它的内容**，客观实现里也没有它（`MainActivity` 直接用了默认 `MaterialTheme`）。**不要为了对齐清单去凭空造内容** —— 交给第一个真正需要主题的界面任务（M1′ 的目录树/网格界面）一并创建并规定色值。本文档前面的项目级 File Structure 表保留它是对的：那描述的是**最终结构**，不是本任务的产出清单。
+>
+> **关于 `proguard-rules.pro`**：`app/build.gradle.kts` 的 release 构建类型引用了它，而 R8 **只在开混淆时才读**。今天不存在也不报错，但 M4′ 一发版打开混淆就会变成"文件不存在"的硬失败。放一个空占位（只有注释）最省事。
 - Modify: 仓库根 `.gitignore`（追加 `android/` 的忽略项）
 
 **Interfaces:**
