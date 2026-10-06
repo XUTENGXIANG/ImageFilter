@@ -457,17 +457,10 @@ fn ensure_within_rejects_symlink_escape() {
     std::fs::remove_dir_all(&base).ok();
 }
 
-#[test]
-fn token_is_64_hex_chars_and_constant_time_compare_works() {
-    let a = image_filter_lib::server::auth::new_token();
-    let b = image_filter_lib::server::auth::new_token();
-    assert_eq!(a.len(), 64, "32 字节 → 64 个十六进制字符");
-    assert!(a.chars().all(|c| c.is_ascii_hexdigit()));
-    assert_ne!(a, b, "两次生成必须不同");
-    assert!(image_filter_lib::server::auth::eq_constant_time(&a, &a));
-    assert!(!image_filter_lib::server::auth::eq_constant_time(&a, &b));
-    assert!(!image_filter_lib::server::auth::eq_constant_time(&a, "short"));
-}
+// 注意: 这里**不**放"token 是 64 位 hex / 常量时间比较"的测试。
+// 鉴权原语的单测放在 auth.rs 自己的 `mod tests` 里（见 Step 4）—— 同一段断言在两个
+// 文件里各写一份，在评审规则里就是"逐字重复的逻辑块"，属于缺陷。
+// 集成测试只负责"必须用真实文件系统才能验"的那部分：越界判定。
 ```
 
 **注意**：这个集成测试要求 lib 是 `image_filter_lib`（`Cargo.toml` 里已是这个 `[lib] name` ✓），并且 `server` 模块与 `paths`/`auth` 子模块必须是 `pub`。
