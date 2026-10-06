@@ -144,7 +144,101 @@ fn ensure_within_rejects_symlink_escape() {
 // 文件里各写一份，在评审规则里就是"逐字重复的逻辑块"，属于缺陷。
 // 集成测试只负责"必须用真实文件系统才能验"的那部分：越界判定。
 
-// ── media(缩略图/预览字节)的画质契约 ─────────────────────────────────────────
+// ── 媒体端点的**缓存根隔离** ─────────────────────────────────────────────────
+//
+// 为什么必须有这一段: `get_full_image` / `get_thumbnail_path` 会把结果写进
+// `%LOCALAPPDATA%\image-filter\{full_v3,thumbnails_v2}` —— 那是**用户真实的应用数据**。
+// 修复前 `full_raw_verbatim_cache_with_exif_is_oriented_exactly_once` 直接往那里写,
+// 每跑一次就留下一个 6256 字节、带 EXIF 的条目(实测本机已堆了 10 个), 反复跑无限增长。
+// 测试不许动用户的应用数据。
+//
+// 这里**没有新增生产代码**: `images::cache_dir` 读的本来就是平台变量
+// (Windows `LOCALAPPDATA`, 其他平台 `XDG_CACHE_HOME`), 我们只是把它指到临时目录。
+//
+// 变量是**进程级**的, 所以所有会写缓存的测试都先拿 `CACHE_ROOT_LOCK` 串起来 —— 它们互不
+// 干扰, 也绝不会写进用户的真实缓存。当前只有 `full=1` 的 RAW 测试与两个缩略图测试会写缓存。
+static CACHE_ROOT_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// 平台缓存根变量名(见 `images::cache_dir`)。两边都指走, 哪个平台都不漏。
+const CACHE_ROOT_ENV_VARS: &[&str] = &["LOCALAPPDATA", "XDG_CACHE_HOME"];
+
+struct TempCacheRoot {
+    _lock: std::sync::MutexGuard<'static, ()>,
+    prev: Vec<(&'static str, Option<std::ffi::OsString>)>,
+    root: std::path::PathBuf,
+}
+
+impl TempCacheRoot {
+    /// 缓存根 = 一个**新建的临时目录**(正常的隔离)。
+    fn new(tag: &str) -> Self {
+        let root = std::env::temp_dir().join(format!("ifcache_{}_{}", tag, std::process::id()));
+        let _ = std::fs::remove_dir_all(&root); // 清掉上次崩溃留下的同名目录
+        std::fs::create_dir_all(&root).expect("建临时缓存根");
+        Self::point_at(root)
+    }
+
+    /// 缓存根 = 一个**普通文件**。`create_dir_all(文件\image-filter\...)` 必然失败,
+    /// 用来制造 `images.rs` 的 `Mkdir: ...` 内部故障 —— 这正是"源文件好好的、只是磁盘/权限
+    /// 有问题"那种被旧实现错报成 `unsupportedForm` 的情况。
+    fn blocked_by_a_file(tag: &str) -> Self {
+        let root = std::env::temp_dir().join(format!("ifcachefile_{}_{}", tag, std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_file(&root);
+        std::fs::write(&root, b"not a directory").expect("建占位文件");
+        Self::point_at(root)
+    }
+
+    fn point_at(root: std::path::PathBuf) -> Self {
+        // 中毒也要继续: 这个锁只用来串行化, 不保护任何不变量。
+        let lock = CACHE_ROOT_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let prev = CACHE_ROOT_ENV_VARS
+            .iter()
+            .map(|k| {
+                let old = std::env::var_os(k);
+                std::env::set_var(k, &root);
+                (*k, old)
+            })
+            .collect();
+        TempCacheRoot {
+            _lock: lock,
+            prev,
+            root,
+        }
+    }
+
+    /// 隔离出来的缓存根 —— 断言"缓存真的写在隔离位置而不是用户目录"用得上。
+    fn root(&self) -> &std::path::Path {
+        &self.root
+    }
+}
+
+impl Drop for TempCacheRoot {
+    fn drop(&mut self) {
+        // 先把环境还原, 再删: 删的过程中若还有别的线程读它, 读到的也已经是原值。
+        for (k, old) in &self.prev {
+            match old {
+                Some(v) => std::env::set_var(k, v),
+                None => std::env::remove_var(k),
+            }
+        }
+        // 目录和"占位文件"两种形态都清掉, 反复跑不留任何东西。
+        std::fs::remove_dir_all(&self.root).ok();
+        std::fs::remove_file(&self.root).ok();
+    }
+}
+
+/// 隔离根里某个缓存子目录下的 jpg 条目数(断言隔离真的生效用)。
+fn cached_jpg_count(root: &std::path::Path, subdir: &str) -> usize {
+    std::fs::read_dir(root.join("image-filter").join(subdir))
+        .map(|rd| {
+            rd.filter_map(|e| e.ok())
+                .filter(|e| e.path().extension().and_then(|x| x.to_str()) == Some("jpg"))
+                .count()
+        })
+        .unwrap_or(0)
+}
+
+// media(缩略图/预览字节)的画质契约 ─────────────────────────────────────────
 //
 // 为什么这几条必须用**真文件 + 真解码**而不是 mock: 三条契约里最贵的两条
 // (不放大 / 方向只上一次)只有在真走完"取缓存路径 → 解码 → 重采样"之后才看得见。
@@ -342,6 +436,13 @@ async fn preview_orientation_matrix_matches_the_eight_exif_transforms() {
 /// 如果将来阈值变了, 这条仍然是有意义的方向测试, 但需要重新构造夹具才能继续覆盖该分支。
 #[tokio::test]
 async fn full_raw_verbatim_cache_with_exif_is_oriented_exactly_once() {
+    // Fix B: 这条测试会驱动 `get_full_image`, 它的缓存目录是**用户真实的**应用数据
+    // (`%LOCALAPPDATA%\image-filter\full_v3`)。修复前它直接往那里写, 每跑一次留一个
+    // 6256 字节、带 EXIF 的条目(实测已堆 10 个, 每次跑测试再涨一个)。
+    // 现在缓存根指向临时目录, Drop 时还原 + 删干净。
+    let cache = TempCacheRoot::new("rawfull");
+    let cache_root = cache.root().to_path_buf();
+
     let dir = std::env::temp_dir().join(format!("ifrawfull_{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let p = dir.join("fake.arw");
@@ -358,11 +459,31 @@ async fn full_raw_verbatim_cache_with_exif_is_oriented_exactly_once() {
         assert_orientation_transform(&got, 3000, 64, 6, label);
     }
 
+    // 隔离必须**真的生效**: 缓存条目要落在临时根里。没有这条断言的话, 万一哪天
+    // `cache_dir()` 不再看平台变量, 这条测试会**静默**回去写用户目录。
+    assert_eq!(
+        cached_jpg_count(&cache_root, "full_v3"),
+        1,
+        "这次 full=1 应当只在隔离根里写出一条 full_v3 条目"
+    );
+
+    // 而且用完必须不留东西。
+    drop(cache);
+    assert!(
+        !cache_root.exists(),
+        "隔离的缓存根必须在测试结束后被删干净 —— 反复跑测试不许留下任何文件"
+    );
+    assert_eq!(cached_jpg_count(&cache_root, "full_v3"), 0);
+
     std::fs::remove_dir_all(&dir).ok();
 }
 
 #[tokio::test]
 async fn thumbnail_returns_jpeg_bytes() {
+    // 缩略图同样会写用户的 `thumbnails_v2` 缓存 → 一起隔离。
+    let cache = TempCacheRoot::new("thumb");
+    let cache_root = cache.root().to_path_buf();
+
     let dir = std::env::temp_dir().join(format!("ifthumb_{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let p = dir.join("t.jpg");
@@ -374,7 +495,9 @@ async fn thumbnail_returns_jpeg_bytes() {
     assert_eq!(&bytes[..2], &[0xFF, 0xD8], "必须是 JPEG(SOI)");
     let (w, h) = image_dimensions_from_bytes(&bytes).unwrap();
     assert!(w.max(h) <= 300, "缩略图长边不得超过请求的 size");
+    assert_eq!(cached_jpg_count(&cache_root, "thumbnails_v2"), 1);
 
+    drop(cache);
     std::fs::remove_dir_all(&dir).ok();
 }
 
@@ -382,6 +505,9 @@ async fn thumbnail_returns_jpeg_bytes() {
 /// 比最小档位还小的请求报 `badRequest`(而不是偷偷给一张更大的图)。
 #[tokio::test]
 async fn thumbnail_never_returns_more_than_the_requested_size() {
+    let cache = TempCacheRoot::new("thumbsize");
+    let cache_root = cache.root().to_path_buf();
+
     let dir = std::env::temp_dir().join(format!("ifthumbsize_{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let p = dir.join("t.jpg");
@@ -411,6 +537,10 @@ async fn thumbnail_never_returns_more_than_the_requested_size() {
         "比最小档位还小的 size 必须报错, 不许返回比请求值更大的图"
     );
 
+    // 档位只有 150/300/600 三档 → 1024 归到 600, 一共 3 个条目(而且都在隔离根里)
+    assert_eq!(cached_jpg_count(&cache_root, "thumbnails_v2"), 3);
+
+    drop(cache);
     std::fs::remove_dir_all(&dir).ok();
 }
 
@@ -438,6 +568,109 @@ async fn preview_distinguishes_undecodable_from_missing() {
         .await
         .unwrap_err();
     assert_eq!(err2.code(), "notFound", "文件不存在 → notFound");
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// **Fix D 的对外证明(一): 内部/IO 故障不许报成"格式不支持"。**
+///
+/// 旧实现 `source_error` 只看"请求的路径在不在": 只要源文件在, **任何**失败都是
+/// `unsupportedForm`。于是"缓存目录建不出来"(磁盘满/权限/路径被占)也会被手机翻译成
+/// "这个格式在电脑上也打不开", 让用户拿着一个完全没问题的文件反复重试。
+///
+/// 这条测试用**同一个源文件**、只换缓存环境, 逼出两个不同的码 —— 这样"源文件存在"就不是
+/// 判定依据了:
+///   · 缓存根被一个普通文件占住 → `create_dir_all` 失败 → 必须 `internal`;
+///   · 缓存一切正常, 是文件本身解不了 → `unsupportedForm`(对照, 防止"一律报 internal")。
+#[tokio::test]
+async fn a_broken_cache_is_reported_as_internal_not_as_a_format_problem() {
+    let dir = std::env::temp_dir().join(format!("ifinternal_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    // 假 RAW: 里面**没有**任何内嵌 JPEG(`extract_largest_preview_bytes` 找不到候选),
+    // 所以缓存正常时它就是一个"解不了的真 RAW"。
+    let raw = dir.join("fake.arw");
+    std::fs::write(&raw, b"not a raw file at all").unwrap();
+    let path = raw.to_str().unwrap();
+
+    // (1) 缓存目录建不出来 —— 磁盘/权限问题, 与照片格式无关
+    {
+        let _blocked = TempCacheRoot::blocked_by_a_file("blocked");
+        let err = image_filter_lib::server::media::preview_bytes(path, 2048, false)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            err.code(),
+            "internal",
+            "缓存目录建不出来是磁盘/权限问题, 不许报 unsupportedForm —— 那会让用户以为格式有问题"
+        );
+
+        // 缩略图那条路(走的是 thumb_single 的 `Mkdir: ...`)必须同样诚实
+        let terr = image_filter_lib::server::media::thumbnail_bytes(path, 300)
+            .await
+            .unwrap_err();
+        assert_eq!(terr.code(), "internal", "缩略图路径的内部故障也必须是 internal");
+    }
+
+    // (2) 同一个文件、缓存正常 → 它是**真的**解不了 → unsupportedForm
+    {
+        let _cache = TempCacheRoot::new("healthy");
+        let err = image_filter_lib::server::media::preview_bytes(path, 2048, false)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            err.code(),
+            "unsupportedForm",
+            "缓存没问题时, RAW 里没有可用内嵌预览就是内容/格式问题 —— 不能一律报 internal"
+        );
+    }
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// **Fix D 的对外证明(二): 源文件在、但**读不出来**, 也要报 `internal`。**
+///
+/// 这一条走的是 media 层自己那次解码(`image::open`), 那里的判据不再是字符串, 而是
+/// `image::ImageError` 的类别: `IoError` = 文件在但读不动 → `internal`;
+/// 其余(Decoding/...) = 内容坏了 → `unsupportedForm`。
+///
+/// 用一个**目录**冒充 `.jpg`: 它 `Path::exists()` 为真(所以旧实现的分支条件满足),
+/// 但 `File::open` 在 Windows 报"访问被拒"、在类 Unix 报 EISDIR —— 两边都是 `IoError`。
+#[tokio::test]
+async fn an_unreadable_source_is_reported_as_internal_not_as_a_format_problem() {
+    let dir = std::env::temp_dir().join(format!("ifunread_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+
+    let as_dir = dir.join("locked.jpg");
+    std::fs::create_dir_all(&as_dir).unwrap();
+    assert!(as_dir.exists(), "夹具的前提: 这个路径必须'存在'(旧实现的判据)");
+    let err = image_filter_lib::server::media::preview_bytes(as_dir.to_str().unwrap(), 2048, false)
+        .await
+        .unwrap_err();
+    assert_eq!(
+        err.code(),
+        "internal",
+        "存在但读不出来的源(权限/被锁/是目录)是 IO 问题, 不是不支持这个格式"
+    );
+
+    // 对照一: 同一目录里一个**真的解不了**的普通文件 → unsupportedForm(不是 internal)
+    let junk = dir.join("note.jpg");
+    std::fs::write(&junk, b"definitely not an image").unwrap();
+    let err2 = image_filter_lib::server::media::preview_bytes(junk.to_str().unwrap(), 2048, false)
+        .await
+        .unwrap_err();
+    assert_eq!(
+        err2.code(),
+        "unsupportedForm",
+        "内容坏了才是 unsupportedForm —— 两个码必须真的分得开"
+    );
+
+    // 对照二: 不存在 → notFound(这条判据不能被上面的改动弄丢)
+    let ghost = dir.join("ghost.jpg");
+    let err3 =
+        image_filter_lib::server::media::preview_bytes(ghost.to_str().unwrap(), 2048, false)
+            .await
+            .unwrap_err();
+    assert_eq!(err3.code(), "notFound", "不存在仍然是 notFound");
 
     std::fs::remove_dir_all(&dir).ok();
 }

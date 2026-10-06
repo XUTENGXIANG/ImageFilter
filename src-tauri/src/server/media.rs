@@ -44,52 +44,133 @@ const THUMBNAIL_SIZES: &[u32] = &[150, 300, 600];
 const PREVIEW_MAX_MIN: u32 = 64;
 const PREVIEW_MAX_MAX: u32 = 5000;
 
-/// 请求驱动的媒体重活(解码 + Lanczos 重采样 + 重编码)并发上限。
+/// **缩略图**闸门的预算: 4。
 ///
-/// 为什么是 2:
-///   · 一次全尺寸解码是 CPU 密集 + 几十到几百 MB 常驻内存的操作。手机只要并发发 N 个请求,
-///     就能在**桌面 App 的同一个进程里**堆起 N 份解码, 把用户正在用的机器顶掉 ——
-///     这是本项目的头号红线(不许打扰桌面端);
-///   · 手机端的真实用法是"滚动缩略图 + 偶尔开一张预览", 2 个并发已经够跑满一条连接,
-///     再多也不会更快(瓶颈在 CPU/内存, 不在网络);
-///   · 桌面端自己的 `batch_thumbnails` 有它自己的 `Semaphore::new(4)`, **不经过这个闸门**,
-///     所以收紧这里**不会**改变桌面端的行为(红线: 桌面路径不许被拖慢)。
-///   · RAW 全解码另有一道 `RAW_DECODE_SEM(1)`, 在本闸门**内层**获取; 两者只有
-///     "外层 → 内层"一个方向, 不存在死锁环路。
-const MEDIA_CONCURRENCY: usize = 2;
+/// 为什么是 4: 桌面端自己的 `batch_thumbnails` 早就用 `Semaphore::new(4)` 把"同时 4 张缩略图"
+/// 定为对用户机器安全的负载 —— HTTP 路径沿用同一个数字, 就**不会比用户每天在跑的那条路径更凶**。
+/// 缩略图本身很轻(长边 150/300/600, 命中缓存时只是一次文件读), 而手机端是**滚动列表**:
+/// 缩略图晚一拍就是肉眼可见的卡顿, 所以它需要一条**自己的、宽的**闸门。
+///
+/// 这个 `Semaphore` 与 `batch_thumbnails` 里那个**不是同一个实例**(那个是每次调用新建的局部
+/// `Arc`), 两边不共享任何状态 —— 收放这里的预算不会改变桌面端的并发(红线)。
+const THUMBNAIL_CONCURRENCY: usize = 4;
 
-static MEDIA_SEM: OnceLock<Semaphore> = OnceLock::new();
+/// **预览 / 全图**闸门的预算: 1。
+///
+/// 为什么是 1: 这条路上一次请求 = 一次全尺寸解码 + Lanczos3 重采样 + 重编码, 峰值常驻内存
+/// 几十到几百 MB, 而机器是用户**正在用**的那台(本项目的头号红线)。规格对这一条的原话就是
+/// "走 Semaphore(1) 闸门, UI 上表现为『加载中』, 绝不阻塞其他请求"。
+/// 而且 `get_full_image` 对 RAW 传感器解码本来就有 `RAW_DECODE_SEM(1)` 串行化, 第二个许可
+/// 几乎换不来吞吐, 只换来**第二份**解码结果常驻内存。
+///
+/// 最关键的一点: 这 1 个许可**绝不能**和缩略图共享。修复前两条路共用一个 `MEDIA_SEM(2)`,
+/// 两个 `full=1` 请求就能把两个许可全部占住, 于是所有缩略图请求排在两次全解码之后 ——
+/// 手机的滚动列表整整卡住, 而规格明确承诺"绝不阻塞其他请求"。
+///
+/// 死锁: 两条闸门互不嵌套(一次请求只进其中一条), 桌面端的 `RAW_DECODE_SEM(1)` 是**内层**,
+/// 方向只有"外层 → 内层"一个, 无环。
+///
+/// 每个客户端各自的限额**不在这一层**: 那需要客户端身份, 属于路由层(Task 8)。
+/// 这里只管"整个进程一共允许多少重活同时在跑"。
+const PREVIEW_CONCURRENCY: usize = 1;
 
-fn media_sem() -> &'static Semaphore {
-    MEDIA_SEM.get_or_init(|| Semaphore::new(MEDIA_CONCURRENCY))
+/// 缩略图闸门。**独立**预算 —— 与预览闸门不共享任何状态。
+static THUMBNAIL_SEM: OnceLock<Semaphore> = OnceLock::new();
+/// 预览/全图闸门。同上, 独立预算。
+static PREVIEW_SEM: OnceLock<Semaphore> = OnceLock::new();
+
+fn thumbnail_sem() -> &'static Semaphore {
+    THUMBNAIL_SEM.get_or_init(|| Semaphore::new(THUMBNAIL_CONCURRENCY))
 }
 
-/// 并发闸门的**测试观测点**(生产编译里不存在): 闸门内的实时并发数 + 历史峰值。
+fn preview_sem() -> &'static Semaphore {
+    PREVIEW_SEM.get_or_init(|| Semaphore::new(PREVIEW_CONCURRENCY))
+}
+
+/// 闸门种类。生产代码里它只是个被忽略的标记(进哪条闸门已经由调用哪个 `*_sem()` 决定),
+/// 存在的唯一理由是让**测试探针**把两条闸门的在飞计数分开观测。
+#[derive(Clone, Copy)]
+enum GateKind {
+    Thumbnail,
+    Preview,
+}
+
+/// 并发闸门的**测试观测点**(生产编译里不存在): 每条闸门各自的实时在飞数 + 历史峰值。
 ///
 /// 放在生产文件里而不是测试文件里, 是因为要观测的是"闸门**内**同时在跑的请求数" ——
 /// 只有守卫生效的这段代码自己知道。集成测试拿不到它(lib 在集成测试里不带 cfg(test)),
-/// 所以证明闸门真的闸住了的那条测试也在本文件里。
+/// 所以观测闸门的测试也在本文件里。
+///
+/// **为什么是线程局部而不是 `static AtomicUsize`**(修复前的写法): `#[tokio::test]` 默认是
+/// current_thread 运行时, 一条测试的**全部**任务都在它自己那条线程上跑, 于是线程局部天然就是
+/// "每条测试一份"。进程级 static 则会被同一个测试二进制里**并行**跑的其他测试搅动 ——
+/// 别的测试在"清零"之后、收尾断言之前把在飞数加上去, "结束后必须归零"就会**假红**。
+/// 前提写在这么显眼的地方: 只有 current_thread 的测试能观测这些探针; 多线程 flavor 的测试里
+/// 任务会在多个 worker 线程上被轮询, 每条线程各记一份计数 —— 那时不要用它们。
 #[cfg(test)]
 mod gate_probe {
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use super::GateKind;
+    use std::cell::Cell;
 
-    pub(super) static IN_FLIGHT: AtomicUsize = AtomicUsize::new(0);
-    pub(super) static PEAK_IN_FLIGHT: AtomicUsize = AtomicUsize::new(0);
+    thread_local! {
+        static THUMB_IN_FLIGHT: Cell<usize> = Cell::new(0);
+        static THUMB_PEAK_IN_FLIGHT: Cell<usize> = Cell::new(0);
+        static PREVIEW_IN_FLIGHT: Cell<usize> = Cell::new(0);
+        static PREVIEW_PEAK_IN_FLIGHT: Cell<usize> = Cell::new(0);
+    }
+
+    fn cells(
+        kind: GateKind,
+    ) -> (
+        &'static std::thread::LocalKey<Cell<usize>>,
+        &'static std::thread::LocalKey<Cell<usize>>,
+    ) {
+        match kind {
+            GateKind::Thumbnail => (&THUMB_IN_FLIGHT, &THUMB_PEAK_IN_FLIGHT),
+            GateKind::Preview => (&PREVIEW_IN_FLIGHT, &PREVIEW_PEAK_IN_FLIGHT),
+        }
+    }
+
+    /// 把这条线程上的计数清零(测试开头调)。线程局部, 所以只影响本条测试。
+    pub(super) fn reset(kind: GateKind) {
+        let (now, peak) = cells(kind);
+        now.with(|c| c.set(0));
+        peak.with(|c| c.set(0));
+    }
+
+    pub(super) fn in_flight(kind: GateKind) -> usize {
+        cells(kind).0.with(|c| c.get())
+    }
+
+    pub(super) fn peak_in_flight(kind: GateKind) -> usize {
+        cells(kind).1.with(|c| c.get())
+    }
 
     /// 进入闸门时构造, 离开(作用域结束)时析构 —— 计数区间与持锁区间严格一致。
-    pub(super) struct Guard;
+    pub(super) struct Guard {
+        kind: GateKind,
+    }
 
     impl Guard {
-        pub(super) fn enter() -> Self {
-            let now = IN_FLIGHT.fetch_add(1, Ordering::SeqCst) + 1;
-            PEAK_IN_FLIGHT.fetch_max(now, Ordering::SeqCst);
-            Guard
+        pub(super) fn enter(kind: GateKind) -> Self {
+            let (now, peak) = cells(kind);
+            let v = now.with(|c| {
+                let v = c.get() + 1;
+                c.set(v);
+                v
+            });
+            peak.with(|c| {
+                if v > c.get() {
+                    c.set(v);
+                }
+            });
+            Guard { kind }
         }
     }
 
     impl Drop for Guard {
         fn drop(&mut self) {
-            IN_FLIGHT.fetch_sub(1, Ordering::SeqCst);
+            cells(self.kind).0.with(|c| c.set(c.get().saturating_sub(1)));
         }
     }
 }
@@ -103,7 +184,9 @@ struct MediaGate {
 }
 
 impl MediaGate {
-    fn new(permit: Option<tokio::sync::SemaphorePermit<'static>>) -> Self {
+    /// `_kind` 只在测试编译里被用(喂给探针); 生产编译里两条闸门的区别已经体现在传进来的
+    /// `permit` 上, 所以这里刻意用下划线前缀, 两种编译都不产生 warning。
+    fn new(permit: Option<tokio::sync::SemaphorePermit<'static>>, _kind: GateKind) -> Self {
         #[cfg(not(test))]
         {
             MediaGate { _permit: permit }
@@ -112,16 +195,21 @@ impl MediaGate {
         {
             MediaGate {
                 _permit: permit,
-                _probe: gate_probe::Guard::enter(),
+                _probe: gate_probe::Guard::enter(_kind),
             }
         }
     }
-}
 
-/// 进入闸门。这个信号量从不 `close()`, 所以拿不到许可只可能发生在进程收尾阶段;
-/// 那时"少一道闸门"也比在**桌面端同一个进程里** panic 好。
-async fn media_gate() -> MediaGate {
-    MediaGate::new(media_sem().acquire().await.ok())
+    /// 进**缩略图**闸门。信号量从不 `close()`, 所以拿不到许可只可能发生在进程收尾阶段;
+    /// 那时"少一道闸门"也比在**桌面端同一个进程里** panic 好。
+    async fn thumbnail() -> Self {
+        Self::new(thumbnail_sem().acquire().await.ok(), GateKind::Thumbnail)
+    }
+
+    /// 进**预览/全图**闸门。同上。
+    async fn preview() -> Self {
+        Self::new(preview_sem().acquire().await.ok(), GateKind::Preview)
+    }
 }
 
 /// 缩略图档位: 向下取整到最近的允许档位(契约见 `THUMBNAIL_SIZES`)。
@@ -134,11 +222,39 @@ fn thumbnail_size(requested: u32) -> Result<u32, ApiError> {
         .ok_or(ApiError::BadRequest)
 }
 
+/// images.rs 的错误字符串里**明确表示内部/IO 故障**的前缀(闭集, 见 images.rs 里那些 `map_err`)。
+///
+/// 为什么需要这张表: 这些消息讲的是"缓存目录建不出来 / 缓存写不进去 / 源文件读不出来",
+/// 与照片格式毫无关系。旧实现只看"请求的源文件在不在", 于是**任何**这类内部故障都被报成
+/// `unsupportedForm`, 手机就会告诉用户"这个格式在电脑上也打不开" —— 而真正的问题是磁盘或权限。
+///
+/// 为什么用前缀而不是类型化错误: `images.rs` 与桌面端共用, 把它改成类型化错误的风险远大于这个
+/// 缺陷本身(本轮红线)。所以这里只做**保守**的加表: 认不出来的消息一律退回原来的 `exists()` 判定,
+/// 绝不猜成"内部故障"。代价写下来备查: `Open: <io error>`(thumb_single 对非 jpg/RAW 走
+/// `image::open`)如果其实是权限问题, 仍会被报成 `unsupportedForm` —— 要彻底分开必须动
+/// `images.rs` 的错误格式化, 不在本轮范围。
+const INTERNAL_FAULT_PREFIXES: &[&str] = &[
+    "No cache dir", // 拿不到缓存根(LOCALAPPDATA 缺失)
+    "Mkdir:",       // 缓存目录建不出来(磁盘满 / 权限 / 路径被占)
+    "Save:",        // 缓存写不进去
+    "Join:",        // spawn_blocking 任务没跑起来(运行时收尾)
+    "Read:",        // decode_jpeg_fast: 源文件读不出来
+    "Read RAW:",    // extract_raw_preview: RAW 读不出来
+];
+
+fn is_internal_fault(msg: &str) -> bool {
+    INTERNAL_FAULT_PREFIXES.iter().any(|p| msg.starts_with(p))
+}
+
 /// 源图解析/解码失败 → 闭集错误码(规格 §5.3)。
 ///
 /// 区分"没有这个文件"和"有文件但本 build 解不了"是**必须的**: 手机端对前者要提示
 /// "照片可能被移动或删除", 对后者要提示"这个格式电脑上的 App 也打不开"。
 /// 两者都退回 `notFound` 会让用户去重插硬盘, 而问题其实是格式。
+///
+/// 还要区分**第三种**: 源文件好好的, 只是缓存目录/磁盘出了问题 —— 那是 `internal`,
+/// 报成 `unsupportedForm` 就是让用户拿着一个没问题的文件反复重试(见
+/// `INTERNAL_FAULT_PREFIXES`)。
 fn source_error(requested: &str, msg: &str) -> ApiError {
     // `get_full_image` 在"更新的请求已经到来"时返回 `superseded`(它会被后来的请求取代)。
     // 那不是解码失败 —— 告诉手机"忙, 稍后重试"才是诚实的。
@@ -146,6 +262,10 @@ fn source_error(requested: &str, msg: &str) -> ApiError {
     // 属于 images.rs 的改动(桌面端共用), 不在本次修复范围内。
     if msg.contains("superseded") {
         return ApiError::Busy;
+    }
+    // 内部/IO 故障优先于"源文件在不在" —— 与格式无关的问题不许报成格式问题。
+    if is_internal_fault(msg) {
+        return ApiError::Internal;
     }
     if Path::new(requested).exists() {
         ApiError::UnsupportedForm
@@ -174,7 +294,8 @@ pub async fn thumbnail_bytes(path: &str, size: u32) -> Result<Vec<u8>, ApiError>
     // 闸门必须罩住 `get_thumbnail_path`: 它是 `thumb_single` 的同步外壳(cache miss 时
     // 直接在调用线程上解码 + 编码)。桌面端走 `batch_thumbnails` 时有自己的 `Semaphore(4)`,
     // 但 HTTP 请求走这条路径时**原先完全没有闸门**。
-    let _gate = media_gate().await;
+    // 用的是**缩略图自己的**预算 —— 全图解码占满预览闸门时, 这里照样能进(规格: 绝不阻塞其他请求)。
+    let _gate = MediaGate::thumbnail().await;
     let size = thumbnail_size(size)?;
     let cached = crate::scanner::images::get_thumbnail_path(path.to_string(), size)
         .await
@@ -194,7 +315,9 @@ pub async fn preview_bytes(path: &str, max: u32, full: bool) -> Result<Vec<u8>, 
         return Err(ApiError::BadRequest);
     }
     // 闸门罩住整段: 取源图路径(RAW 可能触发全解码) + 解码 + 重采样 + 重编码。
-    let _gate = media_gate().await;
+    // `full` 与非 full 都走**预览/全图**闸门: 两者都是全尺寸解码 + Lanczos + 重编码, 一样重;
+    // 这条闸门与缩略图那条**不共享状态**, 所以它满着也不会挡住手机的缩略图列表。
+    let _gate = MediaGate::preview().await;
     let requested = path.to_string();
 
     // 1) 借既有命令拿到"源图路径"（RAW → 缓存过的内嵌 JPEG; 非 RAW → 原图路径）
@@ -210,11 +333,17 @@ pub async fn preview_bytes(path: &str, max: u32, full: bool) -> Result<Vec<u8>, 
 
     // 2) 解码 → 校方向 → 降采样 → 编进内存。**重活必须离开 async 线程。**
     tokio::task::spawn_blocking(move || {
-        let img = image::open(&source).map_err(|_| {
-            if Path::new(&source).exists() {
-                ApiError::UnsupportedForm
-            } else {
+        let img = image::open(&source).map_err(|e| {
+            // "读不出来"和"解不了"是两码事, 而且这一次**不用猜**: `image::ImageError` 自带类别。
+            //   · 源文件已经不在(取完路径后被删/被移走) → notFound, 这条信息对手机最有用;
+            //   · IoError → 文件在, 但读不动(权限 / 被独占锁 / 是个目录) → internal, 与格式无关;
+            //   · 其余(Decoding / Unsupported / Limits) → 真的是内容/格式问题 → unsupportedForm。
+            if !Path::new(&source).exists() {
                 ApiError::NotFound
+            } else if matches!(e, image::ImageError::IoError(_)) {
+                ApiError::Internal
+            } else {
+                ApiError::UnsupportedForm
             }
         })?;
 
@@ -242,7 +371,6 @@ pub async fn preview_bytes(path: &str, max: u32, full: bool) -> Result<Vec<u8>, 
 mod tests {
     use super::*;
     use image::GenericImageView;
-    use std::sync::atomic::Ordering;
 
     // ── 测试用小工具 ────────────────────────────────────────────────────────────
 
@@ -263,6 +391,91 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("ifmediaunit_{}_{}", tag, std::process::id()));
         std::fs::create_dir_all(&dir).expect("建临时目录");
         dir
+    }
+
+    /// 把**平台缓存根**临时指到临时目录的守卫。
+    ///
+    /// 为什么需要它: 只要真的缩略图一次, `thumb_single` 就会把结果写进
+    /// `%LOCALAPPDATA%\image-filter\thumbnails_v2` —— 那是**用户真实的应用数据**。
+    /// 测试不许往那里写(Fix B 治的就是这个), 所以这里把根指走, Drop 时还原并删干净,
+    /// 反复跑什么都不留下。
+    ///
+    /// 这里**没有新增任何生产代码**: `images::cache_dir` 读的本来就是平台变量
+    /// (Windows: `LOCALAPPDATA`, 其他: `XDG_CACHE_HOME`), 我们只是把它指到别处。
+    ///
+    /// 变量是**进程级**的, 所以凡是用到它的测试都先拿 `CACHE_ROOT_LOCK` 串起来;
+    /// 并且当前**只有**这些测试会碰缓存目录(其余 lib 测试走的都是非 RAW 预览 ——
+    /// `get_preview_image` 对非 RAW 直接返回原路径, 根本不碰缓存)。将来新增会写缓存的
+    /// lib 测试请一起用这个守卫。
+    static CACHE_ROOT_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// 平台缓存根变量名(见 `images::cache_dir`)。两边都指走, 哪个平台都不漏。
+    const CACHE_ROOT_ENV_VARS: &[&str] = &["LOCALAPPDATA", "XDG_CACHE_HOME"];
+
+    struct TempCacheRoot {
+        _lock: std::sync::MutexGuard<'static, ()>,
+        prev: Vec<(&'static str, Option<std::ffi::OsString>)>,
+        root: std::path::PathBuf,
+    }
+
+    impl TempCacheRoot {
+        fn new(tag: &str) -> Self {
+            // 中毒也要继续: 这个锁只用来串行化, 不保护任何不变量。
+            let lock = CACHE_ROOT_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            let root =
+                std::env::temp_dir().join(format!("iflibcache_{}_{}", tag, std::process::id()));
+            std::fs::create_dir_all(&root).expect("建临时缓存根");
+            let prev = CACHE_ROOT_ENV_VARS
+                .iter()
+                .map(|k| {
+                    let old = std::env::var_os(k);
+                    std::env::set_var(k, &root);
+                    (*k, old)
+                })
+                .collect();
+            TempCacheRoot {
+                _lock: lock,
+                prev,
+                root,
+            }
+        }
+    }
+
+    impl Drop for TempCacheRoot {
+        fn drop(&mut self) {
+            for (k, old) in &self.prev {
+                match old {
+                    Some(v) => std::env::set_var(k, v),
+                    None => std::env::remove_var(k),
+                }
+            }
+            std::fs::remove_dir_all(&self.root).ok();
+        }
+    }
+
+    /// 把 n 个请求用 `Barrier` **同时**放出去, 而不是让它们顺序进场。
+    ///
+    /// 这是"峰值"类断言的非空前提: 没有它, "峰值为 1"可能只是"任务压根没重叠"。
+    /// Barrier 要求 n 个参与者全部到齐才放行, 所以放行那一刻 n 个请求**都在飞**。
+    /// `make` 拿到的序号让每个任务能用不同的源图(同一路径会被多任务同时写同一个缓存文件)。
+    async fn drive_concurrently<F, Fut>(n: usize, make: F)
+    where
+        F: Fn(usize) -> Fut,
+        Fut: std::future::Future<Output = ()> + Send + 'static,
+    {
+        let barrier = std::sync::Arc::new(tokio::sync::Barrier::new(n));
+        let mut set = tokio::task::JoinSet::new();
+        for i in 0..n {
+            let barrier = std::sync::Arc::clone(&barrier);
+            let fut = make(i);
+            set.spawn(async move {
+                barrier.wait().await;
+                fut.await;
+            });
+        }
+        while let Some(joined) = set.join_next().await {
+            joined.expect("任务不该 panic");
+        }
     }
 
     /// 抽出一张 JPEG 里**全部 DQT 段**的载荷。画质参数只体现在量化表里, 所以这就是
@@ -332,6 +545,10 @@ mod tests {
 
     /// 存在的、解不了的文件必须是 unsupportedForm; 不存在的才是 notFound。
     /// 两条都断言, 否则"所有错误都变 unsupportedForm"也能过。
+    ///
+    /// 再加上第三种: 源文件好好的、只是缓存/磁盘出了内部故障 —— 那不是格式问题, 必须是
+    /// `internal`。旧实现只看"源文件在不在", 于是**任何**带源文件的失败都说成
+    /// `unsupportedForm`, 手机会让用户拿着一个没问题的文件反复重试。
     #[test]
     fn source_error_distinguishes_missing_from_undecodable() {
         let dir = tmp_dir("srcerr");
@@ -351,6 +568,30 @@ mod tests {
             source_error(real.to_str().unwrap(), "superseded"),
             ApiError::Busy,
             "被更新的请求取代 ≠ 格式不支持"
+        );
+
+        // **源文件存在**的内部故障: 这几条以前全都落到 unsupportedForm
+        for msg in [
+            "No cache dir",
+            "Mkdir: Access is denied. (os error 5)",
+            "Save: There is not enough space on the disk. (os error 112)",
+            "Join: task failed",
+            "Read: The process cannot access the file because it is being used by another process",
+            "Read RAW: device is not ready",
+        ] {
+            assert_eq!(
+                source_error(real.to_str().unwrap(), msg),
+                ApiError::Internal,
+                "内部/IO 故障({})必须报 internal, 不许报成'这个格式打不开'",
+                msg
+            );
+        }
+        // 反面对照: 认不出来的消息**不许**被猜成 internal —— 原来那套 exists() 判定必须保持不变,
+        // 否则就把"解不了"错报成"磁盘坏了"(同样误导用户)。
+        assert_eq!(
+            source_error(real.to_str().unwrap(), "RAW: unknown maker note"),
+            ApiError::UnsupportedForm,
+            "真正的解码失败仍是 unsupportedForm"
         );
 
         std::fs::remove_dir_all(&dir).ok();
@@ -453,46 +694,177 @@ mod tests {
 
     // ── 并发闸门 ────────────────────────────────────────────────────────────────
 
-    /// 闸门必须**真的**闸住: 8 个并发请求, 观测闸门内的实时并发峰值。
-    /// 只调一次证明不了任何事 —— 这条测试的存在理由就是"多个请求同时进来时不能出现第 3 个"。
-    /// 峰值 ≥ 2 也必须断言, 否则一个"根本没让请求重叠"的测试也能绿(空断言)。
+    /// **Fix A 的证明: 缩略图不排在预览/全图后面。**
+    ///
+    /// 做法: 用**生产的入口**(`MediaGate::preview`, 与 `preview_bytes` 用的是同一个)把预览/全图
+    /// 预算**全部占住**, 确认探针看到它满着, 然后在这期间跑 8 个**真实**的并发缩略图请求
+    /// (Barrier 同时放行)。
+    ///
+    /// 三条断言缺一不可:
+    ///   1. 8 个缩略图**全都跑完**了 —— 若两条闸门共享状态(修复前是一个 `MEDIA_SEM(2)`),
+    ///      它们会一直等在预览闸门后面 → 超时 → 红;
+    ///   2. 预览闸门在整段期间**一直满着** —— 否则"没排队"可能只是因为它先放开了;
+    ///   3. 缩略图自己的峰值 ≥ 2 且 ≤ `THUMBNAIL_CONCURRENCY` —— 它们真的**并行**进了
+    ///      自己的闸门, 而不是被串行化(非空断言), 同时自己的上限还在。
+    ///
+    /// 为什么不是"各调一次"式测试: 那种写法在共享闸门的实现下**照样绿**(顺序调用根本不会撞上
+    /// 闸门), 证明不了任何事。
+    #[tokio::test]
+    async fn thumbnails_do_not_queue_behind_a_fully_busy_preview_gate() {
+        // 真实缩略图会写磁盘缓存 → 先把缓存根指到临时目录(见 TempCacheRoot)
+        let _cache = TempCacheRoot::new("isolation");
+        gate_probe::reset(GateKind::Preview);
+        gate_probe::reset(GateKind::Thumbnail);
+
+        // 1) 占满预览/全图预算, 并确认探针看到它确实在闸门内
+        let mut held = Vec::new();
+        for _ in 0..PREVIEW_CONCURRENCY {
+            held.push(MediaGate::preview().await);
+        }
+        assert_eq!(
+            gate_probe::in_flight(GateKind::Preview),
+            PREVIEW_CONCURRENCY,
+            "预览闸门必须已经被占满, 否则这条测试什么都没测"
+        );
+
+        // 2) 预览闸门满着的时候并发跑真实缩略图
+        let dir = tmp_dir("isolation");
+        // 8 张**各不相同**的源图: 同一路径会被多任务同时写同一个缓存文件, 那是另一码事
+        let paths: Vec<String> = (0..8)
+            .map(|i| {
+                let p = dir.join(format!("s{}.jpg", i));
+                write_plain_jpeg(&p, 1600, 1200);
+                p.to_str().unwrap().to_string()
+            })
+            .collect();
+
+        let paths_ref = std::sync::Arc::new(paths);
+        let timed_out = tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            drive_concurrently(8, |i| {
+                let path = paths_ref[i].clone();
+                async move {
+                    thumbnail_bytes(&path, 300).await.expect("缩略图应成功");
+                }
+            }),
+        )
+        .await;
+        timed_out.expect(
+            "缩略图不该排在预览/全图后面: 预览闸门占满时它必须照样能跑\
+             (两条闸门若共享状态, 这里会死等到超时)",
+        );
+
+        // 3) 全程断言
+        assert_eq!(
+            gate_probe::in_flight(GateKind::Preview),
+            PREVIEW_CONCURRENCY,
+            "预览闸门在这期间必须一直满着(否则'没排队'可能是因为它先放开了)"
+        );
+        assert_eq!(
+            gate_probe::in_flight(GateKind::Thumbnail),
+            0,
+            "缩略图跑完后它自己的在飞计数必须归零"
+        );
+        let thumb_peak = gate_probe::peak_in_flight(GateKind::Thumbnail);
+        assert!(
+            thumb_peak >= 2,
+            "缩略图闸门峰值只有 {} —— 8 个请求根本没重叠, 这条测试没测到隔离性",
+            thumb_peak
+        );
+        assert!(
+            thumb_peak <= THUMBNAIL_CONCURRENCY,
+            "缩略图闸门峰值 {} 超过了自己的预算 {}",
+            thumb_peak,
+            THUMBNAIL_CONCURRENCY
+        );
+
+        drop(held);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 预览/全图闸门必须**真的**闸住: 8 个请求被 `Barrier` 同时放出去, 观测闸门内的实时并发峰值。
+    /// 只调一次证明不了任何事 —— 这条测试的存在理由就是"多个请求同时进来时不能出现第二个"。
+    ///
+    /// 非空断言: Barrier 保证放行那一刻 8 个请求**全部**在飞, 所以峰值不是"运气不好没重叠"得来的。
+    /// 另一头, 把闸门拿掉(守卫不再进入)峰值会变成 0, 把预算调大则会变成 >1 —— 两种改动都会红。
     #[tokio::test]
     async fn preview_gate_caps_concurrency() {
-        gate_probe::PEAK_IN_FLIGHT.store(0, Ordering::SeqCst);
-        gate_probe::IN_FLIGHT.store(0, Ordering::SeqCst);
+        gate_probe::reset(GateKind::Preview);
 
         let dir = tmp_dir("gate");
         let p = dir.join("big.jpg");
         write_plain_jpeg(&p, 1600, 1200);
         let path = p.to_str().unwrap().to_string();
 
-        let mut set = tokio::task::JoinSet::new();
-        for _ in 0..(MEDIA_CONCURRENCY * 4) {
+        let n = PREVIEW_CONCURRENCY * 8;
+        drive_concurrently(n, |_| {
             let path = path.clone();
-            set.spawn(async move { preview_bytes(&path, 1024, false).await });
-        }
-        while let Some(joined) = set.join_next().await {
-            joined.expect("任务不该 panic").expect("预览应成功");
-        }
+            async move {
+                preview_bytes(&path, 1024, false)
+                    .await
+                    .expect("预览应成功");
+            }
+        })
+        .await;
 
-        let peak = gate_probe::PEAK_IN_FLIGHT.load(Ordering::SeqCst);
         assert_eq!(
-            gate_probe::IN_FLIGHT.load(Ordering::SeqCst),
+            gate_probe::in_flight(GateKind::Preview),
             0,
             "全部结束后在飞计数必须归零(守卫是 Drop 的, 泄漏会掩盖真实的并发)"
         );
-        assert!(
-            peak <= MEDIA_CONCURRENCY,
-            "闸门内并发峰值 {} > 上限 {} —— 手机可以这样把桌面进程的 CPU/内存打满",
-            peak,
-            MEDIA_CONCURRENCY
-        );
-        assert!(
-            peak >= 2,
-            "峰值只有 {} —— 这些请求根本没重叠, 这条测试没测到任何东西",
-            peak
+        assert_eq!(
+            gate_probe::peak_in_flight(GateKind::Preview),
+            PREVIEW_CONCURRENCY,
+            "闸门内并发峰值必须正好等于预算 {} —— 小于它说明请求没真的撞在一起(或闸门被拿掉了), \
+             大于它就是漏了",
+            PREVIEW_CONCURRENCY
         );
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// **Fix C 的证明: 探针是"每条测试一份"的, 别的线程站在闸门里不许影响本条测试的读数。**
+    ///
+    /// 修复前探针是**进程级** `static AtomicUsize`: 同一个测试二进制里并行跑的另一条测试
+    /// (它自己也可能在调 `preview_bytes`)只要在"清零"之后、收尾断言之前把在飞数加上去,
+    /// 收尾那句"必须归零"就会**假红**。20 次没撞上不等于没有这颗地雷。
+    ///
+    /// 这里把那颗地雷显式造出来: 另一个线程 + 另一个 current_thread 运行时 + 一个真的站在
+    /// 预览闸门里的守卫。本线程的读数必须仍然是 0。
+    #[test]
+    fn gate_probe_cannot_be_disturbed_by_another_thread() {
+        gate_probe::reset(GateKind::Preview);
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+
+        let other = std::thread::spawn(move || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("建运行时");
+            rt.block_on(async move {
+                let _gate = MediaGate::preview().await;
+                entered_tx.send(()).unwrap();
+                // 一直站在闸门里, 直到主线程读完数
+                release_rx.recv().unwrap();
+            });
+        });
+
+        entered_rx.recv().expect("另一个线程应当进到闸门里");
+
+        assert_eq!(
+            gate_probe::in_flight(GateKind::Preview),
+            0,
+            "别的线程(别的测试)站在闸门里时, 本线程的在飞计数必须仍是 0 —— \
+             进程级 static 会在这里把并行跑的测试互相搅成假红"
+        );
+        assert_eq!(
+            gate_probe::peak_in_flight(GateKind::Preview),
+            0,
+            "峰值同理: 别的测试的并发不许记到本条测试头上"
+        );
+
+        release_tx.send(()).unwrap();
+        other.join().expect("另一个线程不该 panic");
     }
 }
