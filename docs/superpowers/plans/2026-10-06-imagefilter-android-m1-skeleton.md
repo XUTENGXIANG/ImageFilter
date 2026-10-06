@@ -66,6 +66,8 @@
 
 **为什么单独成任务**：后面每一步都依赖它，而它是本计划唯一会碰"系统环境"的地方。全部装进用户目录、全部校验官方哈希。
 
+> **本任务没有单测，这是有意的**：它不产出代码，产出的是"可用的工具链 + 一份实测证据"。验收线是 Step 6 的三条命令有正确输出、Step 7 的证据文件入库。评审时请按"环境任务"评判，**不要以"缺少测试"判缺陷**——那会逼出为环境步骤写假测试的坏结果。
+
 **Files:**
 - Create: `docs/evidence/android-toolchain/REPORT.txt`（记录实际版本与路径）
 
@@ -1030,6 +1032,11 @@ git commit -m "feat(android): DTO/ApiClient/闭集错误码映射(MockWebServer 
 ### Task 3: 凭据存储 + 配对向导
 
 **安全要点**：token 用 **AndroidKeyStore 里的 AES/GCM 密钥**加密后落盘，**不引 `androidx.security.crypto`**（`EncryptedSharedPreferences` 已不再推荐）。URL 与共享根缓存放 DataStore（非机密）。
+
+> **哪些能做 JVM 单测、哪些不能，这里先划清**（否则评审会如实指出"没有测试"，而我们没有好的补法）：
+> - **能测**：一切纯逻辑 —— DTO 解析与未知字段容错、错误码映射、URL 拼接与百分号编码、配对载荷解析、待重试合并。这些是本计划单测的主体。
+> - **不能测**：`SecretStore` 的加解密与 `PairingStore` 的 DataStore 读写 —— **AndroidKeyStore 在 JVM 单测里根本不存在**，要测就得引 Robolectric，那与本计划"不新增依赖"的约束直接冲突。
+> - **取舍**：这两处的验收是 Task 3 Step 4 的**真机配对流程**（含"配对码错一位应给出 unauthorized 的可执行提示"）。这是有意的，不是遗漏。
 
 **Files:**
 - Create: `data/SecretStore.kt`、`data/PairingStore.kt`、`ui/PairingScreen.kt`
