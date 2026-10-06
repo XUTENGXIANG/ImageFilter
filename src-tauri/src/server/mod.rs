@@ -11,6 +11,7 @@ pub mod auth;
 pub mod config;
 pub mod media;
 pub mod paths;
+pub mod routes;
 
 use axum::{
     http::StatusCode,
@@ -19,6 +20,26 @@ use axum::{
     Json, Router,
 };
 use serde_json::json;
+use std::sync::{Arc, RwLock};
+
+/// 服务运行期状态。
+///
+/// 为什么是 `Arc<RwLock<_>>` 而不是直接存一份 `ServerConfig`: 用户在桌面端改共享根、
+/// 轮换 token 之后, 服务**不该**需要重启才生效 —— 端点每次请求现读一次配置即可,
+/// 而 `Arc` 让路由与后台任务能共享同一个状态(规格 §5.2 的"轮换后所有手机需重新配对")。
+#[derive(Clone)]
+pub struct ServerState {
+    pub config: Arc<RwLock<config::ServerConfig>>,
+}
+
+impl config::ServerConfig {
+    /// 把一份配置变成服务状态。**集成测试与 Task 8 的启动路径共用这一条入口**。
+    pub fn into_state(self) -> ServerState {
+        ServerState {
+            config: Arc::new(RwLock::new(self)),
+        }
+    }
+}
 
 /// 闭集错误码（规格 §5.3）。**每条都必须落到"用户下一步做什么"**。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -97,12 +118,16 @@ impl IntoResponse for ApiError {
 /// 对外沿用 `server::ServerConfig` 这个名字（集成测试与 `into_state` 都用它）。
 pub use config::ServerConfig;
 
-/// 组装路由。Task 4–8 会往这里挂更多端点。
+/// 只含 `ping` 的最小路由。**这不是服务的对外路由** —— 带状态、带鉴权的完整路由是
+/// `routes::router(state)`(Task 8 会统一)。保留它只是为了 `ping` 有一条不依赖状态的入口。
 pub fn router() -> Router {
     Router::new().route("/api/v1/ping", get(ping))
 }
 
 /// 配对与"测试连接"用。**不泄露任何路径信息**。
+///
+/// 刻意**不加** `pub`: `routes.rs` 是 `server` 的子模块, 按 Rust 的可见性规则本来就能
+/// 访问父模块的私有项。能不动既有代码就不动。
 async fn ping() -> Json<serde_json::Value> {
     Json(json!({
         "name": "ImageFilter",
