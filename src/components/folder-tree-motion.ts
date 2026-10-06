@@ -1,3 +1,5 @@
+// Copyright (c) 2026 XUTENGXIANG
+// SPDX-License-Identifier: MIT
 /** 子树容器该处于哪个视觉阶段。
  *
  *  抽成纯函数是因为这里有几条反直觉、且写错了在快卡上完全看不出来的规则:

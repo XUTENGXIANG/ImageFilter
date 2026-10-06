@@ -1,3 +1,5 @@
+// Copyright (c) 2026 XUTENGXIANG
+// SPDX-License-Identifier: MIT
 import { useState, useCallback, useRef, useMemo, useEffect } from "react";
 import { invoke, convertFileSrc, Channel } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 XUTENGXIANG
+// SPDX-License-Identifier: MIT
 use super::{FolderEntry, PhotoExif, RAW_EXTENSIONS, SUPPORTED_EXTENSIONS, ScannedPhoto};
 use std::sync::atomic::{AtomicU64, Ordering};
 

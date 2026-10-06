@@ -1,3 +1,5 @@
+// Copyright (c) 2026 XUTENGXIANG
+// SPDX-License-Identifier: MIT
 // 子树常驻挂载带来的**唯一**无障碍风险，本探针就是它的判据：
 // 收起的分支子行仍然挂在 DOM 里（高度动画的前提），但必须同时对键盘与读屏不可达 ——
 // inert + aria-hidden。若哪天有人把 inert 删掉，子行会重新漏进 Tab 顺序（WCAG 4.1.2），

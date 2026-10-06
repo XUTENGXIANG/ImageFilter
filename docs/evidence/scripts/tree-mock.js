@@ -1,3 +1,5 @@
+// Copyright (c) 2026 XUTENGXIANG
+// SPDX-License-Identifier: MIT
 // 文件夹树取证用桩：严格模仿 src-tauri/src/scanner/browse.rs 的真实返回形状 ——
 // browse_directory 只返回**直接子目录**，每个子项的 subfolders 一律为空 vec![]，
 // 只带 has_subdirs 标志。子目录内容要等用户展开后由再一次 browse_directory 补齐。

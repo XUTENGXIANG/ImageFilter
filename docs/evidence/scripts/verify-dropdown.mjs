@@ -1,3 +1,5 @@
+// Copyright (c) 2026 XUTENGXIANG
+// SPDX-License-Identifier: MIT
 // 四个原生下拉换成自定义下拉后的取证。
 //
 // 判据:

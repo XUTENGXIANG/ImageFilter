@@ -1,3 +1,5 @@
+// Copyright (c) 2026 XUTENGXIANG
+// SPDX-License-Identifier: MIT
 // 树行几何断言：
 //   1. 行高必须 24px（WCAG 2.5.8）
 //   2. 箭头必须是同一个字形 + 靠 transform 旋转（不是 ▶/▼ 换字形）

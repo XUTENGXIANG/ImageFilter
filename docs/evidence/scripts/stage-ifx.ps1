@@ -1,4 +1,6 @@
-﻿$ErrorActionPreference = 'Stop'
+﻿# Copyright (c) 2026 XUTENGXIANG
+# SPDX-License-Identifier: MIT
+$ErrorActionPreference = 'Stop'
 $d  = 'F:\壁纸'
 $sc = Join-Path $d '20251115-DSC07500-已增强-降噪.xmp'
 

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 XUTENGXIANG
+// SPDX-License-Identifier: MIT
 import { useEffect, useRef, useState } from "react";
 
 // 滚动遮罩 — 滚动时上下淡入淡出，静止时隐藏

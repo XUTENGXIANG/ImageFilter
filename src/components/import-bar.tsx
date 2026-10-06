@@ -1,3 +1,5 @@
+// Copyright (c) 2026 XUTENGXIANG
+// SPDX-License-Identifier: MIT
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Check, Close, FolderOpen, More, Right } from "@icon-park/react";

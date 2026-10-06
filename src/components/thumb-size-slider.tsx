@@ -1,3 +1,5 @@
+// Copyright (c) 2026 XUTENGXIANG
+// SPDX-License-Identifier: MIT
 import { useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import { useLocalStorageNumber } from "../hooks/use-local-storage-setting";

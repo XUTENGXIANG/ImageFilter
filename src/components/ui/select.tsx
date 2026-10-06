@@ -1,3 +1,5 @@
+// Copyright (c) 2026 XUTENGXIANG
+// SPDX-License-Identifier: MIT
 import { Select as SelectPrimitive } from "@base-ui/react/select";
 import { Check } from "@icon-park/react";
 import { MENU_CONTENT, MENU_ITEM, MENU_TRANSITION } from "../menu-styles";

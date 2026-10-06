@@ -1,3 +1,5 @@
+// Copyright (c) 2026 XUTENGXIANG
+// SPDX-License-Identifier: MIT
 // src/updater.ts 的纯逻辑断言 —— 检查更新那一行背后的全部判断都在这里。
 //
 // 跑法(项目既有约定: esbuild + Node, 不引 vitest):

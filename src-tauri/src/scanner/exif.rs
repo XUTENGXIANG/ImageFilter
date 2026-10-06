@@ -1,3 +1,5 @@
+// Copyright (c) 2026 XUTENGXIANG
+// SPDX-License-Identifier: MIT
 use super::PhotoExif;
 
 /// Lazy-load EXIF for a single photo (called when user selects a photo)

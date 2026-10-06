@@ -1,3 +1,5 @@
+// Copyright (c) 2026 XUTENGXIANG
+// SPDX-License-Identifier: MIT
 // ═══════════════════════════════════════════════════════
 // Phase 6 · 命名方案(import_rules)的纯逻辑 —— 零 React、零 Tauri 依赖
 //

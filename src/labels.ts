@@ -1,3 +1,5 @@
+// Copyright (c) 2026 XUTENGXIANG
+// SPDX-License-Identifier: MIT
 // ═══════════════════════════════════════════════════════════════════
 // Phase 4 · 颜色标签的"共享词汇表"
 //

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 XUTENGXIANG
+// SPDX-License-Identifier: MIT
 import { clsx, type ClassValue } from "clsx"
 import { twMerge } from "tailwind-merge"
 

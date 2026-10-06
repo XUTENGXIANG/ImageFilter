@@ -1,3 +1,5 @@
+// Copyright (c) 2026 XUTENGXIANG
+// SPDX-License-Identifier: MIT
 import { invoke } from "@tauri-apps/api/core";
 
 /** Rust `get_os_capabilities` 的返回(serde camelCase)。 */

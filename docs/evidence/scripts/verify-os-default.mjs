@@ -1,3 +1,5 @@
+// Copyright (c) 2026 XUTENGXIANG
+// SPDX-License-Identifier: MIT
 // 玻璃开关的"随系统版本给默认值"端到端取证。
 //
 // 四个场景:

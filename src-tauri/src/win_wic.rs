@@ -1,3 +1,5 @@
+// Copyright (c) 2026 XUTENGXIANG
+// SPDX-License-Identifier: MIT
 /// Windows WIC (Windows Imaging Component) RAW 解码
 /// 利用系统自带 codec（Photos 应用注册的 RAW 解码器）— AVX 优化、秒级解码
 /// 与 Windows Photos 看图同一条解码链

@@ -1,4 +1,6 @@
-﻿const fs = require("fs");
+﻿// Copyright (c) 2026 XUTENGXIANG
+// SPDX-License-Identifier: MIT
+const fs = require("fs");
 function leaves(obj, prefix, out) {
   for (const [k, v] of Object.entries(obj)) {
     const p = prefix ? prefix + "." + k : k;

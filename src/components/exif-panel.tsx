@@ -1,3 +1,5 @@
+// Copyright (c) 2026 XUTENGXIANG
+// SPDX-License-Identifier: MIT
 import { useTranslation } from "react-i18next";
 import { formatBytes } from "../lib/format";
 import type { ScannedPhoto } from "../types";

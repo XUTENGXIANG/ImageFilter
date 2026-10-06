@@ -1,3 +1,5 @@
+// Copyright (c) 2026 XUTENGXIANG
+// SPDX-License-Identifier: MIT
 // ═══════════════════════════════════════════════════════
 // i18n 初始化 — 界面多语言 (zh / en)
 // 语言选择持久化在 localStorage "imagefilter-lang"

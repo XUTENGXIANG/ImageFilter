@@ -1,3 +1,5 @@
+// Copyright (c) 2026 XUTENGXIANG
+// SPDX-License-Identifier: MIT
 // 简体中文翻译 — 界面默认语言
 // 约定: 所有界面文本必须抽到本文件, 组件内只用 t("key")
 export default {

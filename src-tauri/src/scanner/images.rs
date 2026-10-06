@@ -1,3 +1,5 @@
+// Copyright (c) 2026 XUTENGXIANG
+// SPDX-License-Identifier: MIT
 use super::RAW_EXTENSIONS;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 XUTENGXIANG
+// SPDX-License-Identifier: MIT
 // ═══════════════════════════════════════════════════════════════════
 // Phase 2 · 撤销 / 重做 的纯逻辑层(零 React 依赖)
 //

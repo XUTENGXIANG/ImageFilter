@@ -1,3 +1,5 @@
+// Copyright (c) 2026 XUTENGXIANG
+// SPDX-License-Identifier: MIT
 import React from "react";
 
 /** 子节点里是否存在"有意义的可见文本"。

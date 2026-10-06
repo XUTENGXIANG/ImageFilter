@@ -1,3 +1,5 @@
+// Copyright (c) 2026 XUTENGXIANG
+// SPDX-License-Identifier: MIT
 export function Step({ num, title, desc }: { num: string; title: string; desc: string }) {
   return (
     <div className="flex gap-3">

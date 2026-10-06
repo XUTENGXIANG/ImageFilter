@@ -1,3 +1,5 @@
+// Copyright (c) 2026 XUTENGXIANG
+// SPDX-License-Identifier: MIT
 #[cfg(target_os = "windows")]
 use inspect_path::inspect_path;
 use serde::Serialize;

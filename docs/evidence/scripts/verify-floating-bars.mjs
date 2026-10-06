@@ -1,3 +1,5 @@
+// Copyright (c) 2026 XUTENGXIANG
+// SPDX-License-Identifier: MIT
 // 上下两条栏"真浮窗"布局的回归断言。
 //
 // 三件事必须同时成立, 缺一个就是肉眼可见的毛病:

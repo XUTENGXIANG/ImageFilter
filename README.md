@@ -9,10 +9,10 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/XUTENGXIANG/ImageFilter/releases"><img src="https://img.shields.io/badge/release-v1.0-1f883d" alt="Release"></a>
+  <a href="https://github.com/XUTENGXIANG/ImageFilter/releases/latest"><img src="https://img.shields.io/github/v/release/XUTENGXIANG/ImageFilter?sort=semver&amp;color=1f883d" alt="Release"></a>
   <a href="#"><img src="https://img.shields.io/badge/platform-Windows%2010%2F11%20%7C%20macOS-lightgrey" alt="Platform"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="License"></a>
-  <a href="https://github.com/XUTENGXIANG/ImageFilter/releases/download/v1.0/ImageFilter_1.0.0_x64-setup.exe"><img src="https://img.shields.io/badge/download-7.5MB-green" alt="Download"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/XUTENGXIANG/ImageFilter" alt="License"></a>
+  <a href="https://github.com/XUTENGXIANG/ImageFilter/releases/latest"><img src="https://img.shields.io/badge/download-latest-green" alt="Download"></a>
 </p>
 
 <p align="center">
@@ -155,4 +155,8 @@ src-tauri/            # Rust 后端
 本项目使用 **MIT 许可证**，完整文本见 [LICENSE](LICENSE)（[协议原文](https://opensource.org/license/mit)）。
 
 可以自由使用、修改、分发，包括商业闭源使用；只需在副本或实质性部分中**保留版权声明与许可证文本**。软件按「原样」提供，不含任何形式的担保。
+
+版权所有者：**XUTENGXIANG**（2026）。
+
+这条要求在分发路径上都落实了：安装包（Windows NSIS / MSI）的安装向导里会显示这份协议，安装目录里还会放一份 `LICENSE.txt`（卸载时一并删除）；每个源文件头部都带 `SPDX-License-Identifier: MIT`。
 

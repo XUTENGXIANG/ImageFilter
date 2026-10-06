@@ -1,3 +1,5 @@
+// Copyright (c) 2026 XUTENGXIANG
+// SPDX-License-Identifier: MIT
 // Phase 7 · src/lightroom.ts 的纯逻辑断言
 // 跑法(项目既有做法: 临时 esbuild + Node, 不引 vitest):
 //   npx esbuild _probe/lrc-logic.test.ts --bundle --platform=node --format=esm --outfile=_probe/lrc-logic.mjs

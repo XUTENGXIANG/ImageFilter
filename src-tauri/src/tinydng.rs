@@ -1,3 +1,5 @@
+// Copyright (c) 2026 XUTENGXIANG
+// SPDX-License-Identifier: MIT
 // tinydng FFI — DNG 优先解码器 (syoyo/tinydng)
 // 加载 DNG 原始 bayer 数据 + C++ 端双线性 demosaic → RGB8
 // 输出由 C 端 malloc, Rust 端负责 free

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 XUTENGXIANG
+// SPDX-License-Identifier: MIT
 export interface DriveInfo {
   mountPoint: string;
   driveType: string;

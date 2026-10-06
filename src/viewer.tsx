@@ -1,3 +1,5 @@
+// Copyright (c) 2026 XUTENGXIANG
+// SPDX-License-Identifier: MIT
 import { useEffect, useRef, useState, useCallback } from "react";
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { useTranslation } from "react-i18next";

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 XUTENGXIANG
+// SPDX-License-Identifier: MIT
 use rayon::prelude::*;
 use serde::Serialize;
 use std::path::Path;

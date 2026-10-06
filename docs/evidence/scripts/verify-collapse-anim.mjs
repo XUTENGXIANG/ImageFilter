@@ -1,3 +1,5 @@
+// Copyright (c) 2026 XUTENGXIANG
+// SPDX-License-Identifier: MIT
 // 两处新展开动画的取证: 导入栏「高级选项」、工具栏「筛选」面板。
 //
 // 判据与文件夹树同一套: 量**容器高度轨迹**。台阶数 > 3 才算真在动;

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 XUTENGXIANG
+// SPDX-License-Identifier: MIT
 // src/components/folder-tree-motion.ts 的纯逻辑断言
 // 跑法(项目既有做法: 临时 esbuild + Node, 不引 vitest):
 //   npx esbuild docs/evidence/scripts/tree-motion.test.ts --bundle --platform=node --format=esm --outfile=.design-audit/_probe/tree-motion.mjs

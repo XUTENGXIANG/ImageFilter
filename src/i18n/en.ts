@@ -1,3 +1,5 @@
+// Copyright (c) 2026 XUTENGXIANG
+// SPDX-License-Identifier: MIT
 // English translation
 // Convention: every UI string lives here, components call t("key") only
 export default {

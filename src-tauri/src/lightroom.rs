@@ -1,3 +1,5 @@
+// Copyright (c) 2026 XUTENGXIANG
+// SPDX-License-Identifier: MIT
 // ═══════════════════════════════════════════════════════════════════
 // Phase 7 · 与 Lightroom Classic 的衔接(模式 2: 打开导入对话框)
 //

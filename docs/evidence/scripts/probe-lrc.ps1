@@ -1,3 +1,5 @@
+# Copyright (c) 2026 XUTENGXIANG
+# SPDX-License-Identifier: MIT
 # =============================================================================
 #  LrC probe script  (ImageFilter <> Lightroom Classic bridge, exploration only)
 #

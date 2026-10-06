@@ -9,10 +9,10 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/XUTENGXIANG/ImageFilter/releases"><img src="https://img.shields.io/badge/release-v1.0-1f883d" alt="Release"></a>
+  <a href="https://github.com/XUTENGXIANG/ImageFilter/releases/latest"><img src="https://img.shields.io/github/v/release/XUTENGXIANG/ImageFilter?sort=semver&amp;color=1f883d" alt="Release"></a>
   <a href="#"><img src="https://img.shields.io/badge/platform-Windows%2010%2F11%20%7C%20macOS-lightgrey" alt="Platform"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="License"></a>
-  <a href="https://github.com/XUTENGXIANG/ImageFilter/releases/download/v1.0/ImageFilter_1.0.0_x64-setup.exe"><img src="https://img.shields.io/badge/download-7.5MB-green" alt="Download"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/XUTENGXIANG/ImageFilter" alt="License"></a>
+  <a href="https://github.com/XUTENGXIANG/ImageFilter/releases/latest"><img src="https://img.shields.io/badge/download-latest-green" alt="Download"></a>
 </p>
 
 <p align="center">
@@ -173,4 +173,8 @@ src-tauri/            # Rust backend
 Released under the **MIT License** — full text in [LICENSE](LICENSE).
 
 You may use, modify and distribute this software freely, including in closed-source commercial products; just keep the copyright notice and the license text. The software is provided "as is", without warranty of any kind.
+
+Copyright holder: **XUTENGXIANG** (2026).
+
+That requirement is wired into the distribution path: the Windows installers (NSIS / MSI) show the license in the setup wizard and drop a `LICENSE.txt` into the install directory (removed on uninstall), and every source file carries `SPDX-License-Identifier: MIT`.
 

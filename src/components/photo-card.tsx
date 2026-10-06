@@ -1,3 +1,5 @@
+// Copyright (c) 2026 XUTENGXIANG
+// SPDX-License-Identifier: MIT
 import { memo } from "react";
 import { useTranslation } from "react-i18next";
 import { Movie, PictureOne } from "@icon-park/react";

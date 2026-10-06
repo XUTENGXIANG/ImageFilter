@@ -1,3 +1,5 @@
+// Copyright (c) 2026 XUTENGXIANG
+// SPDX-License-Identifier: MIT
 /** 设置面板开关（胶囊形 Switch） */
 export function Toggle({
   checked,

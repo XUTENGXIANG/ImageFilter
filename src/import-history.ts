@@ -1,3 +1,5 @@
+// Copyright (c) 2026 XUTENGXIANG
+// SPDX-License-Identifier: MIT
 // ═══════════════════════════════════════════════════════
 // Phase 6 · 导入历史的纯逻辑(零 React、零 Tauri 依赖)
 // 与 undo.ts / labels.ts / xmp.ts 并列: 组件只消费结果, 规则都写在这里。

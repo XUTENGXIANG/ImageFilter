@@ -1,3 +1,5 @@
+// Copyright (c) 2026 XUTENGXIANG
+// SPDX-License-Identifier: MIT
 import * as React from "react"
 import { Input as InputPrimitive } from "@base-ui/react/input"
 

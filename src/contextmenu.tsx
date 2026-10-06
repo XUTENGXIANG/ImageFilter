@@ -1,3 +1,5 @@
+// Copyright (c) 2026 XUTENGXIANG
+// SPDX-License-Identifier: MIT
 import * as ContextMenuPrimitive from "@radix-ui/react-context-menu";
 import { MENU_CONTENT, MENU_ITEM } from "./components/menu-styles";
 

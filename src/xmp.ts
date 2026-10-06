@@ -1,3 +1,5 @@
+// Copyright (c) 2026 XUTENGXIANG
+// SPDX-License-Identifier: MIT
 // ═══════════════════════════════════════════════════════════════════
 // Phase 5 · XMP 边车的纯逻辑层(零 React / 零 Tauri 依赖)
 //

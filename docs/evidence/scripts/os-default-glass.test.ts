@@ -1,3 +1,5 @@
+// Copyright (c) 2026 XUTENGXIANG
+// SPDX-License-Identifier: MIT
 // src/os-capability.ts 的纯逻辑断言
 // 跑法(项目既有约定: esbuild + Node, 不引 vitest):
 //   npx esbuild docs/evidence/scripts/os-default-glass.test.ts --bundle --platform=node --format=esm --outfile=.design-audit/_probe/os-default-glass.mjs
