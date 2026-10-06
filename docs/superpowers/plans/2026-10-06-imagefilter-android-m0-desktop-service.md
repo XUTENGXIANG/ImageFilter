@@ -271,6 +271,15 @@ git commit -m "feat(server): 内嵌 axum 图库服务骨架 + /ping, 并证其�
             match got {
                 Some((w, h, bytes)) => {
                     let long = w.max(h);
+                    // 两条**与样本集无关**的真断言: 它们不判断"这个格式支不支持内嵌预览",
+                    // 只判断"扫描逻辑有没有坏"。所以这个探针既保留了测量用途, 又能在
+                    // 扫描回归时自己失败 —— 而不是打印一屏 MISS 让人以为是样张问题。
+                    // （没有断言的话, 它在评审规则里就是"断言为空的测试", 属于缺陷。）
+                    assert!(
+                        bytes.len() >= 4 && bytes[0] == 0xFF && bytes[1] == 0xD8,
+                        "{} 提取出的东西不是 JPEG(缺 SOI) —— 扫描逻辑出了问题", name
+                    );
+                    assert!(w > 0 && h > 0, "{} 解析出非法尺寸 {}x{}", name, w, h);
                     slot.1 += 1;
                     slot.2 = slot.2.max(long);
                     if long >= 2048 {
@@ -289,6 +298,14 @@ git commit -m "feat(server): 内嵌 axum 图库服务骨架 + /ping, 并证其�
                 ),
             }
         }
+
+        // 目录给错了、或样本扩展名不在 RAW_EXTENSIONS 里时, 下面那张表会全空 ——
+        // 与其让人对着空表猜, 不如直接失败。
+        assert!(
+            !by_ext.is_empty(),
+            "IMAGEFILTER_PROBE_DIR={} 下没找到任何 RAW 文件 —— 目录给错了, 或样本扩展名不在 RAW_EXTENSIONS 里",
+            dir
+        );
 
         println!("\n按扩展名汇总:");
         println!("{:<8} {:>6} {:>6} {:>10} {:>12}", "ext", "总数", "命中", "最大长边", ">=2048 张数");
