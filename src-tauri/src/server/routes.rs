@@ -877,18 +877,6 @@ mod tests {
             .with_state(state)
     }
 
-    /// **提取器纪律的变异靶子: 生产处理器必须自己回 `{ code }`, 不许靠兜底层。**
-    ///
-    /// 为什么要在"无网"的路由器上测: 实测过 —— **只**把 `scan` 改回 `Query<PathQ>`, 整套
-    /// 集成契约测试(含 `extractor_rejections_obey_the_code_contract` 里逐条端点的用例)
-    /// **依然全绿**, 因为兜底层把它的 400 + 纯文本改写成了与 `Q<T>` 逐字节相同的
-    /// `{code:badRequest}`。也就是说: 网让"某个处理器回退成裸提取器"在**对外行为**上无害,
-    /// 但也让它在**集成层不可观测**。
-    ///
-    /// 所以把纪律钉在这里 —— 同一张生产路由表, 少掉的只有那层网。谁把 `browse`/`scan`/
-    /// `thumb`/`preview` 中任何一个改回裸 `Query<T>`, 这条单测当场红(缺 `path` 的 400 会变成
-    /// 纯文本, `json_body` 在纯文本上直接 panic)。覆盖走 `PROTECTED_PATHS` 全表, 所以将来
-    /// 新增一条吃 `path` 的端点会自动被覆盖。
     /// 一条"方法正确、参数故意不完整"的探测请求。
     ///
     /// `PROTECTED_PATHS` 里既有 GET 端点, 也有 POST 端点(Task 7 的 `move`)。用错方法拿到的是
@@ -909,6 +897,18 @@ mod tests {
             .unwrap()
     }
 
+    /// **提取器纪律的变异靶子: 生产处理器必须自己回 `{ code }`, 不许靠兜底层。**
+    ///
+    /// 为什么要在"无网"的路由器上测: 实测过 —— **只**把 `scan` 改回 `Query<PathQ>`, 整套
+    /// 集成契约测试(含 `extractor_rejections_obey_the_code_contract` 里逐条端点的用例)
+    /// **依然全绿**, 因为兜底层把它的 400 + 纯文本改写成了与 `Q<T>` 逐字节相同的
+    /// `{code:badRequest}`。也就是说: 网让"某个处理器回退成裸提取器"在**对外行为**上无害,
+    /// 但也让它在**集成层不可观测**。
+    ///
+    /// 所以把纪律钉在这里 —— 同一张生产路由表, 少掉的只有那层网。谁把 `browse`/`scan`/
+    /// `thumb`/`preview` 中任何一个改回裸 `Query<T>`, 这条单测当场红(缺 `path` 的 400 会变成
+    /// 纯文本, `json_body` 在纯文本上直接 panic)。覆盖走 `PROTECTED_PATHS` 全表, 所以将来
+    /// 新增一条吃 `path` 的端点会自动被覆盖。
     #[tokio::test]
     async fn production_handlers_return_code_bodies_even_without_the_safety_net() {
         let token = "t".repeat(64);

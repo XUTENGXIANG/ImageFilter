@@ -3041,8 +3041,10 @@ async fn move_never_overwrites_an_existing_target_and_reports_it_per_item() {
 ///   · 移动它不需要任何新字段, 也**不会**把评分安到别人头上 —— 我们只搬调用方点名的那一个文件
 ///     (这一点很重要: 另一种"看到 src 不存在、但 dest 有同名照片就把边车贴上去"的实现,
 ///     会在用户删掉一张照片后把它的旧评分贴到另一张同名照片上, 那是静默的错误数据);
-///   · 边车名字由公开规则从 `src` 推得(`{stem}.xmp` / `{name}.xmp`, `xmp.rs:681`),
-///     手机端不必解析 `detail` 里那句话。
+///   · 那份边车**叫什么由服务端直接给**: 响应里的 `pendingSidecars` 就是"还没搬走的边车"
+///     的路径数组。手机端既不必推导命名规则(`{stem}.xmp` / `{name}.xmp`, `xmp.rs:681`
+///     —— 推导正是规格 §3.2 纪律①禁止的事), 也不必去解析 `detail` 里那句中文(§5.3 的 i18n
+///     纪律禁止把本地化文案当协议)。本测试第 (3) 段就**照用**这个字段, 不再自己拼名字。
 ///
 /// 三段连起来就是"半成功 → 用户清掉障碍 → 整个流程收敛": 照片与评分最后都在新位置, 源目录空了。
 #[tokio::test]
@@ -3076,6 +3078,19 @@ async fn move_reports_a_half_success_when_the_sidecar_cannot_follow() {
         "半成功必须点名是**边车**没跟上(用户才知道要处理什么): {}",
         s
     );
+    // 机器可读的那一份: 就是留在原地的那条**源侧**路径, 一个字符不用手机去推。
+    let pending: Vec<String> = s["items"][0]["pendingSidecars"]
+        .as_array()
+        .unwrap_or_else(|| panic!("pendingSidecars 必须是数组(不是 null、不是缺字段): {}", s))
+        .iter()
+        .map(|p| p.as_str().expect("pendingSidecars 的每一项都必须是字符串").to_string())
+        .collect();
+    assert_eq!(
+        pending,
+        vec![canon_path(&sidecar)],
+        "待补边车必须**规范地**列出留在原地的那一份: {}",
+        s
+    );
 
     // 磁盘上的真相: 照片在新位置, 边车**留在旧位置**(评分没被静默丢掉, 也没被覆盖)
     assert!(dst.join("half.jpg").is_file(), "照片应已移动");
@@ -3100,8 +3115,10 @@ async fn move_reports_a_half_success_when_the_sidecar_cannot_follow() {
     assert_code_only(&v, "notFound");
 
     // ── (3) 用户清掉障碍之后, 真正能补救的请求: 把留在原地的**边车本身**当 src ──
+    //     路径**逐字取自** `pendingSidecars`(上面已断言它就是那份边车), 不在这里推导命名规则。
     std::fs::remove_dir(&blocker).unwrap();
-    let (status, s) = post_move(app.clone(), Some(&token), &move_body(&[&sidecar], &dst)).await;
+    let pending_src = std::path::PathBuf::from(&pending[0]);
+    let (status, s) = post_move(app.clone(), Some(&token), &move_body(&[&pending_src], &dst)).await;
     assert_eq!(status, StatusCode::OK, "把留在原地的边车当 src 搬过去必须成功: {}", s);
     assert_eq!(s["moved"], 1, "{}", s);
     assert!(dst.join("half.xmp").is_file(), "边车这次必须真的到新位置");
@@ -3118,6 +3135,117 @@ async fn move_reports_a_half_success_when_the_sidecar_cannot_follow() {
         std::fs::read_dir(&src).unwrap().count(),
         0,
         "补救之后源目录必须空了(照片与边车都走了)"
+    );
+
+    std::fs::remove_dir_all(&root).ok();
+}
+
+/// **半成功项的"重试通道"必须机器可读, 而且照着重发真的收敛。**
+///
+/// 上一条钉住了"能补救的请求 = 把留在原地的边车当 `src`"; 这一条补完协议那一半: **那份边车
+/// 叫什么由服务端说**, 手机一个字符都不推。规格 §3.2 纪律①禁止手机猜路径/命名规则, §5.3 的
+/// i18n 纪律禁止把 `detail` 里的本地化文案当协议 —— 所以服务端在 `pendingSidecars` 里直接给出
+/// 路径数组, 手机的"重试全部"就是**原样回灌**:
+///
+/// ```text
+/// POST /api/v1/move  { "paths": item.pendingSidecars, "destDir": parent(item.dest) }
+/// ```
+///
+/// 本测试逐字照做: `paths` 直接取响应里的数组, `destDir` 直接取该项 `dest` 的父目录,
+/// 不加新端点、不加新字段、不做任何推导。
+///
+/// 同时钉住"两种命名习惯并存"时**每一份候选都被尝试**: 只挡第一份(`{stem}.xmp`), 第二份
+/// (`{name}.xmp`) 必须仍然跟着照片走 —— 早退(第一次失败就 return)会把第二份永远留在旧位置,
+/// 而照片已经走了, **没有任何未来调用**能把那份评分补上。
+#[tokio::test]
+async fn move_half_success_retry_via_pending_sidecars_converges_without_deriving_the_name() {
+    let (app, token, root) = route_app("movepending");
+    let (src, dst) = move_dirs(&root, "pending");
+    let photo = src.join("p.jpg");
+    write_file(&photo, b"photo-bytes");
+    let stem_sidecar = src.join("p.xmp");
+    write_file(&stem_sidecar, b"<x:xmpmeta rating=\"5\"/>");
+    let name_sidecar = src.join("p.jpg.xmp");
+    write_file(&name_sidecar, b"<x:xmpmeta rating=\"4\"/>");
+    // 只挡**第一份**候选: 目标位置放一个同名目录(`rename` 顶不掉目录)。
+    std::fs::create_dir_all(dst.join("p.xmp")).unwrap();
+
+    let (status, s) = post_move(app.clone(), Some(&token), &move_body(&[&photo], &dst)).await;
+    assert_eq!(status, StatusCode::OK, "半成功是逐项结果: {}", s);
+    assert_eq!(s["moved"], 0, "第二份跟上了也不算全成 —— 第一份还脱钩着: {}", s);
+    assert_eq!(s["halfSuccess"], 1, "{}", s);
+    assert_eq!(s["items"][0]["status"], "halfSuccess", "{}", s);
+    let pending: Vec<String> = s["items"][0]["pendingSidecars"]
+        .as_array()
+        .unwrap_or_else(|| panic!("pendingSidecars 必须是数组: {}", s))
+        .iter()
+        .map(|p| p.as_str().expect("每项必须是字符串").to_string())
+        .collect();
+    assert_eq!(
+        pending,
+        vec![canon_path(&stem_sidecar)],
+        "只许列出**真的**没搬走的那一份(第二份已经跟走了): {}",
+        s
+    );
+    assert!(
+        dst.join("p.jpg.xmp").is_file(),
+        "第一份失败不许跳过第二份候选(早退会让它永远留在旧位置)"
+    );
+    assert!(!name_sidecar.exists(), "第二份必须真的离开旧位置");
+    assert!(stem_sidecar.is_file(), "被挡住的那份留在原地等重试");
+    assert!(dst.join("p.jpg").is_file(), "照片已经在目标位置");
+
+    // `dest` 是照片的**规范最终路径**, 所以它的父目录就是目标目录 —— 重试不需要别的信息。
+    let retry_dest = std::path::PathBuf::from(
+        s["items"][0]["dest"]
+            .as_str()
+            .expect("半成功也必须如实给出 dest(手机据此定位目标目录)"),
+    )
+    .parent()
+    .expect("dest 必须有父目录")
+    .to_path_buf();
+
+    // ── 清掉障碍, 按响应字段**原样**重试 ──
+    std::fs::remove_dir(dst.join("p.xmp")).unwrap();
+    let retry_refs: Vec<&std::path::Path> =
+        pending.iter().map(|p| std::path::Path::new(p)).collect();
+    let (status, s) = post_move(
+        app.clone(),
+        Some(&token),
+        &move_body(&retry_refs, &retry_dest),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "重试必须成功: {}", s);
+    assert_eq!(s["moved"], 1, "重试补上了那份边车: {}", s);
+    assert_eq!(s["halfSuccess"], 0, "重试之后不许再是半成功: {}", s);
+    assert_eq!(s["failed"], 0, "{}", s);
+    assert_eq!(s["conflict"], 0, "{}", s);
+    assert_eq!(s["items"][0]["status"], "moved", "那一项收敛了: {}", s);
+    assert_eq!(
+        s["items"][0]["pendingSidecars"],
+        serde_json::json!([]),
+        "收敛后没有待补项, 且是 `[]` 而不是 `null`: {}",
+        s
+    );
+
+    // ── 磁盘真相: 照片 + 两份边车都在新位置, 旧目录空了 ──
+    for f in ["p.jpg", "p.xmp", "p.jpg.xmp"] {
+        assert!(dst.join(f).is_file(), "{} 必须在新位置", f);
+    }
+    assert_eq!(
+        std::fs::read(dst.join("p.xmp")).unwrap(),
+        b"<x:xmpmeta rating=\"5\"/>",
+        "补救搬过去的边车必须逐字节原样"
+    );
+    assert_eq!(
+        std::fs::read(dst.join("p.jpg.xmp")).unwrap(),
+        b"<x:xmpmeta rating=\"4\"/>",
+        "第二份也必须逐字节原样"
+    );
+    assert_eq!(
+        std::fs::read_dir(&src).unwrap().count(),
+        0,
+        "源目录必须空了(照片与两份边车都走了)"
     );
 
     std::fs::remove_dir_all(&root).ok();
@@ -3184,11 +3312,18 @@ async fn move_batch_reports_each_item_per_item_and_converges_on_retry() {
     assert_eq!(items[2]["src"].as_str().unwrap(), clash_dir_canon, "{}", s);
     assert_eq!(items[2]["status"], "conflict", "目标是个目录, 同样是冲突: {}", s);
     for i in [1, 2] {
-        // 冲突项的形状就是 `mover::MoveOutcome`(src/dest/status/detail), 一个字段不多不少。
+        // 冲突项的形状就是 `mover::MoveOutcome`(src/dest/status/detail/pendingSidecars),
+        // 一个字段不多不少。
         assert_eq!(
             items[i].as_object().map(|o| o.len()),
-            Some(4),
-            "逐项结果只许有那四个字段: {}",
+            Some(5),
+            "逐项结果只许有那五个字段: {}",
+            items[i]
+        );
+        assert_eq!(
+            items[i]["pendingSidecars"],
+            serde_json::json!([]),
+            "照片一步都没动的项没有待补边车, 且必须是 `[]` 而不是 `null`: {}",
             items[i]
         );
         assert!(

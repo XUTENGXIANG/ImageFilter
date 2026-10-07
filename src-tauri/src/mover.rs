@@ -44,7 +44,8 @@ pub enum MoveStatus {
     Failed,
 }
 
-/// 单张照片的逐项结果（与 M3′ 手机端 `MoveOutcomeDto(src, dest, status, detail)` 逐字同形）。
+/// 单张照片的逐项结果（与 M3′ 手机端 `MoveOutcomeDto` 逐字同形: `src`/`dest`/`status`/
+/// `detail`/`pendingSidecars` **五个**字段）。
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MoveOutcome {
@@ -54,7 +55,29 @@ pub struct MoveOutcome {
     pub dest: Option<String>,
     pub status: MoveStatus,
     /// 给用户看的短原因（不是技术堆栈）。**只在真需要解释时才给**: 成功是 `None`。
+    /// **不是机器可读字段** —— 谁来解析这句话, 谁就把中英文案钉进了协议（规格 §5.3 的
+    /// i18n 纪律）。机器数据在 [`Self::pending_sidecars`]。
     pub detail: Option<String>,
+    /// **还没搬走的边车**（空 = 都跟上了）。机器可读, 也是这五个字段里唯一"专为重试而生"的。
+    ///
+    /// 为什么必须是**列表**、还必须由服务端给出: 半成功项的 `src` **已经不在原位置了**
+    /// （纪律②先移照片的直接后果, 见 `move_reports_a_half_success_when_the_sidecar_cannot_
+    /// follow` 实测钉住的那条事实）, 所以"把这一项原样重发"必然 404, 能补救的只有**把留在
+    /// 原地的边车本身当 `src` 再发一次**。而边车的名字由公开规则从照片名推出
+    /// （`{stem}.xmp` / `{name}.xmp`, `xmp.rs::sidecar_candidates`）—— 让手机去推这条规则
+    /// 正是规格 §3.2 纪律①**明令禁止**的事（手机不许猜路径/命名规则）。于是这条规则由
+    /// **桌面端**在响应里直接给出结果:
+    ///
+    /// ```text
+    /// POST /api/v1/move  { "paths": item.pendingSidecars, "destDir": parent(item.dest) }
+    /// ```
+    ///
+    /// 不需要新端点, 也不需要任何推导（`dest` 是照片的规范最终路径, 它的父目录就是目标目录）。
+    ///
+    /// **永远是数组**: 没有待搬边车时是 `[]`, 不是 `null`（响应, 不需要缺字段容忍）。
+    /// 每一项都是**源侧**的真实路径（它正是"没跟走"的那一份, 所以白名单/存在性两关都过）。
+    /// 逐项**可能多于一个**: 两种命名习惯同时存在时两份都要列出来 —— 见 [`move_one`] 的循环。
+    pub pending_sidecars: Vec<String>,
 }
 
 /// 逐项计数 + 逐项结果（与 M3′ 手机端 `MoveSummaryDto` 逐字同形）。
@@ -137,6 +160,12 @@ fn move_sidecar(cand: &Path, dest_dir: &Path) -> bool {
 /// 顺序是刻意的（纪律②）: **先照片, 后边车**。反过来出半成功时, 用户在旧路径看到的是
 /// "照片还在但评分没了"; 按这个顺序则是"照片走了, 评分留在原地" —— 后者能用
 /// `HalfSuccess` + 重试讲清楚, 前者会让用户以为评分被抹掉了。
+///
+/// **边车循环是"全部尝试"而不是"第一个失败就返回"**: 两种命名习惯
+/// （`{stem}.xmp` 与 `{name}.xmp`）可能**同时**存在, 而第一个失败之后照片**已经走了** ——
+/// 早退就等于把第二个候选永远留在旧位置, 且没有任何未来调用能把它搬过去（"照片 + 边车"
+/// 那一项已经不存在了）。所以每一份**存在**的候选都被尝试一遍, 没搬成的全部记进
+/// [`MoveOutcome::pending_sidecars`], 让手机一次就能把该补的都补上。
 pub fn move_one(src: &Path, dest_dir: &Path) -> MoveOutcome {
     let src_text = src.to_string_lossy().to_string();
 
@@ -147,6 +176,7 @@ pub fn move_one(src: &Path, dest_dir: &Path) -> MoveOutcome {
             dest: None,
             status: MoveStatus::Failed,
             detail: Some("路径没有文件名".into()),
+            pending_sidecars: Vec::new(),
         };
     };
     let Ok(dest) = plan_dest(dest_dir, name) else {
@@ -155,6 +185,7 @@ pub fn move_one(src: &Path, dest_dir: &Path) -> MoveOutcome {
             dest: None,
             status: MoveStatus::Failed,
             detail: Some("路径没有文件名".into()),
+            pending_sidecars: Vec::new(),
         };
     };
     let dest_text = dest.to_string_lossy().to_string();
@@ -166,6 +197,8 @@ pub fn move_one(src: &Path, dest_dir: &Path) -> MoveOutcome {
             dest: Some(dest_text),
             status: MoveStatus::Conflict,
             detail: Some("目标位置已有同名文件, 未覆盖".into()),
+            // 照片一步都没动, 边车也就"该留在旧位置"——没有任何待补的移动。
+            pending_sidecars: Vec::new(),
         };
     }
 
@@ -176,6 +209,7 @@ pub fn move_one(src: &Path, dest_dir: &Path) -> MoveOutcome {
             dest: None,
             status: MoveStatus::Failed,
             detail: Some("移动失败（可能跨卷或被占用）".into()),
+            pending_sidecars: Vec::new(),
         };
     }
 
@@ -183,21 +217,39 @@ pub fn move_one(src: &Path, dest_dir: &Path) -> MoveOutcome {
     //    （本仓库吃过"同一套规则在两处写死"的亏: `xmp.rs:681` 与 `importer.rs:741`）。
     //    注意这里用的是**源**路径: `sidecar_candidates` 只做路径字符串推导, 照片已经搬走了
     //    也不影响它算出旧位置的那两份候选（`{stem}.xmp` / `{name}.xmp`）。
+    //    **两份都试, 不许在第一次失败处早退**（理由见本函数的文档注释）。
+    let mut pending: Vec<String> = Vec::new();
     for cand in crate::xmp::sidecar_candidates(src) {
         if !cand.is_file() {
             continue; // 没有这份候选 —— 正常情况（两种命名习惯通常只存在一种）
         }
-        if !move_sidecar(&cand, dest_dir) {
-            return MoveOutcome {
-                src: src_text,
-                dest: Some(dest_text),
-                status: MoveStatus::HalfSuccess,
-                detail: Some(format!(
-                    "照片已移动, 但边车 {} 没能跟着走, 需要重试",
-                    display_name(&cand)
-                )),
-            };
+        let cand_text = cand.to_string_lossy().to_string();
+        // 没有扩展名的照片会让两个候选**重合**（`photo` → `photo.xmp` 两次）。去重, 否则
+        // 重试时同一个路径会发两遍, 第二遍必然报错（源已经被第一遍搬走了）。
+        if pending.contains(&cand_text) {
+            continue;
         }
+        if !move_sidecar(&cand, dest_dir) {
+            pending.push(cand_text);
+        }
+    }
+
+    if !pending.is_empty() {
+        // `detail` 只给用户看（人名/文件名），机器数据在 `pending_sidecars`。
+        let names: Vec<String> = pending
+            .iter()
+            .map(|p| display_name(Path::new(p)))
+            .collect();
+        return MoveOutcome {
+            src: src_text,
+            dest: Some(dest_text),
+            status: MoveStatus::HalfSuccess,
+            detail: Some(format!(
+                "照片已移动, 但边车 {} 没能跟着走, 需要重试",
+                names.join("、")
+            )),
+            pending_sidecars: pending,
+        };
     }
 
     MoveOutcome {
@@ -205,6 +257,7 @@ pub fn move_one(src: &Path, dest_dir: &Path) -> MoveOutcome {
         dest: Some(dest_text),
         status: MoveStatus::Moved,
         detail: None,
+        pending_sidecars: Vec::new(),
     }
 }
 
@@ -277,6 +330,11 @@ mod tests {
         let moved_to = dest.join("IMG_1.ARW").to_string_lossy().to_string();
         assert_eq!(out.dest.as_deref(), Some(moved_to.as_str()));
         assert!(out.detail.is_none(), "成功不需要解释: {:?}", out.detail);
+        assert!(
+            out.pending_sidecars.is_empty(),
+            "全都跟上了就没有待补项(线上是 `[]`): {:?}",
+            out
+        );
         assert!(dest.join("IMG_1.ARW").is_file(), "照片必须被移动");
         assert!(dest.join("IMG_1.xmp").is_file(), "**边车必须跟着走**");
         assert_eq!(std::fs::read(dest.join("IMG_1.xmp")).unwrap(), b"<x:xmpmeta/>");
@@ -366,6 +424,12 @@ mod tests {
         );
         let detail = out.detail.as_deref().unwrap_or("");
         assert!(detail.contains("边车"), "半成功的原因必须点名边车: {}", detail);
+        assert_eq!(
+            out.pending_sidecars,
+            vec![root.join("b.xmp").to_string_lossy().to_string()],
+            "机器可读的待补边车必须就是留在原地的那一份: {:?}",
+            out
+        );
 
         std::fs::remove_dir_all(&root).ok();
     }
@@ -477,6 +541,7 @@ mod tests {
                 dest: None,
                 status: MoveStatus::Conflict,
                 detail: Some("目标位置已有同名文件, 未覆盖".into()),
+                pending_sidecars: Vec::new(),
             }],
         };
         let v: serde_json::Value = serde_json::to_value(&summary).unwrap();
@@ -488,12 +553,146 @@ mod tests {
         assert_eq!(v["items"][0]["dest"], serde_json::Value::Null);
         assert_eq!(v["items"][0]["status"], "conflict");
         assert_eq!(v["items"][0]["detail"], "目标位置已有同名文件, 未覆盖");
-        // 逐项项恰好这四个字段(与 M3′ 的 `MoveOutcomeDto` 同形, 一个不多一个不少)。
+        // `pendingSidecars` **必须是数组**且没有待补时是 `[]`（不是 `null`、不是缺字段）:
+        // 手机端拿到 `null` 会当场崩在 `for (p in it.pendingSidecars)` 上。
         assert_eq!(
-            v["items"][0].as_object().map(|o| o.len()),
-            Some(4),
+            v["items"][0]["pendingSidecars"],
+            serde_json::json!([]),
             "{}",
             v["items"][0]
         );
+        // 逐项项恰好这五个字段(与 M3′ 的 `MoveOutcomeDto` 同形, 一个不多一个不少)。
+        assert_eq!(
+            v["items"][0].as_object().map(|o| o.len()),
+            Some(5),
+            "{}",
+            v["items"][0]
+        );
+    }
+
+    /// **`pendingSidecars` 的线上形状**: 半成功项里它是**路径字符串数组**, 每一项都是源侧
+    /// 真实存在的边车（手机直接把它当 `paths` 重发就能补上, 不必推导命名规则）。
+    #[test]
+    fn half_success_serializes_pending_sidecars_as_a_path_array() {
+        let out = MoveOutcome {
+            src: "D:\\p\\a.jpg".into(),
+            dest: Some("D:\\p\\dst\\a.jpg".into()),
+            status: MoveStatus::HalfSuccess,
+            detail: Some("照片已移动, 但边车 a.xmp 没能跟着走, 需要重试".into()),
+            pending_sidecars: vec!["D:\\p\\a.xmp".into(), "D:\\p\\a.jpg.xmp".into()],
+        };
+        let v: serde_json::Value = serde_json::to_value(&out).unwrap();
+        assert_eq!(
+            v["pendingSidecars"],
+            serde_json::json!(["D:\\p\\a.xmp", "D:\\p\\a.jpg.xmp"]),
+            "{}",
+            v
+        );
+        assert_eq!(v.as_object().map(|o| o.len()), Some(5), "{}", v);
+    }
+
+    /// **两种命名习惯同时存在、且第一份被挡住时, 第二份仍必须被尝试。**
+    ///
+    /// 这是"早退"最贵的那个洞: 照片已经走了, 早退意味着第二份候选**永远**留在旧位置 ——
+    /// 没有任何未来调用能补救它（`{照片+边车}` 那一项已经不存在了）。
+    #[test]
+    fn a_blocked_sidecar_does_not_stop_the_other_convention_from_following() {
+        let root = tmp("two_conv_first_blocked");
+        let src = root.join("c.jpg");
+        write_file(&src, b"photo");
+        let stem_sc = root.join("c.xmp");
+        write_file(&stem_sc, b"<x:xmpmeta rating=\"1\"/>");
+        let name_sc = root.join("c.jpg.xmp");
+        write_file(&name_sc, b"<x:xmpmeta rating=\"2\"/>");
+        let dest = root.join("d");
+        std::fs::create_dir_all(&dest).unwrap();
+        // 挡住**第一个**候选（`{stem}.xmp`）: 目标位置放一个同名目录
+        std::fs::create_dir_all(dest.join("c.xmp")).unwrap();
+
+        let out = move_one(&src, &dest);
+        assert_eq!(out.status, MoveStatus::HalfSuccess, "{:?}", out);
+        assert_eq!(
+            out.pending_sidecars,
+            vec![stem_sc.to_string_lossy().to_string()],
+            "只许列出**真的**没搬走的那一份: {:?}",
+            out
+        );
+        assert!(
+            dest.join("c.jpg.xmp").is_file(),
+            "第一份失败不许把第二份候选跳过(早退会让它永远留在旧位置)"
+        );
+        assert!(!name_sc.exists(), "第二份必须真的离开旧位置");
+        assert!(
+            stem_sc.is_file(),
+            "失败的那一份必须逐字节留在原地, 等用户清掉障碍再重试"
+        );
+        let detail = out.detail.as_deref().unwrap_or("");
+        assert!(detail.contains("c.xmp"), "半成功的原因必须点名边车: {}", detail);
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// **两份候选都被挡住 → `pendingSidecars` 必须把两份都列出来。**
+    ///
+    /// 这正是"标量字段会孤儿化的那一份": 早退(或只留一个名字)只能报出第一个, 第二份既没被
+    /// 尝试、也不在任何字段里 —— 照片+两份边车的原始状态已经不可重建, 那份评分就真的丢了。
+    #[test]
+    fn both_sidecar_conventions_are_listed_when_neither_can_follow() {
+        let root = tmp("two_conv_both_blocked");
+        let src = root.join("c.jpg");
+        write_file(&src, b"photo");
+        let stem_sc = root.join("c.xmp");
+        write_file(&stem_sc, b"<x:xmpmeta rating=\"1\"/>");
+        let name_sc = root.join("c.jpg.xmp");
+        write_file(&name_sc, b"<x:xmpmeta rating=\"2\"/>");
+        let dest = root.join("d");
+        std::fs::create_dir_all(&dest).unwrap();
+        std::fs::create_dir_all(dest.join("c.xmp")).unwrap();
+        std::fs::create_dir_all(dest.join("c.jpg.xmp")).unwrap();
+
+        let out = move_one(&src, &dest);
+        assert_eq!(out.status, MoveStatus::HalfSuccess, "{:?}", out);
+        assert_eq!(
+            out.pending_sidecars,
+            vec![
+                // 顺序 = `sidecar_candidates` 的顺序(`{stem}.xmp` 先), 手机不依赖顺序但服务端不该乱序。
+                stem_sc.to_string_lossy().to_string(),
+                name_sc.to_string_lossy().to_string(),
+            ],
+            "两份没搬走的候选都必须列出来(标量字段会漏掉第二份): {:?}",
+            out
+        );
+        assert!(
+            stem_sc.is_file() && name_sc.is_file(),
+            "两份都必须留在原地"
+        );
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// 没有扩展名的照片会让 `sidecar_candidates` 给出**同一个路径两次**
+    /// （`photo` → `photo.xmp` / `photo.xmp`）。`pendingSidecars` 里不许出现重复项:
+    /// 重试时同一个路径发两遍, 第二遍会因为"源已经被第一遍搬走"而报错。
+    #[test]
+    fn pending_sidecars_never_repeats_the_same_path() {
+        let root = tmp("no_ext_dup");
+        let src = root.join("photo");
+        write_file(&src, b"photo");
+        let sc = root.join("photo.xmp");
+        write_file(&sc, b"<x:xmpmeta rating=\"1\"/>");
+        let dest = root.join("d");
+        std::fs::create_dir_all(&dest).unwrap();
+        std::fs::create_dir_all(dest.join("photo.xmp")).unwrap();
+
+        let out = move_one(&src, &dest);
+        assert_eq!(out.status, MoveStatus::HalfSuccess, "{:?}", out);
+        assert_eq!(
+            out.pending_sidecars,
+            vec![sc.to_string_lossy().to_string()],
+            "两个候选重合时只许报一次: {:?}",
+            out
+        );
+
+        std::fs::remove_dir_all(&root).ok();
     }
 }
