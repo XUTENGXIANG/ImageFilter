@@ -371,4 +371,46 @@ export default {
     },
   },
 
+  // ── Phase 8 · Gallery service (phone access) ──
+  // The panel lives inside the settings dialog (ServerPanel in settings-dialog.tsx):
+  // switch / listening state / pairing code / shared folders / troubleshooting list.
+  // Status shape: ServerStatus in src-tauri/src/server/mod.rs (camelCase).
+  server: {
+    title: "Gallery service (phone)",
+    switchDesc: "Master switch for phone access, off by default",
+    on: "On",
+    off: "Off",
+    listening: "Listening on {url}",
+    // Deliberately NOT rolling the switch back on a failed start (Task 8): "you asked for on,
+    // it is not running" is a legal state — shown next to lastError, or the user just thinks
+    // the click missed.
+    wantedNotRunning: "The switch is on, but the service is not running",
+    // "Off" is not instantaneous: after stop() the port still has a *bounded* settling window
+    // (worst measured 63ms) during which a handshake can complete. Never promise more than that.
+    offNote: "Off (after stopping, the port stops accepting new connections within milliseconds)",
+    warn: "Once enabled, any device on the same network holding the pairing code can browse the folders you share. Do not expose it directly to the internet.",
+    lastError: "Last error",
+    tokenLabel: "Pairing code",
+    tokenDesc: "Type this on your phone to pair; after rotating, every phone must pair again",
+    tokenEmpty: "No pairing code yet — one is generated when you enable the service",
+    copy: "Copy",
+    copied: "Copied",
+    copyFailed: "Copy failed — select the pairing code and copy it manually",
+    rotate: "Rotate",
+    rotateConfirm: "Confirm rotate",
+    sharesLabel: "Shared folders",
+    sharesDesc: "Only the folders listed here are reachable from your phone",
+    shareEmpty: "No shared folder yet — until you add one, the service answers “no permission” for every path (a deliberate safe default)",
+    pathPlaceholder: "Full path, or click “Browse…”",
+    browse: "Browse…",
+    add: "Add",
+    remove: "Remove",
+    unavailable: "Cannot read service status: {reason}",
+    actionFailed: "Action failed: {reason}",
+    tipsTitle: "If your phone cannot connect, check these in order",
+    sleepTip: "The PC must not sleep during remote access: Settings → System → Power → Screen and sleep → set to “Never”",
+    firewallTip: "The first time you enable it, Windows asks about the firewall — you must allow “Private networks”",
+    appRunningTip: "If the phone cannot connect, check: ① the PC is not asleep ② ImageFilter is running ③ the service is enabled ④ the phone and the PC are on the same network (or both joined the same EasyTier/Tailscale network)",
+  },
+
 };

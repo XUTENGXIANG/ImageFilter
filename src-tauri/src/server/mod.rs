@@ -301,21 +301,29 @@ fn lifecycle() -> std::sync::MutexGuard<'static, Lifecycle> {
 /// 的守卫不是 `Send`, 会让 Tauri 命令的 future 编译不过。
 static START_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
-/// 开关命令(`set_enabled`)的**整段**串行闸门 —— 本轮 Fix 2 加的那一把。**与 `START_LOCK`
-/// 是两件事**: `START_LOCK` 只保证"两次开启不会各绑一个端口"; 这一把保证"两条开关命令不
-/// 交错", 也就是把复审点名的那条时间窗**从根上取消**。
+/// **所有会写 `server-config.json` 的命令**的串行闸门 —— Fix 2 加的那一把, Task 10 把
+/// 范围从"开关命令"放宽到"整份配置的每一条写者"。**与 `START_LOCK` 是两件事**:
+/// `START_LOCK` 只保证"两次开启不会各绑一个端口"; 这一把保证"两条改配置的命令不交错"。
 ///
-/// 被取消的那个窗:`prev = read_enabled(st)` … `stop()` … 落盘 … 失败就把 `prev` 写回去。
-/// `prev` 是**进入时**的快照, 而回滚在它之后、隔着一整个 `stop()` 与一次文件写才发生。
-/// 这段时间里任何人成功改了开关**并且把盘写成功**, 都会被那句回滚覆盖 —— 复审用一个并发
-/// 成功的 `set_enabled(true)` 把它变成了可复现的现场: 开关显示"关"、socket 却在监听、
-/// 理由里还写着"已停止监听", 而下次开机照着盘上那一份**会**监听。
+/// ── 它取消掉的第一个窗(Fix 2) ─────────────────────────────────────────────
+/// `prev = read_enabled(st)` … `stop()` … 落盘 … 失败就把 `prev` 写回去。`prev` 是**进入时**
+/// 的快照, 而回滚在它之后、隔着一整个 `stop()` 与一次文件写才发生。这段时间里任何人成功改了
+/// 开关**并且把盘写成功**, 都会被那句回滚覆盖 —— 复审用一个并发成功的 `set_enabled(true)`
+/// 把它变成了可复现的现场: 开关显示"关"、socket 却在监听、理由里还写着"已停止监听",
+/// 而下次开机照着盘上那一份**会**监听。
+///
+/// ── 它取消掉的第二个窗(Task 10 的残留缺陷) ────────────────────────────────
+/// 同样的一类谎, 只是换了字段: `rotate_server_token` / `add_share` / `remove_share` 原先
+/// 直接 `persist(&app, &state)?` —— 落盘失败时**内存已经改了、盘上还是旧的**, 于是界面显示
+/// 一枚盘上不存在的 token / 一个重启后就消失的共享根("看起来改了, 重启后没改")。
+/// 修法与开关那条完全一样(按盘对齐), 而**按盘对齐只有在"读盘 → 对齐"之间没有别的写者
+/// 成功落盘时才是对的** —— 所以这三条命令和开关必须共用这一把锁, 而不是各拿一把。
 ///
 /// 为什么必须是 `tokio::sync::Mutex` 而不是 std: 临界区里要 `await` `stop()`/`start()`
 /// (后者拿 `START_LOCK`、还要 bind), 而 std 守卫不是 `Send` —— 那会让 Tauri 命令的 future
-/// 变成非 `Send`, 直接编译不过。锁序固定为 `TOGGLE_LOCK → START_LOCK → LIFECYCLE`:
+/// 变成非 `Send`, 直接编译不过。锁序固定为 `CONFIG_WRITE_LOCK → START_LOCK → LIFECYCLE`:
 /// 没有任何一条路径在持有后面两把时回头拿它, 所以不会死锁(`boot` 只走 `START_LOCK`)。
-static TOGGLE_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+static CONFIG_WRITE_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 /// 上一次**生命周期失败**的原因(start 失败, 或"关掉了但设置没能保存")。只为一件事:
 /// 让界面能给出**可见的理由**(见 `ServerStatus::last_error`)。
@@ -558,9 +566,70 @@ pub fn save_config(st: &ServerState, app_data_dir: &Path) -> Result<(), String> 
     cfg.save(app_data_dir)
 }
 
-/// 落盘(取 app 数据目录的那一版, 给 Tauri 命令用)。
-pub fn persist(app: &tauri::AppHandle, st: &ServerState) -> Result<(), String> {
-    save_config(st, &app_data_dir(app)?)
+/// 一次配置写入**改过哪些字段** —— 落盘失败后"按盘对齐"只许撤这些字段(见
+/// `realign_from_disk`)。
+///
+/// 为什么要一个集合而不是一个 bool: 撤多了会把并发那条命令已经落盘的成果抹掉(例如
+/// `add_share` 刚写进去的共享根), 撤少了就留下"界面变了、重启后没了"的那个谎。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ChangedFields {
+    pub enabled: bool,
+    pub token: bool,
+    pub shares: bool,
+}
+
+impl ChangedFields {
+    /// 开关命令改过的字段: `enabled` 一定算; token 只在这次**真的**换了一枚时才算
+    /// (没换却撤 token, 会把并发换上的那枚抹掉)。
+    pub fn switch(token_replaced: bool) -> Self {
+        Self { enabled: true, token: token_replaced, shares: false }
+    }
+
+    /// `rotate_server_token` 改过的字段。
+    pub const TOKEN: Self = Self { enabled: false, token: true, shares: false };
+
+    /// `add_share` / `remove_share` 改过的字段。
+    pub const SHARES: Self = Self { enabled: false, token: false, shares: true };
+}
+
+/// 落盘; **失败就按盘对齐**(`changed` 里的字段)并回一句给用户看的理由。
+///
+/// 这是四条"会写 `server-config.json`"的命令共用的那一条纪律(Task 8 为开关立的规矩,
+/// Task 10 把它铺到 `rotate_server_token` / `add_share` / `remove_share`)。原先这三条用的是
+/// `persist(&app, &state)?` —— 那个 `?` 让"内存改了、盘上没改"直接漏给用户: 界面上一枚新
+/// token(手机照着它配对, 重启后 401)、或一个共享根(重启后消失), 而**没有任何迹象**说明
+/// 它没保存下来。`save_config`/`persist_config` 本身不该被判罪 —— 判罪的是"失败了却不对齐"。
+///
+/// 调用方**必须**已经持有 `CONFIG_WRITE_LOCK`: 按盘对齐的正确性建立在"读盘与对齐之间没有
+/// 别的写者成功落盘"之上。
+pub fn persist_or_realign(
+    st: &ServerState,
+    app_data_dir: &Path,
+    changed: ChangedFields,
+    what: &str,
+) -> Result<(), String> {
+    // 测试专用窗口(生产构建里这一行不存在, 也不留分支): 与 `set_enabled` 里那一行同一个用途 ——
+    // "另一条写配置的命令在这个瞬间插进来"必须是**可观测、可复现**的时刻, 而不是靠 sleep 猜。
+    #[cfg(test)]
+    seams::fire_window(st, app_data_dir);
+    match persist_config(st, app_data_dir) {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            realign_from_disk(st, app_data_dir, changed);
+            Err(config_persist_failure_reason(what, e))
+        }
+    }
+}
+
+/// 非开关命令落盘失败时给界面的那句理由。
+///
+/// 与 `persist_failure_reason` 同一条纪律: **按实际留下的状态现拼**。这里能说的实话只有
+/// 一句 —— 内存刚被对齐到盘上, 所以界面显示的已经等于"重启后会读到的那一份"。
+fn config_persist_failure_reason(what: &str, err: String) -> String {
+    format!(
+        "{}没能保存 —— {}。界面上显示的已回到盘上此刻真正写着的那一份(重启后仍是它)。",
+        what, err
+    )
 }
 
 /// 共享根的字符串形式(前端要的就是字符串)。
@@ -621,7 +690,7 @@ pub fn status_of(app: &tauri::AppHandle, st: &ServerState) -> Result<ServerStatu
 ///   · **理由按实际留下的状态现拼**: 见 `persist_failure_reason` —— 先读"撤回之后"的真实值
 ///     与"此刻到底有没有在监听", 再拼句子。不许硬编码"下次启动仍会尝试开启"这类承诺,
 ///     因为盘上的值恰恰是这条路上唯一不确定的东西。
-///   · **整条命令串行**: `TOGGLE_LOCK` 让两条开关命令互斥, 于是那个窗在 `set_enabled`
+///   · **整条命令串行**: `CONFIG_WRITE_LOCK` 让两条开关命令互斥, 于是那个窗在 `set_enabled`
 ///     之间**不再存在**; 按盘对齐则保证连不经过这条路的写者(那几条直接 `persist` 的命令)
 ///     造成的盘面变化也不会被回滚覆盖。
 ///   · 于是状态可能是 `enabled: true, running: false, lastError: "…没能保存…"`: 服务真的已经
@@ -634,9 +703,9 @@ pub async fn set_enabled(
     app_data_dir: &Path,
     enabled: bool,
 ) -> Result<ServerStatus, String> {
-    // **整条命令串行**(见 `TOGGLE_LOCK`)。拿在手上直到本次返回 —— 包括 `start().await`:
+    // **整条命令串行**(见 `CONFIG_WRITE_LOCK`)。拿在手上直到本次返回 —— 包括 `start().await`:
     // 那个 await 正是旧实现里"窗口"能开到没有上界的原因。
-    let _serialized = TOGGLE_LOCK.lock().await;
+    let _serialized = CONFIG_WRITE_LOCK.lock().await;
 
     if enabled {
         // 顺序是刻意的: ①先把 token 备好(**只在内存里**; 随机数不可用 → 直接 Err, 配置一个
@@ -654,7 +723,7 @@ pub async fn set_enabled(
         #[cfg(test)]
         seams::fire_window(st, app_data_dir);
         if let Err(e) = persist_config(st, app_data_dir) {
-            realign_from_disk(st, app_data_dir, token_replaced);
+            realign_from_disk(st, app_data_dir, ChangedFields::switch(token_replaced));
             let msg = persist_failure_reason(st, "服务未启动", e);
             record_start_error(msg.clone());
             return Err(msg);
@@ -693,13 +762,81 @@ pub async fn set_enabled(
         seams::fire_window(st, app_data_dir);
         if let Err(e) = persist_config(st, app_data_dir) {
             // **不是**把进入时的那个值写回去 —— 见 `realign_from_disk`。
-            realign_from_disk(st, app_data_dir, false);
+            realign_from_disk(st, app_data_dir, ChangedFields::switch(false));
             let msg = persist_failure_reason(st, "服务已停止监听", e);
             record_start_error(msg.clone());
             return Err(msg);
         }
         status_of_state(st)
     }
+}
+
+// ── Task 10 · 另外三条会写配置的命令 ─────────────────────────────────────────
+//
+// 它们原先各自长在 `lib.rs` 里, 直接 `server::persist(&app, &state)?` —— **落盘失败时内存
+// 已经改了、盘上还是旧的**, 而那个 `?` 只回一句 Err: 用户看到一枚新 token(手机照着它配对,
+// 重启后 401)/ 一个共享根(重启后消失), 却没有任何东西说明"它没保存下来"。这与 Task 8 修掉的
+// 开关那条是**同一类谎**(界面 ≠ 重启后的现实), 所以修法也必须是同一条: 按盘对齐。
+//
+// 为什么把实现搬到 `server` 模块(而不是留在 `lib.rs` 里修): "落盘失败"要能被**真的走一遍**
+// 就必须把目录当参数(与 `set_enabled` 同一个理由), 而 `lib.rs` 里的命令签名只有
+// `AppHandle` —— 那条路只有真机上点得动, 单测够不着。搬过来之后, `lib.rs` 里只剩"把 app 数据
+// 目录翻译成一个 `&Path`", 与 `set_server_enabled` 完全对称。
+
+/// 轮换配对 token(规格 §5.2: 换完之后所有手机需重新配对)。
+///
+/// **失败时内存按盘对齐** —— 否则界面会显示一枚盘上根本不存在的 token: 用户照它抄给手机,
+/// 配对当场成功(服务端此刻读的是内存), **重启后立刻 401**, 而且找不出原因。
+pub async fn rotate_token(st: &ServerState, app_data_dir: &Path) -> Result<ServerStatus, String> {
+    // 整条命令串行(见 `CONFIG_WRITE_LOCK`): "读盘对齐"必须与其它写者互斥。
+    let _serialized = CONFIG_WRITE_LOCK.lock().await;
+
+    // 用可失败的那一版: 随机数不可用只该变成一句 `Err`, 不该 panic(见 `auth::try_new_token`)。
+    let fresh = auth::try_new_token()?;
+    st.config.write().map_err(|e| e.to_string())?.token = fresh;
+    persist_or_realign(st, app_data_dir, ChangedFields::TOKEN, "新的配对码")?;
+    status_of_state(st)
+}
+
+/// 加入一个共享根。**只接受已存在的目录**(空 = 谁都访问不了, 是安全默认值)。
+///
+/// 落盘失败时内存里的 `shares` 按盘对齐(否则用户会以为目录加上了, 重启后发现没了 ——
+/// 而 `shares` 空 = 服务对所有路径都回"无权限", 那是一个看起来像"服务坏了"的现场)。
+pub async fn add_share(
+    st: &ServerState,
+    app_data_dir: &Path,
+    path: &str,
+) -> Result<Vec<String>, String> {
+    let _serialized = CONFIG_WRITE_LOCK.lock().await;
+
+    let p = PathBuf::from(path);
+    if !p.is_dir() {
+        return Err("不是目录".into());
+    }
+    {
+        let mut cfg = st.config.write().map_err(|e| e.to_string())?;
+        if !cfg.shares.iter().any(|s| s == &p) {
+            cfg.shares.push(p);
+        }
+    }
+    persist_or_realign(st, app_data_dir, ChangedFields::SHARES, "共享目录")?;
+    share_strings(st)
+}
+
+/// 移除一个共享根(按用户看到的那个字符串比较)。
+pub async fn remove_share(
+    st: &ServerState,
+    app_data_dir: &Path,
+    path: &str,
+) -> Result<Vec<String>, String> {
+    let _serialized = CONFIG_WRITE_LOCK.lock().await;
+
+    {
+        let mut cfg = st.config.write().map_err(|e| e.to_string())?;
+        cfg.shares.retain(|s| s.to_string_lossy() != path);
+    }
+    persist_or_realign(st, app_data_dir, ChangedFields::SHARES, "共享目录")?;
+    share_strings(st)
 }
 
 /// 读内存里的开关。**读不到(锁中毒)或 false**。
@@ -727,20 +864,27 @@ fn write_enabled(st: &ServerState, v: bool) -> Result<(), String> {
 /// `false`)、socket 却在监听、理由里还写着"已停止监听", 而盘上是"开", 下次开机照旧监听。
 ///
 /// 盘才是唯一真相 —— **下次开机读的就是它**。所以这里按盘对齐, 而不是按任何内存快照。
-/// (`TOGGLE_LOCK` 已经把两条开关命令串起来了, 所以"窗口内被另一条开关命令插队"在今天
-/// 构造不出来; 这一层守的是窗口外的写者: 那几条直接 `persist` 的命令, 以及"进程里还有
-/// 别人在改这份配置"这一整类情况。两道一起才是'盘赢'。)
+/// (`CONFIG_WRITE_LOCK` 已经把四条会写配置的命令串起来了, 所以"窗口内被另一条命令插队"在今天
+/// 构造不出来; 这一层守的是窗口外的写者: 启动路径上的 `ensure_token` 自己那次落盘, 以及
+/// "进程里还有别人在改这份配置"这一整类情况。两道一起才是'盘赢'。)
 ///
-/// 只撤**这次调用动过的**字段(`also_token` = 这次是不是换了 token): 撤多了会把并发那条
-/// 命令已经落盘的成果一起抹掉(例如 `add_share` 刚写进去的共享根)。
-fn realign_from_disk(st: &ServerState, app_data_dir: &Path, also_token: bool) {
+/// 只撤**这次调用动过的**字段(`changed` = 这次改了哪些; 见 `ChangedFields`)。撤多了会把
+/// 并发那条命令已经落盘的成果一起抹掉(例如 `add_share` 刚写进去的共享根)。
+///
+/// 调用方**必须**已经持有 `CONFIG_WRITE_LOCK`(见 `persist_or_realign`)。
+fn realign_from_disk(st: &ServerState, app_data_dir: &Path, changed: ChangedFields) {
     let disk = config::ServerConfig::load(app_data_dir);
     // 配置锁中毒也照用(`lifecycle()` 同一条纪律): 这里要做的恰恰是**把话说回真话**,
     // 拿不到锁就放弃会把界面停在那个假值上 —— 那正是本轮要消灭的东西。
     let mut cfg = st.config.write().unwrap_or_else(|e| e.into_inner());
-    cfg.enabled = disk.enabled;
-    if also_token {
+    if changed.enabled {
+        cfg.enabled = disk.enabled;
+    }
+    if changed.token {
         cfg.token = disk.token;
+    }
+    if changed.shares {
+        cfg.shares = disk.shares;
     }
 }
 
@@ -1475,7 +1619,7 @@ mod tests {
     /// 理由必须描述**实际留下**的状态。
     ///
     /// 为什么这里不直接并发调一次 `set_enabled(true)`: 那正是修复本身 —— 两条开关命令现在被
-    /// `TOGGLE_LOCK` 串行, 从窗口里再调一次会**死锁**(按设计, 见
+    /// `CONFIG_WRITE_LOCK` 串行, 从窗口里再调一次会**死锁**(按设计, 见
     /// `a_second_toggle_cannot_enter_while_the_first_is_inside_its_window`)。所以这里用测试
     /// 专用窗口直接做"另一条命令做过的那两件事"(改内存 + 成功落盘)。这是**等价且更强**的
     /// 干扰源: 连不经过 `set_enabled` 的写者(那几条直接 `persist` 的命令)造成的盘面变化,
@@ -1539,7 +1683,199 @@ mod tests {
         );
     }
 
-    /// **`TOGGLE_LOCK` 的钉子: 一条开关命令在它的窗口里时, 第二条进不来。**
+    /// **Task 10 的残留缺陷钉子: 三条"只改配置"的命令落盘失败后, 内存必须等于盘上那一份。**
+    ///
+    /// 这三条(`rotate_server_token` / `add_share` / `remove_share`)原先长在 `lib.rs` 里,
+    /// 各自都是"改内存 → `server::persist(&app, &state)?`" —— 盘写不进去时那个 `?` 只回一句
+    /// Err, 而内存里留着**盘上不存在的新值**。用户看到的现场:
+    ///   · 一枚新配对码: 照它抄给手机, 配对当场成功(服务端读的是内存), **重启后立刻 401**;
+    ///   · 一个新共享根: 界面上加上了, 重启后消失(而 `shares` 空 = 服务对所有路径都回
+    ///     "无权限", 那看起来像"服务坏了")。
+    /// 与 Task 8 修掉的开关那条是**同一类谎**(界面 ≠ 重启后的现实), 修法也是同一条: 按盘对齐。
+    ///
+    /// 契约: **盘是唯一真相 —— 落盘失败后内存必须等于盘上那一份。**
+    ///
+    /// 为什么夹具里盘上先落一份**旧的**配置: 这样"内存 == 盘"与"内存 == 这次想写的新值"是
+    /// 两个可分辨的断言。变异靶子(把 `persist_or_realign` 里那次 `realign_from_disk` 删掉)
+    /// 会让内存停在这回想写的新值上, 三条子用例的主断言同时红。
+    ///
+    /// 为什么用 `seams::fail_next_persist` 而不是"把配置文件名占成目录"(开关那两条用的招):
+    /// 这两条命令改的字段在盘上**有旧值**(token=旧的 64 位 hex / shares=[一个目录]), 而占目录
+    /// 会让 `load()` 回落到默认空配置 —— 那就分不清"按盘对齐"与"把内存清空"了。
+    #[test]
+    fn config_commands_keep_memory_equal_to_disk_when_persisting_fails() {
+        let _serialized = GLOBAL_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        reset_server_state();
+
+        // ① 轮换 token: 内存里那枚新 token 没落盘 → 必须被撤回成盘上的旧 token。
+        {
+            let dir = tmp_dir("rotate_realign");
+            std::fs::create_dir_all(&dir).expect("建临时目录");
+            let old = "d".repeat(64);
+            let st = config::ServerConfig {
+                enabled: true,
+                port: 0,
+                token: old.clone(),
+                shares: Vec::new(),
+            }
+            .into_state();
+            save_config(&st, &dir).expect("先落一份'旧 token'的配置");
+
+            seams::fail_next_persist("模拟: server-config.json 此刻被别的程序占着");
+            let err = tauri::async_runtime::block_on(rotate_token(&st, &dir))
+                .expect_err("落盘失败必须回 Err");
+            assert!(err.contains("没能保存"), "理由要能读: {}", err);
+            assert!(err.contains("新的配对码"), "理由要说清是哪一件事没保存: {}", err);
+
+            let on_disk = config::ServerConfig::load(&dir);
+            assert_eq!(on_disk.token, old, "夹具前提: 盘上那一份必须还是旧 token");
+            let in_memory = status_of_state(&st).unwrap().token;
+            assert_eq!(
+                in_memory, on_disk.token,
+                "落盘失败后内存里的 token 必须等于盘上那一份 —— 否则用户会拿一枚重启后就作废的配对码"
+            );
+        }
+
+        // ② 加共享根: 内存里那个新目录没落盘 → 必须被撤回。
+        {
+            let dir = tmp_dir("addshare_realign");
+            let (old_share, new_share) = (dir.join("old"), dir.join("new"));
+            std::fs::create_dir_all(&old_share).expect("建旧共享根");
+            std::fs::create_dir_all(&new_share).expect("建新共享根");
+            let st = config::ServerConfig {
+                enabled: true,
+                port: 0,
+                token: "5".repeat(64),
+                shares: vec![old_share.clone()],
+            }
+            .into_state();
+            save_config(&st, &dir).expect("先落一份'只有一个旧共享根'的配置");
+
+            seams::fail_next_persist("模拟: server-config.json 此刻被别的程序占着");
+            let err = tauri::async_runtime::block_on(add_share(
+                &st,
+                &dir,
+                &new_share.to_string_lossy(),
+            ))
+            .expect_err("落盘失败必须回 Err");
+            assert!(err.contains("没能保存"), "理由要能读: {}", err);
+
+            let on_disk = config::ServerConfig::load(&dir);
+            assert_eq!(on_disk.shares, vec![old_share.clone()], "夹具前提: 盘上只有旧共享根");
+            assert_eq!(
+                share_strings(&st).unwrap(),
+                vec![old_share.to_string_lossy().to_string()],
+                "落盘失败后内存里的共享根必须等于盘上那一份(新加的那个不许留着)"
+            );
+        }
+
+        // ③ 删共享根: 删除没落盘 → 内存里那个目录必须回来(否则界面显示已删、重启后又出现)。
+        {
+            let dir = tmp_dir("rmshare_realign");
+            let (a, b) = (dir.join("a"), dir.join("b"));
+            std::fs::create_dir_all(&a).expect("建共享根 a");
+            std::fs::create_dir_all(&b).expect("建共享根 b");
+            let st = config::ServerConfig {
+                enabled: true,
+                port: 0,
+                token: "6".repeat(64),
+                shares: vec![a.clone(), b.clone()],
+            }
+            .into_state();
+            save_config(&st, &dir).expect("先落一份'两个共享根'的配置");
+
+            seams::fail_next_persist("模拟: server-config.json 此刻被别的程序占着");
+            let err = tauri::async_runtime::block_on(remove_share(&st, &dir, &a.to_string_lossy()))
+                .expect_err("落盘失败必须回 Err");
+            assert!(err.contains("没能保存"), "理由要能读: {}", err);
+
+            let on_disk = config::ServerConfig::load(&dir);
+            assert_eq!(on_disk.shares.len(), 2, "夹具前提: 盘上仍是两个共享根");
+            let in_memory = share_strings(&st).unwrap();
+            assert_eq!(
+                in_memory,
+                vec![a.to_string_lossy().to_string(), b.to_string_lossy().to_string()],
+                "落盘失败后内存里的共享根必须等于盘上那一份(删掉的那个必须回来)"
+            );
+        }
+
+        // 收尾: 注入点是全局状态, 还回去(与 `reset_server_state` 同一条纪律)。
+        seams::clear();
+    }
+
+    /// **串行那半边的钉子: 一条写配置的命令在它的窗口里时, 第二条进不来。**
+    ///
+    /// 与 `a_second_toggle_cannot_enter_while_the_first_is_inside_its_window` 同形, 守的是
+    /// Task 10 残留缺陷修复的**前提**: "落盘失败 → 读盘对齐"只有在"读盘与对齐之间没有别的写者
+    /// 成功落盘"时才说得通(否则那次对齐会把别人刚写成功的成果盖掉 —— 与 Task 8 那个陈旧的
+    /// `prev` 回滚是同一个坑, 只是换了字段)。所以这四条会写 `server-config.json` 的命令共用
+    /// 同一把 `CONFIG_WRITE_LOCK`。
+    ///
+    /// 变异靶子: 删掉 `rotate_token` / `add_share` / `remove_share` 头上那句
+    /// `CONFIG_WRITE_LOCK.lock().await` → 第二条(加共享根)在窗口里一路跑完, `second_done`
+    /// 变 true, 这条红。
+    #[test]
+    fn a_second_config_write_cannot_enter_while_the_first_is_inside_its_window() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::mpsc;
+
+        let _serialized = GLOBAL_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        reset_server_state();
+        let dir = tmp_dir("config_write_serialized");
+        let share_dir = dir.join("photos");
+        std::fs::create_dir_all(&share_dir).expect("建共享根");
+        let st = config::ServerConfig {
+            enabled: false,
+            port: 0,
+            token: "3".repeat(64),
+            shares: Vec::new(),
+        }
+        .into_state();
+        save_config(&st, &dir).expect("先落一份合法配置");
+
+        let (entered_tx, entered_rx) = mpsc::channel::<()>();
+        let (release_tx, release_rx) = mpsc::channel::<()>();
+        seams::set_window(Box::new(move |_st: &ServerState, _dir: &Path| {
+            entered_tx.send(()).expect("通知测试线程: 第一条已经进到窗口里了");
+            release_rx.recv().expect("等测试线程放行");
+        }));
+
+        // 第一条: 轮换 token。它会卡在窗口里(落盘之前), 并且**一直持有** `CONFIG_WRITE_LOCK`。
+        let (st_first, dir_first) = (st.clone(), dir.clone());
+        let first = std::thread::spawn(move || {
+            tauri::async_runtime::block_on(rotate_token(&st_first, &dir_first))
+        });
+        entered_rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("第一条写配置的命令必须进到窗口里(否则夹具本身失效了)");
+
+        // 第二条: 加一个共享根。它必须先被挡在门外。
+        let second_done = Arc::new(AtomicBool::new(false));
+        let (st_second, dir_second) = (st.clone(), dir.clone());
+        let share_second = share_dir.to_string_lossy().to_string();
+        let flag = second_done.clone();
+        let second = std::thread::spawn(move || {
+            let r = tauri::async_runtime::block_on(add_share(&st_second, &dir_second, &share_second));
+            flag.store(true, Ordering::SeqCst);
+            r
+        });
+        // 给它足够的时间跑完(真要放行的话, 它那条路上全是快操作: 判目录、改内存、一次文件写)。
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        assert!(
+            !second_done.load(Ordering::SeqCst),
+            "第二条写配置的命令不许在第一条的窗口里跑完 —— `CONFIG_WRITE_LOCK` 没能把它们串起来"
+        );
+
+        release_tx.send(()).expect("放行第一条");
+        first.join().expect("第一条不许 panic").expect("第一条应成功");
+        second.join().expect("第二条不许 panic").expect("第二条应成功");
+        assert!(second_done.load(Ordering::SeqCst), "放行之后第二条必须能完成");
+
+        // 收尾: 注入点是全局状态, 还回去。
+        seams::clear();
+    }
+
+    /// **`CONFIG_WRITE_LOCK` 的钉子: 一条开关命令在它的窗口里时, 第二条进不来。**
     ///
     /// 这正是"窗口"被取消的证明: 旧实现里第二条(并发成功的 `set_enabled(true)`)能整条跑完,
     /// 于是它的成果被第一条的回滚覆盖(见上一条用例)。现在第二条只能等第一条出去。
@@ -1548,7 +1884,7 @@ mod tests {
     /// 正处在落盘之前的窗口里"是一个可以被测试线程观测并依赖的时刻, 不靠 sleep 猜。
     /// 测试线程在这个窗口里起第二条, 等一会儿, 断言它**还没结束**。
     ///
-    /// 变异靶子: 把 `set_enabled` 头上那句 `TOGGLE_LOCK.lock().await` 删掉 → 第二条在窗口里
+    /// 变异靶子: 把 `set_enabled` 头上那句 `CONFIG_WRITE_LOCK.lock().await` 删掉 → 第二条在窗口里
     /// 一路跑完(它那条路上没有任何阻塞点), `second_done` 变 true, 这条红(实测过)。
     #[test]
     fn a_second_toggle_cannot_enter_while_the_first_is_inside_its_window() {
@@ -1576,7 +1912,7 @@ mod tests {
             release_rx.recv().expect("等测试线程放行");
         }));
 
-        // 第一条: 开启。它会卡在窗口里, 并且**一直持有** `TOGGLE_LOCK`。
+        // 第一条: 开启。它会卡在窗口里, 并且**一直持有** `CONFIG_WRITE_LOCK`。
         let (st_first, dir_first) = (st.clone(), dir.clone());
         let first = std::thread::spawn(move || {
             tauri::async_runtime::block_on(set_enabled(&st_first, &dir_first, true))
@@ -1598,7 +1934,7 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_millis(500));
         assert!(
             !second_done.load(Ordering::SeqCst),
-            "第二条开关命令不许在第一条的窗口里跑完 —— `TOGGLE_LOCK` 没能把两条命令串起来"
+            "第二条开关命令不许在第一条的窗口里跑完 —— `CONFIG_WRITE_LOCK` 没能把两条命令串起来"
         );
 
         release_tx.send(()).expect("放行第一条");

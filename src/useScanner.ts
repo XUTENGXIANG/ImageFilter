@@ -1063,6 +1063,44 @@ export function useScanner() {
     if (xmpModeRef.current === "on") void probeXmpTarget(folderPath);
   }, [applyMergedLabels, applyMergedRatings, probeXmpTarget]);
 
+  // 手机端改了评分/色标 → 服务端发事件(`decisions-changed`, 见 src-tauri/src/lib.rs 的
+  // `decisions_notifier`)→ 这里读回那几条边车并合并到本机 map。
+  //
+  // 复用 loadFolder 用的**同一对** merge 函数 + 同一对落地函数, 所以撤销栈的既有不变式不受
+  // 影响(**不许**逐个 path 调 setRating: 2000 张会把 100 深的撤销栈冲爆 —— 这条理由原样写在
+  // `applyMergedRatings` 的注释里)。事件里只带 paths, 决策值仍然由 `read_decisions` 从边车读,
+  // 与手机端写下去的是同一份真值。
+  //
+  // `listen` 走动态 import: `@tauri-apps/api/event` 只在真实 Tauri 上下文里可用, 而
+  // 浏览器探针(vite dev)里 `window.__TAURI_INTERNALS__` 不存在 —— 那里必须安静地不订阅,
+  // 绝不能让一次 unhandled rejection 冒到控制台(这条 hook 是桌面端主路径)。
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let alive = true;
+    void (async () => {
+      const { listen } = await import("@tauri-apps/api/event");
+      const off = await listen<{ paths: string[] }>("decisions-changed", async (e) => {
+        const paths = e.payload?.paths ?? [];
+        if (paths.length === 0) return;
+        const remotes = await invoke<DecisionRead[]>("read_decisions", { filePaths: paths });
+        if (remotes.length === 0) return;
+        const r = mergeRemoteRatings(ratingsRef.current, remotes);
+        if (r.changed.length > 0) applyMergedRatings(r.map);
+        const l = mergeRemoteLabels(labelsRef.current, remotes);
+        if (l.changed.length > 0) applyMergedLabels(l.map);
+      });
+      // 订阅是异步建好的: 组件在 await 期间卸载的话, 立刻退订而不是把监听器漏在事件总线上。
+      if (alive) unlisten = off;
+      else off();
+    })().catch((err) => {
+      console.error("decisions-changed:", err);
+    });
+    return () => {
+      alive = false;
+      unlisten?.();
+    };
+  }, [applyMergedLabels, applyMergedRatings]);
+
   /** Load EXIF on demand when user selects a photo */
   /** Pick destination folder */
   const pickDestDir = useCallback(async () => {

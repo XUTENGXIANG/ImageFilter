@@ -386,4 +386,44 @@ export default {
     },
   },
 
+  // ── Phase 8 · 图库服务(手机端) ──
+  // 面板长在设置对话框里(见 src/components/settings-dialog.tsx 的 ServerPanel): 开关/监听状态/
+  // 配对码/共享目录/排查清单。状态形状见 src-tauri/src/server/mod.rs 的 ServerStatus(camelCase)。
+  server: {
+    title: "图库服务（手机端）",
+    switchDesc: "手机端访问的总开关，默认关闭",
+    on: "已开启",
+    off: "已关闭",
+    listening: "正在监听 {url}",
+    // 开启失败时的那一句: 后端刻意**不**回滚开关(Task 8), 所以"你要它开、它没在跑"是合法状态,
+    // 界面必须如实说, 并把 lastError 摆在旁边 —— 否则用户只会以为自己没点中。
+    wantedNotRunning: "开关是开的，但服务没有在运行",
+    // 关闭不是"瞬间断开所有连接": stop() 之后端口还有一个**有界**的收敛窗口(实测最坏 63ms),
+    // 期间仍可能完成握手。界面不许把"关"说成比实际更强(这条措辞就是那个边界)。
+    offNote: "已关闭（停止监听后，端口最迟几毫秒内不再接受新连接）",
+    warn: "开启后，同一网络下持有配对码的设备可以浏览你共享的目录。不要把它直接暴露到公网。",
+    lastError: "上次的错误",
+    tokenLabel: "配对码",
+    tokenDesc: "在手机上填这一串配对；轮换后所有手机都要重新配对",
+    tokenEmpty: "还没有配对码——开启服务时会自动生成一枚",
+    copy: "复制",
+    copied: "已复制",
+    copyFailed: "复制失败，请手动选中配对码复制",
+    rotate: "轮换",
+    rotateConfirm: "确认轮换",
+    sharesLabel: "共享目录",
+    sharesDesc: "只有列在这里的目录，手机才访问得到",
+    shareEmpty: "还没共享任何目录——在添加之前，服务对所有路径都返回“无权限”（这是有意的安全默认）",
+    pathPlaceholder: "完整路径，或点“浏览…”",
+    browse: "浏览…",
+    add: "添加",
+    remove: "移除",
+    unavailable: "读不到服务状态：{reason}",
+    actionFailed: "操作失败：{reason}",
+    tipsTitle: "手机连不上时按顺序查这几条",
+    sleepTip: "远程访问时电脑不能睡眠：设置 → 系统 → 电源 → 屏幕和睡眠 → 设为“从不”",
+    firewallTip: "首次开启时 Windows 会弹出防火墙询问，必须允许“专用网络”",
+    appRunningTip: "手机连不上时先确认：① 电脑没睡眠 ② ImageFilter 正在运行 ③ 服务已开启 ④ 手机与电脑在同一网络（或都加入了同一个 EasyTier/Tailscale 网络）",
+  },
+
 };

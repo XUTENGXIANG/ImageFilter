@@ -144,16 +144,16 @@ async fn set_server_enabled(
 
 /// 轮换配对 token。已有手机需要重新配对(规格 §5.2); 服务不用重启 —— 端点每次请求
 /// 现读配置(`ServerState` 的注释)。
+///
+/// 实现体在 `server::rotate_token`: 那里能拿到**目录**(而不是 AppHandle), 于是"落盘失败 →
+/// 内存按盘对齐"这条路径在单测里能被真的走一遍(见 `persist_or_realign`)。这里只做一件事:
+/// 把 Tauri 的 app 数据目录翻译成一个 `&Path` —— 与 `set_server_enabled` 完全对称。
 #[tauri::command]
 async fn rotate_server_token(
     app: tauri::AppHandle,
     state: tauri::State<'_, server::ServerState>,
 ) -> Result<server::ServerStatus, String> {
-    // 用可失败的那一版: 随机数不可用只该变成一句 `Err`, 不该 panic(见 `auth::try_new_token`)。
-    let fresh = server::auth::try_new_token()?;
-    state.config.write().map_err(|e| e.to_string())?.token = fresh;
-    server::persist(&app, &state)?;
-    server::status_of(&app, &state)
+    server::rotate_token(&state, &server::app_data_dir(&app)?).await
 }
 
 /// 加入一个共享根。**只接受已存在的目录**(空 = 谁都访问不了, 是安全默认值)。
@@ -163,18 +163,7 @@ async fn add_share(
     state: tauri::State<'_, server::ServerState>,
     path: String,
 ) -> Result<Vec<String>, String> {
-    let p = std::path::PathBuf::from(&path);
-    if !p.is_dir() {
-        return Err("不是目录".into());
-    }
-    {
-        let mut cfg = state.config.write().map_err(|e| e.to_string())?;
-        if !cfg.shares.iter().any(|s| s == &p) {
-            cfg.shares.push(p);
-        }
-    }
-    server::persist(&app, &state)?;
-    server::share_strings(&state)
+    server::add_share(&state, &server::app_data_dir(&app)?, &path).await
 }
 
 /// 移除一个共享根(按用户看到的那个字符串比较)。
@@ -184,12 +173,7 @@ async fn remove_share(
     state: tauri::State<'_, server::ServerState>,
     path: String,
 ) -> Result<Vec<String>, String> {
-    {
-        let mut cfg = state.config.write().map_err(|e| e.to_string())?;
-        cfg.shares.retain(|s| s.to_string_lossy() != path);
-    }
-    server::persist(&app, &state)?;
-    server::share_strings(&state)
+    server::remove_share(&state, &server::app_data_dir(&app)?, &path).await
 }
 
 /// `decisions-changed` 的发送端 —— **只有这里知道 Tauri**。

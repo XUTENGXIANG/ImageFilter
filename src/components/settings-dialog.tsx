@@ -1,15 +1,20 @@
 // Copyright (c) 2026 XUTENGXIANG
 // SPDX-License-Identifier: MIT
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Moon, Sun } from "@icon-park/react";
 import { getVersion } from "@tauri-apps/api/app";
+import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
+// 取个别名: 同一个文件里 ServerPanel 的 `open` prop(对话框开着没有)会把它遮住。
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription,
 } from "@/components/ui/dialog";
 import { Toggle } from "@/components/ui/toggle";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Collapse } from "./collapse";
 import type { Lang } from "../i18n";
 import { xmpErrKey, type XmpMode, type XmpStatus } from "../xmp";
 import { isLrcModeUsable, type LrcSendMode } from "../lightroom";
@@ -47,6 +52,331 @@ interface Props {
   onGlassOpacityChange: (v: number) => void;
   backgroundOpacity: number;
   onBackgroundOpacityChange: (v: number) => void;
+}
+
+/**
+ * 图库服务(手机端)的状态快照 —— 与 `src-tauri/src/server/mod.rs` 的 `ServerStatus` 一一对应
+ * (serde camelCase)。
+ *
+ * `enabled` 与 `running` 是**两件事**, 面板必须同时显示:
+ *   · `enabled` = 用户的选择, 而且永远是"盘上此刻真正写着的那一份"(决定下次开机要不要拉起);
+ *   · `running` = 此刻**真的**有 socket 在监听(端口被别的软件占着时它是 false);
+ *   · `lastError` = 启动那一步失败的理由 —— 后端刻意**不**把开关回滚(Task 8), 所以
+ *     "你要它开、它没在跑"是合法状态, 而界面必须把理由摆出来, 否则用户只会以为没点中。
+ */
+interface ServerStatus {
+  running: boolean;
+  port: number;
+  url: string;
+  token: string;
+  shares: string[];
+  enabled: boolean;
+  lastError: string | null;
+}
+
+/**
+ * 设置里的「图库服务」面板(Phase 8)。**全部长在设置对话框里** —— 不新增窗口、不动布局。
+ *
+ * 它只做四件事, 每件都对着一个用户真的会问的问题:
+ *   ① 现在到底是开是关、**有没有真的在监听**(开 ≠ 在跑, 这两件事分开显示);
+ *   ② 配对码: 看得见、能复制、能轮换(轮换两段确认 —— 它会让所有手机重新配对);
+ *   ③ 共享目录的增删(空 = 服务对所有路径回"无权限", 这是有意的安全默认, 面板要说清);
+ *   ④ 起不来时给出**可行动**的理由 + 一张排查清单。
+ *
+ * 纪律: 状态永远以后端为准(`get_server_status`) —— 每次动作之后再读一次, 面板开着时每 4 秒
+ * 再读一次。前端**不**自己猜"应该开着了吧": `enabled`/`running`/`lastError` 三个字段合起来
+ * 才是真相, 而真相只有 `server::status_of_state` 说得清。
+ */
+function ServerPanel({ open }: { open: boolean }) {
+  const { t } = useTranslation();
+  const [status, setStatus] = useState<ServerStatus | null>(null);
+  const [problem, setProblem] = useState<string | null>(null);
+  /** 至少成功读到过一次状态 —— 决定一条失败信息该说"读不到状态"还是"这个操作失败了"。 */
+  const [loadedOnce, setLoadedOnce] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const [confirmRotate, setConfirmRotate] = useState(false);
+  const [draftPath, setDraftPath] = useState("");
+  const [showTips, setShowTips] = useState(false);
+
+  const load = useCallback(async () => {
+    try {
+      setStatus(await invoke<ServerStatus>("get_server_status"));
+      setProblem(null);
+      setLoadedOnce(true);
+    } catch (err) {
+      // 拿不到状态就如实说拿不到(纯浏览器探针里没有 Tauri 注入, 这里必然走到) ——
+      // 绝不能用一份猜测的状态把面板撑起来。
+      setProblem(String(err));
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!open) return; // 关着的时候不轮询: 一次 invoke 也不该白花
+    void load();
+    const id = window.setInterval(() => void load(), 4000);
+    return () => window.clearInterval(id);
+  }, [open, load]);
+
+  /**
+   * 所有动作共用同一条收尾: 忙 → 做 → 失败就显示后端那句人话 → **无论如何**重读一次权威状态。
+   *
+   * 重读是必需的, 不是保险: 开启失败时后端**刻意不回滚开关**(开关仍是"开"、服务没在跑、
+   * 理由在 `lastError`), 只有重读才能让界面显示这个真实组合。
+   */
+  const run = async (fn: () => Promise<unknown>) => {
+    setBusy(true);
+    setProblem(null);
+    try {
+      await fn();
+    } catch (err) {
+      setProblem(String(err));
+    } finally {
+      setBusy(false);
+      void load();
+    }
+  };
+
+  const copyToken = async () => {
+    const token = status?.token ?? "";
+    if (!token) return;
+    const done = () => {
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1500);
+    };
+    try {
+      await navigator.clipboard.writeText(token);
+      done();
+    } catch {
+      // WebView 里 clipboard API 可能不可用(权限/非安全上下文): 用"选中 + execCommand"兜底。
+      // 为一次复制去引 clipboard 插件不值当。
+      const ta = document.createElement("textarea");
+      ta.value = token;
+      ta.setAttribute("readonly", "");
+      ta.style.position = "fixed";
+      ta.style.top = "-1000px";
+      document.body.appendChild(ta);
+      ta.select();
+      let ok = false;
+      try { ok = document.execCommand("copy"); } catch { ok = false; }
+      ta.remove();
+      if (ok) done();
+      else setProblem(t("server.copyFailed"));
+    }
+  };
+
+  const rotateToken = async () => {
+    // 两段式确认: 轮换会让**所有**手机重新配对, 一次误点代价不小; 而 WebView 里
+    // window.confirm 的行为不一致, 走对话框插件又要多一次 IPC —— 就地两段最稳、也最可读。
+    if (!confirmRotate) {
+      setConfirmRotate(true);
+      window.setTimeout(() => setConfirmRotate(false), 5000);
+      return;
+    }
+    setConfirmRotate(false);
+    await run(() => invoke("rotate_server_token"));
+  };
+
+  const addShare = async () => {
+    const path = draftPath.trim();
+    if (!path) return;
+    await run(async () => {
+      await invoke<string[]>("add_share", { path });
+      setDraftPath(""); // 只有成功才清空: 失败时留着输入, 用户改一改就能重试
+    });
+  };
+
+  const removeShare = (path: string) => run(() => invoke<string[]>("remove_share", { path }));
+
+  const browseForShare = async () => {
+    try {
+      const picked = await openDialog({ directory: true, title: t("server.sharesLabel") });
+      if (typeof picked === "string" && picked) setDraftPath(picked);
+    } catch (err) {
+      setProblem(String(err));
+    }
+  };
+
+  const token = status?.token ?? "";
+  const shares = status?.shares ?? [];
+  const disabled = busy || !status;
+
+  // 状态行 —— 三句话各自对应一个真实状态, 不合并、不含糊:
+  //   · 开着且在跑 → 把地址念出来(用户就是拿它填手机的);
+  //   · 开着但没在跑 → 直说"你要它开, 它没在跑"(理由在下面的错误块里);
+  //   · 没开 → 说"已关闭", 并**带上那句有界窗口的说明** —— "关"不等于"信号发出的一瞬间
+  //     所有连接都断了"(serve 任务收敛前端口还能完成握手, 实测最坏 63ms)。
+  const stateText = !status
+    ? null
+    : status.enabled && status.running
+      ? t("server.listening", { url: status.url })
+      : status.enabled
+        ? t("server.wantedNotRunning")
+        : t("server.offNote");
+
+  return (
+    <div className="min-w-0 border-t border-border pt-3 space-y-2">
+      {/* 标题行: 状态点 + 标题 + 开/关胶囊 + 开关。开关是**用户的选择**, 胶囊是"这一份选择
+          在盘上写着什么", 状态行是"此刻的真相" —— 三者一起才说清, 因为"开着但没在跑"正是最
+          需要被看见的那个组合。 */}
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-1.5">
+            <span
+              aria-hidden="true"
+              className={`inline-block size-2 rounded-full shrink-0 ${status?.running ? "bg-emerald-500" : "bg-muted-foreground/40"}`}
+            />
+            <p className="text-sm text-foreground">{t("server.title")}</p>
+            <span className="text-xs text-muted-foreground">
+              {status ? (status.enabled ? t("server.on") : t("server.off")) : ""}
+            </span>
+          </div>
+          <p className="text-xs text-muted-foreground break-words">{stateText ?? t("server.switchDesc")}</p>
+        </div>
+        <Toggle
+          checked={status?.enabled ?? false}
+          disabled={disabled}
+          onChange={() => void run(() => invoke("set_server_enabled", { enabled: !(status?.enabled ?? false) }))}
+        />
+      </div>
+
+      {/* 安全警告: 左侧那条琥珀色竖线是"这是条警告"的唯一视觉信号 —— 文字色仍用
+          muted-foreground(两个主题下都过对比度, 不为一句文案另造一个颜色)。 */}
+      <p className="rounded-md border-l-2 border-amber-500/70 bg-muted/40 px-2 py-1.5 text-xs text-muted-foreground">
+        {t("server.warn")}
+      </p>
+
+      {(problem || status?.lastError) && (
+        <div className="rounded-md border border-destructive/40 bg-destructive/10 px-2 py-1.5 text-xs text-destructive space-y-0.5">
+          {status?.lastError && (
+            <p className="break-words">
+              <span className="font-medium">{t("server.lastError")}: </span>
+              {status.lastError}
+            </p>
+          )}
+          {problem && (
+            <p className="break-words">
+              {loadedOnce
+                ? t("server.actionFailed", { reason: problem })
+                : t("server.unavailable", { reason: problem })}
+            </p>
+          )}
+        </div>
+      )}
+
+      {/* 配对码: 单行等宽 + 可选中; 复制与轮换各一个按钮(轮换要按两下)。 */}
+      <div className="space-y-1">
+        <div className="flex items-center justify-between gap-2">
+          <p className="text-xs text-muted-foreground">{t("server.tokenLabel")}</p>
+          <div className="flex items-center gap-1.5">
+            <button
+              type="button"
+              disabled={!token || busy}
+              onClick={() => void copyToken()}
+              className="px-2 py-1 rounded-md border border-border text-xs text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {copied ? t("server.copied") : t("server.copy")}
+            </button>
+            <button
+              type="button"
+              disabled={!token || busy}
+              onClick={() => void rotateToken()}
+              className={`px-2 py-1 rounded-md border text-xs disabled:opacity-50 disabled:cursor-not-allowed ${
+                confirmRotate
+                  ? "border-destructive/50 text-destructive hover:bg-destructive/10"
+                  : "border-border text-muted-foreground hover:bg-muted hover:text-foreground"
+              }`}
+            >
+              {confirmRotate ? t("server.rotateConfirm") : t("server.rotate")}
+            </button>
+          </div>
+        </div>
+        <code className="block max-h-20 overflow-auto no-scrollbar rounded-md bg-muted/40 px-2 py-1 font-mono text-xs leading-4 text-foreground break-all select-all">
+          {token || t("server.tokenEmpty")}
+        </code>
+        <p className="text-xs text-muted-foreground">{t("server.tokenDesc")}</p>
+      </div>
+
+      {/* 共享目录: 列表可删 + 一行"输入 / 浏览 / 添加"。空列表不是"没问题", 而是
+          "谁都访问不了" —— 所以说的是 shareEmpty 那句话, 而不是一个空框。 */}
+      <div className="space-y-1">
+        <p className="text-xs text-muted-foreground">{t("server.sharesLabel")}</p>
+        {shares.length === 0 ? (
+          <p className="text-xs text-muted-foreground">{t("server.shareEmpty")}</p>
+        ) : (
+          <ul className="space-y-1 min-w-0">
+            {shares.map((sh) => (
+              <li key={sh} className="flex items-center gap-2 min-w-0">
+                <span className="flex-1 min-w-0 truncate text-xs text-foreground" title={sh}>{sh}</span>
+                <button
+                  type="button"
+                  disabled={busy}
+                  aria-label={`${t("server.remove")}: ${sh}`}
+                  onClick={() => void removeShare(sh)}
+                  className="shrink-0 px-2 py-1 rounded-md border border-border text-xs text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {t("server.remove")}
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+        <div className="flex items-center gap-1.5">
+          <Input
+            value={draftPath}
+            disabled={busy}
+            placeholder={t("server.pathPlaceholder")}
+            onChange={(e) => setDraftPath(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                void addShare();
+              }
+            }}
+            className="h-7 flex-1 min-w-0 text-xs"
+          />
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => void browseForShare()}
+            className="shrink-0 px-2 py-1 rounded-md border border-border text-xs text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {t("server.browse")}
+          </button>
+          <button
+            type="button"
+            disabled={disabled || !draftPath.trim()}
+            onClick={() => void addShare()}
+            className="shrink-0 px-2 py-1 rounded-md border border-border text-xs text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {t("server.add")}
+          </button>
+        </div>
+        <p className="text-xs text-muted-foreground">{t("server.sharesDesc")}</p>
+      </div>
+
+      {/* 排查清单默认收起: 它不是每天都看的东西, 但连不上的时候要在同一屏里能找到
+          (所以标题一直在, 点开就是那三条)。 */}
+      <div>
+        <button
+          type="button"
+          aria-expanded={showTips}
+          onClick={() => setShowTips((v) => !v)}
+          className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
+        >
+          <span aria-hidden="true">{showTips ? "▾" : "▸"}</span>
+          {t("server.tipsTitle")}
+        </button>
+        <Collapse open={showTips} className="pt-1">
+          <ul className="space-y-0.5 pl-4 text-xs text-muted-foreground list-disc">
+            <li>{t("server.sleepTip")}</li>
+            <li>{t("server.firewallTip")}</li>
+            <li>{t("server.appRunningTip")}</li>
+          </ul>
+        </Collapse>
+      </div>
+    </div>
+  );
 }
 
 /** 设置项行: 标题 + 说明 + 右侧控件 */
@@ -185,7 +515,12 @@ export function SettingsDialog({
         {/* Phase 7 加了第 10 行(Lightroom), 而那一段又比其他行高一档(三档按钮 + 重新检测)。
             为守住"一屏放下、不出现滚动条"这条前置约束, 行距 3→2 并同步把这一行的
             py-1.5 收到 py-1(见该行): 两处必须一起改, 只收其中一处仍会超。 */}
-        <div className="space-y-2 py-2">
+        {/* min-w-0 **必须**在: DialogContent 是一张 grid, 而 grid item 的 `min-width` 默认是
+            auto —— 于是这里面任何一个"不会换行的长串"(共享目录的完整路径就是)都会把 grid 轨道
+            撑到超过对话框的 420px, 内容横向溢出(滚动条又被 no-scrollbar 藏掉), 右侧的"移除"
+            按钮直接跑到框外。给它一个 min-w-0, 轨道就老老实实按 420px 算, 里面的 truncate /
+            break-words 才真的生效。 */}
+        <div className="min-w-0 space-y-2 py-2">
           <SettingRow title={t("settings.language")} desc={t("settings.languageDesc")}>
             <div className="flex rounded-md border border-border overflow-hidden text-sm">
               {(["zh", "en"] as Lang[]).map((l) => (
@@ -330,6 +665,10 @@ export function SettingsDialog({
               <OpacitySlider value={backgroundOpacity} onChange={onBackgroundOpacityChange} disabled={!transparentBg} />
             </div>
           </SettingRow>
+
+          {/* Phase 8 · 图库服务(手机端)。放在最下面一行分隔线之上: 它是"整块"而不是一行设置,
+              所以自带 border-t 与自己的小标题(不动 App.tsx 的布局 —— 面板全部长在这里)。 */}
+          <ServerPanel open={open} />
 
           {/* 版本信息 + 检查更新。
               只比对版本号: 本机版本(二进制里的) vs GitHub 最新正式版的 tag。
