@@ -688,7 +688,7 @@ async fn an_unreadable_source_is_reported_as_internal_not_as_a_format_problem() 
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use image_filter_lib::server::routes::PROTECTED_PATHS;
+use image_filter_lib::server::routes::{PROTECTED_PATHS, PUBLIC_PATHS};
 use tower::ServiceExt;
 
 /// 测试用共享根。**真在磁盘上建出来**。
@@ -1266,5 +1266,163 @@ async fn thumb_and_preview_endpoints_return_jpeg_and_keep_the_size_contract() {
     assert_code_only(&json_of(res).await, "badRequest");
 
     drop(cache);
+    std::fs::remove_dir_all(&root).ok();
+}
+
+/// **Fix 1 的对外证明: 提取器拒绝也必须落在 `{ code }` 契约里。**
+///
+/// 修复前 axum 在**处理器跑起来之前**就把请求挡回去了, 回的是 400 + **纯文本**
+/// (`Failed to deserialize query string`)。手机端的 `ApiError` 只读 `code`, 于是拿到一个
+/// 解析不了的响应体, 用户看到的是"未知错误" —— 而规格 §5.3 给这种情况的动作很明确:
+/// `badRequest` = "换一个请求"。
+///
+/// 四个用例分别覆盖四类拒绝: 必填参数缺失(`browse` 的 `path`)、数字参数非数字
+/// (`thumb` 的 `size` / `preview` 的 `max`)、布尔参数非布尔(`preview` 的 `full`)。
+/// 每条都断言 **400** *且* 响应体是**只含 `code` 的 JSON**(`json_of` 在纯文本上会直接
+/// panic —— 这就是修复前会红的那一句)。
+#[tokio::test]
+async fn extractor_rejections_obey_the_code_contract() {
+    let (app, token, root) = route_app("extract");
+    let enc = urlencode(&root.to_string_lossy());
+
+    for (label, uri) in [
+        ("必填参数缺失", "/api/v1/browse".to_string()),
+        ("size 不是数字", format!("/api/v1/thumb?path={}&size=abc", enc)),
+        ("max 不是数字", format!("/api/v1/preview?path={}&max=-1", enc)),
+        ("full 不是布尔", format!("/api/v1/preview?path={}&full=abc", enc)),
+    ] {
+        let res = app
+            .clone()
+            .oneshot(get_req(&uri, Some(&token)))
+            .await
+            .unwrap();
+        assert_eq!(
+            res.status(),
+            StatusCode::BAD_REQUEST,
+            "{}: {} 的提取器拒绝必须是 400",
+            label,
+            uri
+        );
+        // 契约要求的是 JSON 体 —— 内容类型也得对上(手机端可能有按类型分发的解析器)
+        assert_eq!(
+            res.headers().get("content-type").and_then(|v| v.to_str().ok()),
+            Some("application/json"),
+            "{}: {} 的错误体必须是 JSON, 不是 axum 的纯文本",
+            label,
+            uri
+        );
+        assert_code_only(&json_of(res).await, "badRequest");
+    }
+
+    std::fs::remove_dir_all(&root).ok();
+}
+
+/// **次要修复的对外证明: RFC 7235 的 scheme 大小写不敏感。**
+///
+/// 旧实现用 `strip_prefix("Bearer ")` 只认这一种精确写法, 于是 `bearer <token>` 或多一个
+/// 空格都会被判成 `unauthorized` —— 而手机把 `unauthorized` 映射成"**去重新配对**",
+/// 用户会为一个纯格式差异去扫码/轮换 token, 真正的原因只是大小写。
+///
+/// 反向断言同样重要: 放宽空白**不能**把错 token 放进来(那是把 fail-closed 松成了漏洞)。
+#[tokio::test]
+async fn bearer_scheme_is_case_insensitive_and_tolerates_ows() {
+    let (app, token, root) = route_app("bearer");
+
+    let authorized = |raw: String| {
+        Request::builder()
+            .uri("/api/v1/shares")
+            .header("Authorization", raw)
+            .body(Body::empty())
+            .unwrap()
+    };
+
+    // (1) 这些写法都表示"带了正确的 token" → 200
+    for raw in [
+        format!("Bearer {}", token),
+        format!("bearer {}", token),
+        format!("BEARER {}", token),
+        format!("BeArEr {}", token),
+        format!("Bearer  {}", token),   // 多一个空格(RFC 的 `1*SP` = 一个或多个)
+        format!("Bearer\t{}", token),   // Tab
+        format!("Bearer {} ", token),   // 尾随 OWS(真实 HTTP 解析器本就会剥掉)
+        format!(" bearer {}", token),   // 前导 OWS(同上)
+        format!("\tbearer\t{}\t", token),
+    ] {
+        let res = app.clone().oneshot(authorized(raw.clone())).await.unwrap();
+        assert_eq!(
+            res.status(),
+            StatusCode::OK,
+            "{:?} 应当被接受(scheme 大小写不敏感 + 容忍 OWS)",
+            raw
+        );
+    }
+
+    // (2) 放宽空白**不许**变成放行: 错 token / 错 scheme / 只有 scheme
+    for raw in [
+        "bearer".to_string(),                       // 没有凭证
+        "bearer ".to_string(),                      // 只有空白
+        "Bearer    ".to_string(),                   // 只有空白
+        "Basic ".to_string() + &token,              // 别的 scheme
+        "Bearerx ".to_string() + &token,            // scheme 前缀像但不是
+        format!("bearer {}", &token[..63]),         // 少一位
+        format!("bearer {}x", token),               // 多一位
+        format!("bearer {}", token.to_uppercase()), // 大小写不同的 token(凭证本身不许模糊)
+    ] {
+        let res = app.clone().oneshot(authorized(raw.clone())).await.unwrap();
+        assert_eq!(
+            res.status(),
+            StatusCode::UNAUTHORIZED,
+            "{:?} 必须仍然 401 —— 放宽的是空白与 scheme 大小写, 不是凭证本身",
+            raw
+        );
+        assert_code_only(&json_of(res).await, "unauthorized");
+    }
+
+    std::fs::remove_dir_all(&root).ok();
+}
+
+/// **Fix 2 的证明: 全仓库只有一个路由入口, 且它罩住整张路由表。**
+///
+/// 曾经还有一个**不带鉴权层**的 `server::router()`(只挂 `ping`)。它今天无害, 但它的存在
+/// 就是一条后门: 谁把端点挂上去, 那条端点就**完全不需要 token**(与 `routes.rs` 顶部记的
+/// 那次实测同源)。它已被**删除** —— 所以"第二个入口"这件事现在构造不出来, 剩下的风险只有
+/// "鉴权层没罩住某条已挂载的路径", 这一条由本测试逐条钉死。
+///
+/// 公开面必须是一个**闭集**: 恰好 `[ping]`, 且与受保护清单零交集(有交集就说明某条受保护
+/// 端点在无 token 时可达)。逐条从唯一入口打请求: 公开的 200, 受保护的 401。
+#[tokio::test]
+async fn the_secured_router_is_the_only_entry_point_and_guards_every_mounted_path() {
+    let (app, _token, root) = route_app("oneentry");
+
+    assert_eq!(PUBLIC_PATHS, &["/api/v1/ping"], "免鉴权路径只许有 ping 一条");
+    for p in PROTECTED_PATHS {
+        assert!(
+            !PUBLIC_PATHS.contains(p),
+            "{} 同时出现在两份清单里 —— 那意味着它在无 token 时可达",
+            p
+        );
+    }
+
+    for p in PUBLIC_PATHS {
+        let res = app.clone().oneshot(get_req(p, None)).await.unwrap();
+        assert_eq!(
+            res.status(),
+            StatusCode::OK,
+            "{} 是公开端点, 无 token 也必须 200(否则配对永远做不成)",
+            p
+        );
+    }
+
+    for p in PROTECTED_PATHS {
+        let res = app.clone().oneshot(get_req(p, None)).await.unwrap();
+        assert_eq!(
+            res.status(),
+            StatusCode::UNAUTHORIZED,
+            "{} 无 token 必须 401 —— 鉴权层必须罩住**每一条**已挂载的受保护路径",
+            p
+        );
+        assert_code_only(&json_of(res).await, "unauthorized");
+    }
+
     std::fs::remove_dir_all(&root).ok();
 }

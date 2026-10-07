@@ -16,8 +16,7 @@ pub mod routes;
 use axum::{
     http::StatusCode,
     response::{IntoResponse, Response},
-    routing::get,
-    Json, Router,
+    Json,
 };
 use serde_json::json;
 use std::sync::{Arc, RwLock};
@@ -118,11 +117,17 @@ impl IntoResponse for ApiError {
 /// 对外沿用 `server::ServerConfig` 这个名字（集成测试与 `into_state` 都用它）。
 pub use config::ServerConfig;
 
-/// 只含 `ping` 的最小路由。**这不是服务的对外路由** —— 带状态、带鉴权的完整路由是
-/// `routes::router(state)`(Task 8 会统一)。保留它只是为了 `ping` 有一条不依赖状态的入口。
-pub fn router() -> Router {
-    Router::new().route("/api/v1/ping", get(ping))
-}
+// Fix 2（本轮修复）: 这里曾经有一个**不带鉴权层**的 `pub fn router() -> Router`, 只挂
+// `/api/v1/ping`。它今天无害(ping 本来就是公开的 §5.1), 但它的存在本身就是一条后门:
+// 谁把端点挂到它上面, 那条端点就**完全不需要 token**, 而且任何函数级测试都发现不了
+// (与 `routes.rs` 顶部记的那次实测同源)。两个安全属性不同的入口 = 迟早有人挂错那个。
+//
+// 已**整体删除**: 现在全仓库只有 `routes::router(state)` 一个路由入口, 鉴权层罩住
+// **整张**路由表(含兜底路由), 所以"新增端点漏挂鉴权"这件事在类型/结构上构造不出来。
+// `ping` 不再需要一条独立入口 —— 它是 `PUBLIC_PATHS` 里的公开端点, 走同一个 router
+// 同样免鉴权(见下面 `mod tests` 里那条测试, 以及 `routes::PUBLIC_PATHS`)。
+//
+// **Task 8 请把路由接线全部收敛到 `routes::router(state)`; 不许再长出第二个 Router。**
 
 /// 配对与"测试连接"用。**不泄露任何路径信息**。
 ///
@@ -143,9 +148,23 @@ mod tests {
     use axum::http::{Request, StatusCode};
     use tower::ServiceExt;
 
+    /// `ping` 是唯一免鉴权的端点 —— 这条测试**从唯一入口** `routes::router(state)` 打请求。
+    ///
+    /// Fix 2 之前它调用的是那个不带鉴权层的 `server::router()`(已删除)。改成走唯一入口
+    /// 之后, 这条测试顺带钉住一件事: **公开端点也必须从受鉴权的那台路由器上取**, 而不是
+    /// 另开一条没有层的路。
     #[tokio::test]
     async fn ping_returns_product_and_version_without_token() {
-        let res = router()
+        let app = routes::router(
+            config::ServerConfig {
+                enabled: true,
+                port: 0,
+                token: "t".repeat(64),
+                shares: Vec::new(),
+            }
+            .into_state(),
+        );
+        let res = app
             .oneshot(Request::builder().uri("/api/v1/ping").body(Body::empty()).unwrap())
             .await
             .expect("router 应能处理请求");
