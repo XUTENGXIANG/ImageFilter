@@ -357,6 +357,7 @@ class DecisionStore(private val api: ApiClient) {
     - **绝不要**把后者显示成"边车有问题"——那会让用户去查一个根本不存在的边车问题
   - `badRequest` → 说明**手机发出的参数不合法**（例如 `size` 不在 `{150,300,600}`、`max` 越界），属于客户端 bug → "内部错误，请反馈"，**不要**让用户去改路径
   - `unauthorized` → "配对码已失效，去电脑上重新复制"
+- **批量写回时逐项失败的码是另一套**（Task 6 评审提出）：`PUT /api/v1/decisions` 成功时返回 `200 + WriteSummary`，而 `failures[].code` 用的是 **XMP 码集**（`XMP_ERR_CODES`），**不是** HTTP 的 `{code}` 闭集。所以本任务需要**两张本地化表**：HTTP 错误体查 §5.3 的表，`failures[].code` 查 XMP 表。**不要混成一张**——`readOnly` / `permission` / `encoding` / `pathTooLong` 只在 XMP 表里存在，混表的后果是这些失败**显示不出任何文案**。
   - 网络类 → "没连上电脑（它可能睡了或 ImageFilter 没在运行）"
 - **失败时不要自动前进**（M2′ 单指切图的场景下即"不要自动跳到下一张"），避免"以为打过了"
 

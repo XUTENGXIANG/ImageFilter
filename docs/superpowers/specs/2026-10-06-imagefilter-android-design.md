@@ -263,6 +263,10 @@
 
 > **已知取舍（Task 3 评审提出）**：`403 forbiddenPath`（存在但在共享根外）与 `404 notFound`（不存在）的区分构成一个**存在性预言机**——已配对的客户端可以探测任意共享根之外的路径是否存在。它**不构成读越权**（读取仍被白名单拦住），而且 `404` 对"照片被删了"这种情形是有用信息，因此**接受这个取舍**。若要关掉它：先 `canonicalize` 父目录，只有在父目录落在共享根内时才允许返回 404，否则一律 `forbiddenPath`。
 
+> **接口细节（Task 6 评审提出，手机端必须知道，否则一定写错）**：`PUT /api/v1/decisions` **成功时**返回 `200 + WriteSummary`，其中**逐项失败的码用的是 XMP 的码集**（`XMP_ERR_CODES`：`readOnly` / `writeProtect` / `permission` / `encoding` / `pathTooLong` / `notXmp` / `tooLarge` / `busy` / `diskFull` / `unknown`），**不是** §5.3 那个 HTTP 的 `{code}` 闭集。
+>
+> **手机端必须准备两张不同的本地化表**：HTTP 错误体的 `code` 查 §5.3 的表；`WriteSummary.failures[].code` 查 XMP 表。**绝不要混成一张**——两张表的交集只有 `notXmp` / `tooLarge` / `busy` / `diskFull` 四个，`readOnly` / `permission` / `encoding` / `pathTooLong` 在 HTTP 表里根本不存在。
+
 ---
 
 ## 6. 桌面端改动清单
