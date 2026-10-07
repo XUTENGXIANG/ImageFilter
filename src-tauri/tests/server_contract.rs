@@ -787,6 +787,38 @@ fn takes_path(base: &str) -> bool {
     )
 }
 
+/// 这条路径只接受 `POST` + JSON 请求体。
+///
+/// 与 `takes_path` 同一个用途、同一种漂移风险: 逐条枚举 `PROTECTED_PATHS` 的测试(鉴权面、
+/// 提取器契约)必须按**正确的方法**打请求, 否则 POST-only 的端点会掉进 405 —— 那是**路由**的
+/// 拒绝, 与"这条路径挂上了没有/处理器回没回 `{ code }`"都无关, 测试会变成一个假红,
+/// 而且红的地方还看不出原因。
+fn post_only(base: &str) -> bool {
+    matches!(base, "/api/v1/move")
+}
+
+/// 一条"方法正确、参数故意不完整"的探测请求(给上面两张清单用)。
+///
+/// 故意**不带**参数: 只吃 `path` 的端点缺 `path` → 400; POST 端点给一个空 JSON 对象 →
+/// 缺必填字段 → 400。两条都落在"处理器自己必须回 `{ code }`"这条契约上。
+fn probe_req(uri: &str, token: Option<&str>) -> Request<Body> {
+    let base = uri.split('?').next().unwrap_or(uri);
+    let is_post = post_only(base);
+    let mut b = if is_post {
+        Request::builder()
+            .method("POST")
+            .uri(uri)
+            .header("content-type", "application/json")
+    } else {
+        Request::builder().uri(uri)
+    };
+    if let Some(t) = token {
+        b = b.header("Authorization", format!("Bearer {}", t));
+    }
+    b.body(if is_post { Body::from("{}") } else { Body::empty() })
+        .unwrap()
+}
+
 /// 一条**必须是 JSON 错误体**的响应: 状态码对、`content-type` 是 JSON、体恰好 `{ code }`。
 ///
 /// 提取器拒绝(下面 `extractor_...` 那条)与路由级兜底(405/404 那一组)期望的是**同一个
@@ -875,10 +907,12 @@ async fn extractor_rejections_obey_the_code_contract() {
     // (2) 盲扫生产清单: 缺 path 只许两种结果 —— 200 的 JSON, 或 400 + {code:badRequest}。
     // 不许出现第三种(axum 的 400 + 纯文本)。这一段不看 `takes_path`, 所以它能抓住
     // "新端点进了 PROTECTED_PATHS 但没进 takes_path"。
+    // 方法由 `probe_req` 按 `post_only` 决定: POST-only 的端点上发 GET 拿到的是 405,
+    // 那是**路由**的拒绝, 与"提取器有没有自己回 `{ code }`"不是一回事(那会是一个假红)。
     for base in PROTECTED_PATHS {
         let res = app
             .clone()
-            .oneshot(get_req(base, Some(&token)))
+            .oneshot(probe_req(base, Some(&token)))
             .await
             .unwrap();
         if res.status() == StatusCode::BAD_REQUEST {
@@ -934,7 +968,7 @@ async fn every_mounted_endpoint_requires_a_bearer_token() {
         };
 
         // (1) 完全没有 Authorization 头
-        let res = app.clone().oneshot(get_req(&uri, None)).await.unwrap();
+        let res = app.clone().oneshot(probe_req(&uri, None)).await.unwrap();
         assert_eq!(
             res.status(),
             StatusCode::UNAUTHORIZED,
@@ -947,7 +981,7 @@ async fn every_mounted_endpoint_requires_a_bearer_token() {
         for bad in ["", "zzz", &"t".repeat(63), &"t".repeat(65), "Bearer"] {
             let res = app
                 .clone()
-                .oneshot(get_req(&uri, Some(bad)))
+                .oneshot(probe_req(&uri, Some(bad)))
                 .await
                 .unwrap();
             assert_eq!(
@@ -961,9 +995,11 @@ async fn every_mounted_endpoint_requires_a_bearer_token() {
 
         // (3) 正 token: 这条路径必须**真的挂载着**。
         // 没有这一句, 上面那些 401 可能只是"这个路径根本不存在"—— 那测试就白写了。
+        // 方法由 `probe_req` 给对(`move` 只收 POST), 所以这里的"不是 404/405"是真的在说
+        // "路径挂上了", 而不是"我们发错了方法"。
         let res = app
             .clone()
-            .oneshot(get_req(&uri, Some(&token)))
+            .oneshot(probe_req(&uri, Some(&token)))
             .await
             .unwrap();
         assert!(
@@ -2422,3 +2458,811 @@ async fn decisions_report_a_sidecar_held_by_another_handle_as_busy() {
 
     std::fs::remove_dir_all(&root).ok();
 }
+
+// ════════════════════════════════════════════════════════════════════════════
+// Task 7: 移动端点(照片 + 同名边车)
+//
+// 与上面 Task 6 同一套写法: 每一条都从**真 HTTP 请求**出发, 断言落在**磁盘上真实的文件与
+// 字节**以及**逐项结果**上 —— 不看任何内部函数。三条纪律(规格 §5.2)在移动这一侧的落点:
+//   ① 绝不静默覆盖 —— 目标已存在 → 逐项 `conflict`, 且目标逐字节不变、源一步不动;
+//   ② 半成功态显式化 —— 照片动了边车没动 → 逐项 `halfSuccess`, 且**边车留在原地**
+//      (评分与新路径脱钩这件事不许静默);
+//   ③ 未同步 ≠ 已同步 —— 没搬成的项在 `items` 里如实报出来, 逐项可重试。
+//
+// **两侧都是安全红线, 而且目标侧更危险**: 源在共享根外 → 403(否则配对手机能搬走任意文件);
+// 目标在共享根外**也** → 403 —— 少了后一条, 拿着正 token 的手机就能把用户的文件搬到任意
+// 可写的位置(桌面端的 asset scope 只约束 WebView, 约束不到服务端进程)。
+//
+// 夹具纪律(本仓库吃过一次亏): 每个夹具文件都用 `write_file` 建出来并断言 `is_file()`,
+// 临时共享根一律走 `route_root`(它自己断言"真的建出来了且可 canonicalize")。
+// ════════════════════════════════════════════════════════════════════════════
+
+/// 造一个**真存在**的文件, 并当场断言它真的在磁盘上。
+fn write_file(p: &std::path::Path, bytes: &[u8]) {
+    std::fs::write(p, bytes).unwrap();
+    assert!(p.is_file(), "夹具前提: {} 必须真的存在", p.display());
+}
+
+/// 一条移动请求体(字段名与 M3′ 手机端的 `MoveReqDto` 逐字一致: `paths` / `destDir`)。
+fn move_body(paths: &[&std::path::Path], dest_dir: &std::path::Path) -> serde_json::Value {
+    serde_json::json!({
+        "paths": paths
+            .iter()
+            .map(|p| p.to_string_lossy().to_string())
+            .collect::<Vec<String>>(),
+        "destDir": dest_dir.to_string_lossy(),
+    })
+}
+
+/// 任意 `POST`(坏请求体也走它)。`content_type = None` = 一个 `content-type` 都不发。
+fn post_raw(
+    uri: &str,
+    token: Option<&str>,
+    content_type: Option<&str>,
+    body: &[u8],
+) -> Request<Body> {
+    let mut b = Request::builder().method("POST").uri(uri);
+    if let Some(t) = token {
+        b = b.header("Authorization", format!("Bearer {}", t));
+    }
+    if let Some(ct) = content_type {
+        b = b.header("content-type", ct);
+    }
+    b.body(Body::from(body.to_vec())).unwrap()
+}
+
+/// 打一次移动请求, 回 (状态码, JSON 体)。响应体不是 JSON 时 `json_of` 直接 panic。
+async fn post_move(
+    app: axum::Router,
+    token: Option<&str>,
+    body: &serde_json::Value,
+) -> (StatusCode, serde_json::Value) {
+    let res = app
+        .oneshot(post_raw(
+            "/api/v1/move",
+            token,
+            Some("application/json"),
+            &serde_json::to_vec(body).unwrap(),
+        ))
+        .await
+        .unwrap();
+    let status = res.status();
+    (status, json_of(res).await)
+}
+
+/// 共享根内的"源目录 + 目标目录"一对。
+fn move_dirs(
+    root: &std::path::Path,
+    tag: &str,
+) -> (std::path::PathBuf, std::path::PathBuf) {
+    let src = root.join(format!("src_{}", tag));
+    let dst = root.join(format!("dst_{}", tag));
+    std::fs::create_dir_all(&src).unwrap();
+    std::fs::create_dir_all(&dst).unwrap();
+    assert!(src.is_dir() && dst.is_dir(), "夹具前提: 源/目标目录都要真的建出来");
+    (src, dst)
+}
+
+/// 一个共享根外的**真**目录(里面没有别的东西)。
+///
+/// 越界必须用**真实存在**的路径: 「存在但不在共享根内」才是唯一指向白名单的 403 ——
+/// 拿一个不存在的路径, 403/404 都可能只是 `canonicalize` 失败的另一种表现。
+fn outside_dir(tag: &str) -> std::path::PathBuf {
+    let d = std::env::temp_dir().join(format!("ifmove_out_{}_{}", tag, std::process::id()));
+    let _ = std::fs::remove_dir_all(&d);
+    std::fs::create_dir_all(&d).unwrap();
+    assert!(d.is_dir(), "夹具前提: 共享根外的目录必须真的建出来");
+    d
+}
+
+/// **移动必须进 `PROTECTED_PATHS`。**
+///
+/// 这条看着像同义反复, 其实钉着一个**会静默发生的漏**: 上面[鉴权面]与[提取器契约]那几条
+/// 测试都是**按 `PROTECTED_PATHS` 逐条枚举**的 —— 漏掉一条不会报错, 只会少覆盖一条。
+/// 鉴权本身**不**依赖这张清单(中间件罩住整张路由表, 所以清单里漏了 move 时
+/// "无 token → 401" 依然成立), 也就是说这个洞只由这一句盯着。
+#[tokio::test]
+async fn move_is_registered_in_the_protected_paths_list() {
+    assert!(
+        PROTECTED_PATHS.contains(&"/api/v1/move"),
+        "移动端点必须在 PROTECTED_PATHS 里, 否则按清单逐条枚举的测试会静默漏掉它: {:?}",
+        PROTECTED_PATHS
+    );
+}
+
+/// **鉴权与坏请求: 移动是唯一会搬动用户文件的方法, 所以"无 token 的移动"必须自己有一条断言。**
+///
+/// 三段:
+///   (1) 无/错 token → 401 `unauthorized`, 且**磁盘一个字节都没变**。请求体里故意放一个共享根
+///       外的路径: 未配对时必须先被 401 挡下(而不是 403/404) —— 否则未配对的调用方能拿移动
+///       端点探测磁盘上有什么(与 `auth_is_checked_before_the_path_whitelist` 同一条纪律);
+///   (2) 坏请求体 → 400 + 恰好 `{ code: badRequest }`(`J<T>` 收口)。**这一段的牙齿是实测出来的**
+///       (变异验证: 把处理器换回 axum 原生的 `Json<T>`): 那两类拒绝会变成 **415**(没给
+///       `content-type`)与 **422**(缺必填字段) —— 都不是 §5.3 给"请求本身不合法"的那一档 400。
+///       尤其 422: 最外层的兜底层会按状态码把它改写成 `{code:badRequest}`, 于是**形状对了、状态还错**
+///       —— 只看响应体的断言抓不住它, 必须连状态码一起断言;
+///   (3) 空 `paths` → 400(与 `decisions` 缺 `paths` 同档: "你什么都没要求"不是一种成功)。
+///
+/// 最后一定要有正对照 —— 否则上面那些"拒绝"全都可以由一句"什么都拒绝"满足。
+#[tokio::test]
+async fn move_needs_a_token_and_rejects_malformed_bodies_without_touching_the_disk() {
+    let (app, token, root) = route_app("moveauth");
+    let (src, dst) = move_dirs(&root, "auth");
+    let photo = src.join("a.jpg");
+    write_file(&photo, b"photo-bytes");
+    let sidecar = src.join("a.xmp");
+    write_file(&sidecar, b"<x:xmpmeta rating=\"4\"/>");
+
+    // (1) 鉴权先于白名单
+    let probe = std::path::Path::new(r"C:\Windows\System32\config\SAM.jpg");
+    let body = move_body(&[probe], &dst);
+    for (label, bad_token) in [
+        ("完全没有 Authorization 头", None),
+        ("错 token", Some("zzz")),
+        ("长度差一位", Some(&token[..63])),
+    ] {
+        let (status, v) = post_move(app.clone(), bad_token, &body).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{} 必须先被 401 挡下", label);
+        assert_code_only(&v, "unauthorized");
+    }
+    assert!(
+        photo.is_file() && sidecar.is_file(),
+        "未鉴权的请求不许动磁盘(照片与边车都必须在原地)"
+    );
+    assert_eq!(
+        std::fs::read_dir(&dst).unwrap().count(),
+        0,
+        "目标目录必须还是空的"
+    );
+
+    // (2) 坏请求体
+    for (label, ct, raw) in [
+        ("语法坏 JSON", Some("application/json"), r#"{"paths":"#),
+        ("缺 destDir", Some("application/json"), r#"{"paths":["x"]}"#),
+        ("缺 paths", Some("application/json"), r#"{"destDir":"x"}"#),
+        (
+            "paths 不是数组",
+            Some("application/json"),
+            r#"{"paths":"x","destDir":"x"}"#,
+        ),
+        ("没有 content-type", None, r#"{"paths":[],"destDir":"x"}"#),
+        (
+            "content-type 是 text/plain",
+            Some("text/plain"),
+            r#"{"paths":[],"destDir":"x"}"#,
+        ),
+    ] {
+        let res = app
+            .clone()
+            .oneshot(post_raw("/api/v1/move", Some(&token), ct, raw.as_bytes()))
+            .await
+            .unwrap();
+        assert_code_contract_error(res, StatusCode::BAD_REQUEST, "badRequest", label).await;
+    }
+
+    // (3) 空批次
+    let (status, v) = post_move(app.clone(), Some(&token), &move_body(&[], &dst)).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "空 paths 必须是 400: {}", v);
+    assert_code_only(&v, "badRequest");
+
+    // 正对照: 一条合法请求必须真的搬成(照片**和边车**)
+    let (status, s) = post_move(app, Some(&token), &move_body(&[&photo], &dst)).await;
+    assert_eq!(status, StatusCode::OK, "{}", s);
+    assert_eq!(s["moved"], 1, "{}", s);
+    assert!(
+        dst.join("a.jpg").is_file() && dst.join("a.xmp").is_file(),
+        "正对照必须真的把照片和边车都搬过去: {}",
+        s
+    );
+
+    std::fs::remove_dir_all(&root).ok();
+}
+
+/// **源在共享根外 → 403, 而且一个文件都不许被动(整批拒绝)。**
+///
+/// 两段, 缺一段就有一个洞:
+///   (1) 单条越界: 403 `forbiddenPath`, 越界那张照片**原地不动**(更不许被搬进共享根里来);
+///   (2) 批次里混一条越界: **整批 403, 合法那条也不许先被搬走**。这一段是"边校验边搬"
+///       (write-as-you-validate)的变异靶子: 那种实现会先把合法的那张搬走, 于是半成功态
+///       只剩一句 403 可以报 —— 手机无从知道前几张到底搬走了没有(纪律②被静默吞掉)。
+///
+/// 最后是正对照: 去掉越界那条, 同一批的合法项必须真的搬成。
+#[tokio::test]
+async fn move_refuses_a_source_outside_every_share_and_moves_nothing() {
+    let (app, token, root) = route_app("movesrcforbid");
+    let (src, dst) = move_dirs(&root, "srcforbid");
+    let inside = src.join("a.jpg");
+    write_file(&inside, b"inside-bytes");
+    let inside_xmp = src.join("a.xmp");
+    write_file(&inside_xmp, b"<x:xmpmeta/>");
+
+    let out_dir = outside_dir("src");
+    let outside = out_dir.join("secret.jpg");
+    write_file(&outside, b"secret bytes");
+    assert!(
+        !outside.starts_with(&root),
+        "夹具前提: 越界那张照片不许落在共享根里({} vs {})",
+        outside.display(),
+        root.display()
+    );
+
+    // (1) 单条越界
+    let (status, v) = post_move(app.clone(), Some(&token), &move_body(&[&outside], &dst)).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "源在共享根外必须 403: {}", v);
+    assert_code_only(&v, "forbiddenPath");
+    assert!(outside.is_file(), "被拒的移动不许动越界的源文件");
+    assert_eq!(
+        std::fs::read_dir(&dst).unwrap().count(),
+        0,
+        "被拒的请求不许往目标目录里放任何东西"
+    );
+
+    // (2) 批次里混一条越界
+    let (status, v) = post_move(
+        app.clone(),
+        Some(&token),
+        &move_body(&[&inside, &outside], &dst),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "批次里只要有一条越界, 整批都是 403");
+    assert_code_only(&v, "forbiddenPath");
+    assert!(
+        inside.is_file() && inside_xmp.is_file(),
+        "越界必须在校验阶段就被发现 —— 合法那条也不许先搬走(半成功态无处安放)"
+    );
+    assert_eq!(
+        std::fs::read_dir(&dst).unwrap().count(),
+        0,
+        "整批被拒时目标目录必须是空的"
+    );
+
+    // (3) 正对照
+    let (status, s) = post_move(app, Some(&token), &move_body(&[&inside], &dst)).await;
+    assert_eq!(status, StatusCode::OK, "{}", s);
+    assert_eq!(s["moved"], 1, "{}", s);
+    assert!(dst.join("a.jpg").is_file() && dst.join("a.xmp").is_file());
+
+    let _ = std::fs::remove_dir_all(&out_dir);
+    std::fs::remove_dir_all(&root).ok();
+}
+
+/// **目标在共享根外 → 403**(本任务里更危险的那个方向)。
+///
+/// 少了这一条, 拿着正 token 的手机就能把用户的照片搬到**任意可写位置** —— 包括共享根外,
+/// 越搬越远, 而且桌面端的 asset scope 管不到服务端进程。两种写法都要挡住:
+///   · 直接指一个共享根外的真实目录;
+///   · 从共享根内出发、用 `..` 逃逸(canonicalize 之后落在根外) —— 夹具自己先证明这条路径
+///     canonicalize 之后**真的**在根外, 否则下面测的是别的东西。
+///
+/// 每一段都断言「源原地不动 + 根外那个目录里没多出任何文件」, 最后是共享根内的正对照。
+#[tokio::test]
+async fn move_refuses_a_destination_outside_every_share_and_moves_nothing() {
+    let (app, token, root) = route_app("movedstforbid");
+    let (src, _dst) = move_dirs(&root, "dstforbid");
+    let photo = src.join("a.jpg");
+    write_file(&photo, b"photo-bytes");
+    let sidecar = src.join("a.xmp");
+    write_file(&sidecar, b"<x:xmpmeta/>");
+
+    let out_dir = outside_dir("dst");
+    let out_photo = out_dir.join("existing.jpg");
+    write_file(&out_photo, b"untouchable");
+
+    // `..` 逃逸: 共享根内出发, canonicalize 后是共享根外的那个目录。
+    let escape = root
+        .join("sub")
+        .join("..")
+        .join("..")
+        .join(out_dir.file_name().unwrap());
+    assert_eq!(
+        escape.canonicalize().unwrap(),
+        out_dir.canonicalize().unwrap(),
+        "夹具前提: 这条 `..` 路径必须真的指向共享根外那个目录(否则这条用例测的是别的东西)"
+    );
+    assert!(
+        !escape.canonicalize().unwrap().starts_with(root.canonicalize().unwrap()),
+        "夹具前提: `..` 逃逸的目标必须真的在共享根之外"
+    );
+
+    for (label, dest) in [
+        ("共享根外的真实目录", out_dir.as_path()),
+        ("`..` 逃逸(根内出发, 规范后落在根外)", escape.as_path()),
+    ] {
+        let (status, v) = post_move(app.clone(), Some(&token), &move_body(&[&photo], dest)).await;
+        assert_eq!(
+            status,
+            StatusCode::FORBIDDEN,
+            "{} 作为目标必须 403(这是更危险的方向)",
+            label
+        );
+        assert_code_only(&v, "forbiddenPath");
+        assert!(photo.is_file() && sidecar.is_file(), "{}: 被拒的移动不许动源", label);
+        assert!(out_photo.is_file(), "{}: 根外那张照片更不许被动", label);
+        assert_eq!(
+            std::fs::read_dir(&out_dir).unwrap().count(),
+            1,
+            "{}: 共享根外那个目录里不许凭空多出一个文件",
+            label
+        );
+    }
+
+    // 正对照: 同一个源, 目标换成**共享根内**的目录 → 必须真的搬成
+    let dst = root.join("dst_ok");
+    std::fs::create_dir_all(&dst).unwrap();
+    let (status, s) = post_move(app, Some(&token), &move_body(&[&photo], &dst)).await;
+    assert_eq!(status, StatusCode::OK, "{}", s);
+    assert_eq!(s["moved"], 1, "{}", s);
+    assert!(dst.join("a.jpg").is_file());
+
+    let _ = std::fs::remove_dir_all(&out_dir);
+    std::fs::remove_dir_all(&root).ok();
+}
+
+/// **目标侧与源侧"这根本不是一个能搬的东西"的几档**, 以及"校验的是目标**目录**"的直接后果。
+///
+///   · 目标目录不存在 → `notFound` —— 手机只能在**已有**文件夹里挑("手机端不支持新建文件夹"
+///     是刻意的), 用户动作是"刷新目录", 与 `ensure_within` 自己给的那一档一致;
+///   · 目标是个**文件** → `notFound`(共享根内的目录树与磁盘不一致, 同样是"刷新目录");
+///   · 源不存在 → `notFound`(整批: 与"先全量校验再动手"是同一条纪律);
+///   · 源是个**目录** → `badRequest`: 目录也能 `rename` 成功(整棵子树跟着走), 但那就不是
+///     "照片 + 同名边车"的逐项语义了, 重名/半成功全会被那棵子树吞掉; 手机只送 `/scan`
+///     出来的文件, 所以这只可能来自客户端 bug。
+///
+/// **这一组同时是"别把校验改成针对待创建的目标文件"的靶子**: 那么改, 第一条会变成
+/// **每一次**移动都 404, 这条测试立刻红。
+#[tokio::test]
+async fn move_rejects_a_destination_that_is_not_an_existing_folder_and_a_source_that_is_not_a_file(
+) {
+    let (app, token, root) = route_app("movebad");
+    let (src, dst) = move_dirs(&root, "bad");
+    let photo = src.join("a.jpg");
+    write_file(&photo, b"photo-bytes");
+    let sidecar = src.join("a.xmp");
+    write_file(&sidecar, b"<x:xmpmeta/>");
+
+    // (1) 目标目录不存在(但它在共享根内 —— 否则下面这条会因为越界而不是因为不存在)
+    let ghost = root.join("ghost_folder");
+    assert!(!ghost.exists(), "夹具前提: 这个目录必须真的不存在");
+    let (status, v) = post_move(app.clone(), Some(&token), &move_body(&[&photo], &ghost)).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "不存在的目标目录必须 404: {}", v);
+    assert_code_only(&v, "notFound");
+
+    // (2) 目标是个文件(route_root 在共享根里放了 note.txt)
+    let not_a_dir = root.join("note.txt");
+    assert!(not_a_dir.is_file(), "夹具前提: note.txt 必须真的存在且是文件");
+    let (status, v) = post_move(app.clone(), Some(&token), &move_body(&[&photo], &not_a_dir)).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "目标是文件必须 404: {}", v);
+    assert_code_only(&v, "notFound");
+
+    // (3) 源不存在
+    let ghost_photo = src.join("ghost.jpg");
+    assert!(!ghost_photo.exists(), "夹具前提: 这张照片必须真的不存在");
+    let (status, v) = post_move(
+        app.clone(),
+        Some(&token),
+        &move_body(&[&ghost_photo], &dst),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "不存在的源必须 404: {}", v);
+    assert_code_only(&v, "notFound");
+
+    // (4) 源是个目录
+    let a_dir = root.join("sub");
+    assert!(a_dir.is_dir(), "夹具前提: sub 必须真的存在且是目录");
+    let (status, v) = post_move(app.clone(), Some(&token), &move_body(&[&a_dir], &dst)).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "源是目录必须 400: {}", v);
+    assert_code_only(&v, "badRequest");
+
+    // 上面四段都不许动磁盘
+    assert!(photo.is_file() && sidecar.is_file(), "被拒的请求不许动源");
+    assert!(a_dir.is_dir(), "被拒的目录源必须原地不动");
+    assert_eq!(
+        std::fs::read_dir(&dst).unwrap().count(),
+        0,
+        "被拒的请求不许往目标目录里放任何东西"
+    );
+
+    // 正对照
+    let (status, s) = post_move(app, Some(&token), &move_body(&[&photo], &dst)).await;
+    assert_eq!(status, StatusCode::OK, "{}", s);
+    assert_eq!(s["moved"], 1, "{}", s);
+
+    std::fs::remove_dir_all(&root).ok();
+}
+
+/// **主线: 照片和它的同名边车一起到新位置 —— 断言全部落在磁盘上真实的文件与字节上。**
+///
+/// 三种夹具都要有, 少一种就漏一种命名习惯或一个分支:
+///   · `IMG_1.ARW` + `IMG_1.xmp` —— RAW 约定(也是桌面端**写**的那一份, `xmp.rs:681`);
+///   · `b.jpg` + `b.jpg.xmp`     —— Lightroom 对非 RAW 的写法(`{文件名}.xmp`);
+///   · `c.jpg` 没有边车          —— 普通移动必须照常成功, 不许因为"没找到边车"变成半成功。
+///
+/// 目标目录名用**中文**(`精修`): 真实用户那里是常态, 而这条路径经过的是 JSON 请求体
+/// (不是查询串) —— 编码方式完全不同, 值得钉一次。
+///
+/// `items[].src` 必须是**规范化后的整条路径** —— 手机靠它把结果对回网格里的那张照片。
+/// 源路径的规范化值必须在请求**之前**算出来: 搬完它就不存在了。
+#[tokio::test]
+async fn move_takes_the_photo_and_its_sidecar_to_the_new_folder() {
+    let (app, token, root) = route_app("moveok");
+    let src = root.join("src_ok");
+    std::fs::create_dir_all(&src).unwrap();
+    let dst = root.join("精修");
+    std::fs::create_dir_all(&dst).unwrap();
+
+    let raw = src.join("IMG_1.ARW");
+    write_file(&raw, b"raw-bytes");
+    write_file(&src.join("IMG_1.xmp"), b"<x:xmpmeta rating=\"4\"/>");
+
+    let jpg = src.join("b.jpg");
+    write_file(&jpg, b"jpeg-bytes");
+    write_file(&src.join("b.jpg.xmp"), b"<x:xmpmeta label=\"Red\"/>");
+
+    let plain = src.join("c.jpg");
+    write_file(&plain, b"plain-bytes");
+
+    // 期望值在搬之前算好(搬完源就没了, `canon_path` 会 panic)
+    let raw_canon = canon_path(&raw);
+    let dst_canon = dst.canonicalize().unwrap();
+
+    let (status, s) = post_move(
+        app,
+        Some(&token),
+        &move_body(&[&raw, &jpg, &plain], &dst),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{}", s);
+    assert_eq!(s["moved"], 3, "三张都必须搬成: {}", s);
+    assert_eq!(s["halfSuccess"], 0, "{}", s);
+    assert_eq!(s["conflict"], 0, "{}", s);
+    assert_eq!(s["failed"], 0, "{}", s);
+
+    let items = s["items"].as_array().expect("items 必须是数组");
+    assert_eq!(items.len(), 3, "{}", s);
+    assert_eq!(
+        items[0]["src"].as_str().unwrap(),
+        raw_canon,
+        "逐项结果的 src 必须是规范化后的整条路径(手机按它对回照片): {}",
+        s
+    );
+    assert_eq!(items[0]["status"], "moved", "{}", s);
+    let want_dest = dst_canon.join("IMG_1.ARW").to_string_lossy().to_string();
+    assert_eq!(
+        items[0]["dest"].as_str().unwrap(),
+        want_dest.as_str(),
+        "逐项结果的 dest 必须是规范化后的目标路径: {}",
+        s
+    );
+    assert!(items[0]["detail"].is_null(), "成功不需要解释: {}", s);
+
+    // ── 磁盘上的真相: 每张照片、每份边车都在新位置, 且旧位置一份都不剩 ──
+    for (photo, sidecar) in [
+        ("IMG_1.ARW", "IMG_1.xmp"),
+        ("b.jpg", "b.jpg.xmp"),
+        ("c.jpg", ""),
+    ] {
+        assert!(dst.join(photo).is_file(), "{} 必须在新位置", photo);
+        assert!(!src.join(photo).exists(), "{} 不许在旧位置残留", photo);
+        if !sidecar.is_empty() {
+            assert!(dst.join(sidecar).is_file(), "**边车 {} 必须跟着走**", sidecar);
+            assert!(!src.join(sidecar).exists(), "边车 {} 不许在旧位置残留", sidecar);
+        }
+    }
+    // 边车必须**逐字节**原样搬过去(评分数值不能在搬运里被重写)
+    assert_eq!(
+        std::fs::read_to_string(dst.join("IMG_1.xmp")).unwrap(),
+        "<x:xmpmeta rating=\"4\"/>"
+    );
+    assert_eq!(
+        std::fs::read_to_string(dst.join("b.jpg.xmp")).unwrap(),
+        "<x:xmpmeta label=\"Red\"/>"
+    );
+    assert_eq!(std::fs::read(dst.join("IMG_1.ARW")).unwrap(), b"raw-bytes");
+    assert_eq!(
+        std::fs::read_dir(&src).unwrap().count(),
+        0,
+        "源目录必须空了 —— 少了这一句, 「照片搬走了但边车留在原地」也能让上面全绿"
+    );
+
+    std::fs::remove_dir_all(&root).ok();
+}
+
+/// **绝不静默覆盖: 目标已存在 → 逐项 `conflict`, 而且目标、源、边车三样全都不许变。**
+///
+/// 这是从 `importer.rs` 继承来的既有纪律(规格 §5.2 写死了它)。断言分成三层:
+///   · **逐项结果**: HTTP 200(请求本身没错, 是这一项搬不成) + `conflict=1` + `moved=0`,
+///     `items[0].status == "conflict"`, 而且给出一句用户读得懂的原因(M3′ 的结果面板直接
+///     显示它, 所以这里钉住"未覆盖"这个关键信息);
+///   · **目标文件逐字节不变** —— 这一条才是"绝不覆盖"的真身;
+///   · **源与它的边车原地不动**, 且**边车也不许被单独搬过去**(照片还在旧位置, 评分必须
+///     跟着旧位置; 只搬边车 = 把评分安到一个不在那儿的位置上)。
+#[tokio::test]
+async fn move_never_overwrites_an_existing_target_and_reports_it_per_item() {
+    let (app, token, root) = route_app("moveclash");
+    let (src, dst) = move_dirs(&root, "clash");
+    let photo = src.join("a.jpg");
+    write_file(&photo, b"new-photo-bytes");
+    let sidecar = src.join("a.xmp");
+    write_file(&sidecar, b"<x:xmpmeta rating=\"5\"/>");
+    let target = dst.join("a.jpg");
+    write_file(&target, b"existing-photo-bytes");
+
+    let photo_canon = canon_path(&photo);
+    let (status, s) = post_move(app, Some(&token), &move_body(&[&photo], &dst)).await;
+    assert_eq!(status, StatusCode::OK, "冲突是**逐项**结果, 不是整批请求的错: {}", s);
+    assert_eq!(s["moved"], 0, "{}", s);
+    assert_eq!(s["conflict"], 1, "目标已存在必须报冲突: {}", s);
+    assert_eq!(s["halfSuccess"], 0, "{}", s);
+    assert_eq!(s["failed"], 0, "{}", s);
+
+    let item = &s["items"][0];
+    assert_eq!(item["status"], "conflict", "{}", s);
+    assert_eq!(item["src"].as_str().unwrap(), photo_canon, "{}", s);
+    assert_eq!(
+        item["dest"].as_str().unwrap(),
+        canon_path(&target),
+        "冲突时也要如实报出**它想去哪**(用户据此改名后再试): {}",
+        s
+    );
+    let detail = item["detail"].as_str().unwrap_or("");
+    assert!(
+        detail.contains("未覆盖"),
+        "冲突的原因必须说清「没有覆盖」—— 手机的结果面板直接显示这句话: {}",
+        s
+    );
+
+    // 绝对不许覆盖, 而且源与边车一步不动
+    assert_eq!(
+        std::fs::read(&target).unwrap(),
+        b"existing-photo-bytes",
+        "目标文件必须逐字节不变"
+    );
+    assert!(photo.is_file(), "冲突时源必须原地不动");
+    assert_eq!(std::fs::read(&photo).unwrap(), b"new-photo-bytes");
+    assert!(sidecar.is_file(), "冲突时边车也不许动");
+    assert!(
+        !dst.join("a.xmp").exists(),
+        "冲突是**整体**失败 —— 不许只把边车搬过去(那会把评分安到一个不在那儿的位置上)"
+    );
+
+    std::fs::remove_dir_all(&root).ok();
+}
+
+/// **半成功: 照片走了、边车没跟上 —— 必须显式报出来, 而且边车留在原地。**
+///
+/// 造法(与 `mover` 的单测同一个思路): 目标位置先放一个**与边车同名的目录**, `rename` 到
+/// 它上面必然失败。这是本任务最要紧的一条 —— 评分与照片**脱钩**了, 如果没人说, 用户在手机上
+/// 以为一切正常, 到电脑上才发现评分丢了(纪律③"未同步 ≠ 已同步")。
+///
+/// 这一条同时钉住一条**实测出来的接口事实**(不是猜的, 是本文件里先写错过一次才发现):
+/// 半成功之后那张照片已经**不在原位置**了, 所以"把同一个请求原样再发一遍"**不可能**把边车补上 ——
+/// `ensure_within` 会先给 `notFound`。能补救的请求是**把留在原地的边车本身当作 `src`**:
+///   · 它确实还存在(它正是"没跟走"的那一个), 所以白名单、存在性、`is_file` 三关都过;
+///   · 移动它不需要任何新字段, 也**不会**把评分安到别人头上 —— 我们只搬调用方点名的那一个文件
+///     (这一点很重要: 另一种"看到 src 不存在、但 dest 有同名照片就把边车贴上去"的实现,
+///     会在用户删掉一张照片后把它的旧评分贴到另一张同名照片上, 那是静默的错误数据);
+///   · 边车名字由公开规则从 `src` 推得(`{stem}.xmp` / `{name}.xmp`, `xmp.rs:681`),
+///     手机端不必解析 `detail` 里那句话。
+///
+/// 三段连起来就是"半成功 → 用户清掉障碍 → 整个流程收敛": 照片与评分最后都在新位置, 源目录空了。
+#[tokio::test]
+async fn move_reports_a_half_success_when_the_sidecar_cannot_follow() {
+    let (app, token, root) = route_app("movehalf");
+    let (src, dst) = move_dirs(&root, "half");
+    let photo = src.join("half.jpg");
+    write_file(&photo, b"photo-bytes");
+    let sidecar = src.join("half.xmp");
+    write_file(&sidecar, b"<x:xmpmeta rating=\"5\"/>");
+    let blocker = dst.join("half.xmp");
+    std::fs::create_dir_all(&blocker).unwrap();
+    assert!(
+        blocker.is_dir(),
+        "夹具前提: 挡路的必须真的是个目录(`rename` 顶掉一个文件是能做到的, 顶掉目录不行)"
+    );
+
+    // ── (1) 半成功必须逐项、显式地报出来 ──
+    let photo_canon = canon_path(&photo);
+    let (status, s) = post_move(app.clone(), Some(&token), &move_body(&[&photo], &dst)).await;
+    assert_eq!(status, StatusCode::OK, "半成功是**逐项**结果, 不是整批请求的错: {}", s);
+    assert_eq!(s["moved"], 0, "边车没跟上就不许报成完全成功: {}", s);
+    assert_eq!(s["halfSuccess"], 1, "半成功必须如实报出来: {}", s);
+    assert_eq!(s["conflict"], 0, "{}", s);
+    assert_eq!(s["failed"], 0, "{}", s);
+    assert_eq!(s["items"][0]["status"], "halfSuccess", "{}", s);
+    assert_eq!(s["items"][0]["src"].as_str().unwrap(), photo_canon, "{}", s);
+    let detail = s["items"][0]["detail"].as_str().unwrap_or("");
+    assert!(
+        detail.contains("边车"),
+        "半成功必须点名是**边车**没跟上(用户才知道要处理什么): {}",
+        s
+    );
+
+    // 磁盘上的真相: 照片在新位置, 边车**留在旧位置**(评分没被静默丢掉, 也没被覆盖)
+    assert!(dst.join("half.jpg").is_file(), "照片应已移动");
+    assert!(sidecar.is_file(), "边车必须留在原地 —— 它不能凭空消失");
+    assert_eq!(
+        std::fs::read(&sidecar).unwrap(),
+        b"<x:xmpmeta rating=\"5\"/>",
+        "留在原地的边车必须逐字节原样"
+    );
+    assert!(!dst.join("half.xmp").is_file(), "挡路的那个目录不许被顶掉");
+
+    // ── (2) 把**同一个照片路径**原样重发 → `notFound` ──
+    //     这不是实现缺陷, 而是"先移照片"这条纪律的直接后果, 也是任何"把整批原样重发"的
+    //     客户端必须知道的事: 半成功项的照片路径已经死了。
+    let (status, v) = post_move(app.clone(), Some(&token), &move_body(&[&photo], &dst)).await;
+    assert_eq!(
+        status,
+        StatusCode::NOT_FOUND,
+        "半成功项的照片已经不在原位置 —— 重发同一个照片路径必须是 notFound: {}",
+        v
+    );
+    assert_code_only(&v, "notFound");
+
+    // ── (3) 用户清掉障碍之后, 真正能补救的请求: 把留在原地的**边车本身**当 src ──
+    std::fs::remove_dir(&blocker).unwrap();
+    let (status, s) = post_move(app.clone(), Some(&token), &move_body(&[&sidecar], &dst)).await;
+    assert_eq!(status, StatusCode::OK, "把留在原地的边车当 src 搬过去必须成功: {}", s);
+    assert_eq!(s["moved"], 1, "{}", s);
+    assert!(dst.join("half.xmp").is_file(), "边车这次必须真的到新位置");
+    assert_eq!(
+        std::fs::read_to_string(dst.join("half.xmp")).unwrap(),
+        "<x:xmpmeta rating=\"5\"/>",
+        "补救搬过去的边车必须逐字节原样"
+    );
+    assert!(!sidecar.exists(), "旧位置不该再有边车");
+
+    // 收敛: 照片与评分都在新位置, 源目录空了
+    assert!(dst.join("half.jpg").is_file(), "照片仍在新位置");
+    assert_eq!(
+        std::fs::read_dir(&src).unwrap().count(),
+        0,
+        "补救之后源目录必须空了(照片与边车都走了)"
+    );
+
+    std::fs::remove_dir_all(&root).ok();
+}
+
+/// **批次: 逐项结果 + 逐项重试收敛。**
+///
+/// 一批三项: 正常搬成 / 目标同名(文件) / 目标同名(目录)。三件断言:
+///   · HTTP **200** —— 请求本身没错, 是其中两项没成。压成整批 4xx 就等于把"三张里成了几张"
+///     整块丢掉(与 `PUT /decisions` 同一个口径);
+///   · `moved/halfSuccess/conflict/failed` 是**逐项计数**, `items[]` 每项带 `src` ——
+///     手机据此知道是哪几张要重试;
+///   · 修掉原因(删掉挡路的目标)后重发**待重试的那两项**能逐项收敛("可重试"必须是真的
+///     逐项重试)。
+///
+/// 这里刻意只用 `conflict` 作为"待重试"的失败类型, 而**不**放半成功项: 半成功的照片已经
+/// 离开原位置, 它的 `src` 再也送不进来了(见 `move_reports_a_half_success_when_the_sidecar_
+/// cannot_follow` 里钉住的那条接口事实)。一个真正的"逐项重试"就是**重试待重试的那些路径**。
+///
+/// 最后钉住与 M3′"待重试"面板有关的另一条接口事实: 把**原始整批**(含已经搬走的那张)原样
+/// 重发会整批 `notFound` —— 那张照片已经不在原来的位置了, 连校验都过不去(而且**一个文件都
+/// 不会被搬**)。所以"全部重试"必须是"重试所有**待重试**的项", 不能是"原样重发上一次的请求体"。
+#[tokio::test]
+async fn move_batch_reports_each_item_per_item_and_converges_on_retry() {
+    let (app, token, root) = route_app("movebatch");
+    let (src, dst) = move_dirs(&root, "batch");
+
+    let ok = src.join("ok.jpg");
+    write_file(&ok, b"ok-photo");
+    write_file(&src.join("ok.xmp"), b"<x:xmpmeta rating=\"3\"/>");
+
+    let clash_file = src.join("clash_file.jpg");
+    write_file(&clash_file, b"clash-photo");
+    write_file(&src.join("clash_file.xmp"), b"<x:xmpmeta rating=\"2\"/>");
+    let file_target = dst.join("clash_file.jpg");
+    write_file(&file_target, b"existing-photo");
+
+    // 第二种挡路的方式: 目标位置是个**目录**(不是文件)。`path_taken` 用的是
+    // `symlink_metadata` —— 目录同样算"已占用", 同样是冲突, 同样不许被顶掉。
+    let clash_dir = src.join("clash_dir.jpg");
+    write_file(&clash_dir, b"clash-photo");
+    write_file(&src.join("clash_dir.xmp"), b"<x:xmpmeta rating=\"1\"/>");
+    let dir_target = dst.join("clash_dir.jpg");
+    std::fs::create_dir_all(&dir_target).unwrap();
+
+    let ok_canon = canon_path(&ok);
+    let clash_file_canon = canon_path(&clash_file);
+    let clash_dir_canon = canon_path(&clash_dir);
+    let batch = move_body(&[&ok, &clash_file, &clash_dir], &dst);
+
+    let (status, s) = post_move(app.clone(), Some(&token), &batch).await;
+    assert_eq!(status, StatusCode::OK, "逐项失败不该变成整批请求的错误: {}", s);
+    assert_eq!(s["moved"], 1, "只有 ok 能搬成: {}", s);
+    assert_eq!(s["conflict"], 2, "两项都必须逐项报冲突: {}", s);
+    assert_eq!(s["halfSuccess"], 0, "{}", s);
+    assert_eq!(s["failed"], 0, "{}", s);
+
+    let items = s["items"].as_array().expect("items 必须是数组");
+    assert_eq!(items.len(), 3, "三项必须逐条报出来(不是一句 4xx): {}", s);
+    assert_eq!(items[0]["src"].as_str().unwrap(), ok_canon, "{}", s);
+    assert_eq!(items[0]["status"], "moved", "{}", s);
+    assert_eq!(items[1]["src"].as_str().unwrap(), clash_file_canon, "{}", s);
+    assert_eq!(items[1]["status"], "conflict", "{}", s);
+    assert_eq!(items[2]["src"].as_str().unwrap(), clash_dir_canon, "{}", s);
+    assert_eq!(items[2]["status"], "conflict", "目标是个目录, 同样是冲突: {}", s);
+    for i in [1, 2] {
+        // 冲突项的形状就是 `mover::MoveOutcome`(src/dest/status/detail), 一个字段不多不少。
+        assert_eq!(
+            items[i].as_object().map(|o| o.len()),
+            Some(4),
+            "逐项结果只许有那四个字段: {}",
+            items[i]
+        );
+        assert!(
+            items[i]["detail"].as_str().unwrap_or("").contains("未覆盖"),
+            "冲突项必须说清没有覆盖: {}",
+            s
+        );
+    }
+
+    // ── 三项各自的磁盘真相 ──
+    assert!(dst.join("ok.jpg").is_file(), "搬成的那张必须真的在新位置");
+    assert!(dst.join("ok.xmp").is_file(), "它的边车也必须跟着走");
+    assert!(!ok.exists(), "搬成的源不该残留");
+    assert_eq!(
+        std::fs::read(&file_target).unwrap(),
+        b"existing-photo",
+        "冲突项: 目标文件逐字节不变"
+    );
+    assert!(dir_target.is_dir(), "冲突项: 挡路的目录不许被顶掉");
+    for (photo, stem) in [(&clash_file, "clash_file"), (&clash_dir, "clash_dir")] {
+        assert!(photo.is_file(), "冲突项: {} 的源原地不动", stem);
+        assert!(
+            src.join(format!("{}.xmp", stem)).is_file() && !dst.join(format!("{}.xmp", stem)).exists(),
+            "冲突项 {}: 边车也不许被单独搬过去(照片还在旧位置, 评分必须跟着旧位置)",
+            stem
+        );
+    }
+
+    // ── 逐项重试: 删掉两个挡路的目标, 重发**待重试的那两项** ──
+    std::fs::remove_file(&file_target).unwrap();
+    std::fs::remove_dir(&dir_target).unwrap();
+    let (status, s) = post_move(
+        app.clone(),
+        Some(&token),
+        &move_body(&[&clash_file, &clash_dir], &dst),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{}", s);
+    assert_eq!(s["moved"], 2, "两项都必须补成(逐项重试, 不是整批重来): {}", s);
+    assert_eq!(s["conflict"], 0, "{}", s);
+    assert_eq!(s["halfSuccess"], 0, "{}", s);
+    assert_eq!(s["failed"], 0, "{}", s);
+    for (photo, sidecar) in [
+        ("clash_file.jpg", "clash_file.xmp"),
+        ("clash_dir.jpg", "clash_dir.xmp"),
+    ] {
+        assert!(dst.join(photo).is_file(), "重试后 {} 必须在新位置", photo);
+        assert!(dst.join(sidecar).is_file(), "重试后边车 {} 必须跟着走", sidecar);
+    }
+    assert_eq!(
+        std::fs::read_dir(&src).unwrap().count(),
+        0,
+        "两轮之后源目录必须彻底空了(照片与边车都走了)"
+    );
+
+    // ── 接口事实: 把**原始整批**原样重发 → 整批 `notFound`, 且一个文件都不动 ──
+    let (status, v) = post_move(app, Some(&token), &batch).await;
+    assert_eq!(
+        status,
+        StatusCode::NOT_FOUND,
+        "已经搬走的源重发必须是 notFound(而不是静默重放): {}",
+        v
+    );
+    assert_code_only(&v, "notFound");
+    assert!(
+        dst.join("ok.jpg").is_file()
+            && dst.join("clash_file.jpg").is_file()
+            && dst.join("clash_dir.jpg").is_file()
+            && dst.join("ok.xmp").is_file()
+            && dst.join("clash_file.xmp").is_file()
+            && dst.join("clash_dir.xmp").is_file(),
+        "被拒的重发不许动已经搬好的文件(照片与边车都在)"
+    );
+
+    std::fs::remove_dir_all(&root).ok();
+}
+

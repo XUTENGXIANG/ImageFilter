@@ -5,6 +5,7 @@ mod db;
 mod exif_common;
 mod importer;
 mod lightroom;
+mod mover;
 mod scanner;
 pub mod server;
 mod tinydng;

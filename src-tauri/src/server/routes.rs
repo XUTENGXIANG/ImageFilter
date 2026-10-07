@@ -217,6 +217,7 @@ pub const PROTECTED_PATHS: &[&str] = &[
     "/api/v1/thumb",
     "/api/v1/preview",
     "/api/v1/decisions",
+    "/api/v1/move",
 ];
 
 /// Bearer 校验。规格 §5.2: token 长度固定且公开, 长度不同直接拒不算泄露。
@@ -325,6 +326,9 @@ fn endpoint_routes() -> Router<ServerState> {
         .route("/api/v1/thumb", get(thumb))
         .route("/api/v1/preview", get(preview))
         .route("/api/v1/decisions", get(decisions_get).put(decisions_put))
+        // Task 7: 移动。**唯一会搬动用户文件的方法** —— 两侧(源/目标)都过白名单,
+        // 白名单与鉴权的收口方式与上面每一条完全相同(见模块头)。
+        .route("/api/v1/move", axum::routing::post(move_photos))
 }
 
 /// 完整路由: **整台路由器**外面套一层鉴权中间件, 再套一层响应规范化。
@@ -654,6 +658,83 @@ async fn decisions_put(
     Ok(Json(summary).into_response())
 }
 
+// ── Task 7: 移动端点 ─────────────────────────────────────────────────────────
+//
+// 骨架与 `PUT /decisions` 完全相同(**先全量校验、再动手**, 见 `decisions_put` 的三段注释),
+// 但有两处必须单独想清楚, 都写在这里:
+//
+//   ① **目标是"尚不存在"的路径, 所以校验的是它的父目录——也就是目标目录本身。**
+//      本仓库唯一的安全闸门 `paths::ensure_within` 必须 `canonicalize` 才能证明包含关系,
+//      因此它**只认已存在**的路径(规格 §5.2 的实测约束: 拿一个待创建路径去校验, 只会被
+//      `notFound` 挡下)。移动的 `destDir` 恰好**一定存在** —— 手机只能从 `browse` 的目录树里
+//      挑一个已有文件夹("手机端不支持新建文件夹"是刻意的, 规格 §5.1 从来没有 `Mkdir`)——
+//      所以这里校验 `destDir` 自己, 而 `destDir/文件名` 这个待创建路径由
+//      `mover::plan_dest` 只拼**一个文件名组件**(来自已校验的 src, 或
+//      `xmp::sidecar_candidates` 造出的 `{stem}.xmp`)。
+//      **不许**改成"校验目标文件本身": 它必然不存在, 那会把每一次移动都变成 404。
+//
+//   ② **两个方向都要挡, 而且目标侧更危险。** 源在共享根外 → 403(否则配对手机能搬走任意
+//      文件); **目标在共享根外也 → 403** —— 少了这一条, 拿着正 token 的手机可以把用户的
+//      文件**搬到一个任意可写的位置**(越搬越远), 而桌面端的 asset scope 只约束 WebView,
+//      约束不到服务端进程。`.` / `..` / 符号链接逃逸都由 `ensure_within` 的 canonicalize 覆盖。
+
+/// `POST /api/v1/move` 的请求体。字段名与 M3′ 手机端的 `MoveReqDto` 逐字一致。
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MoveReq {
+    paths: Vec<String>,
+    dest_dir: String,
+}
+
+/// 移动照片(含同名边车), 回**逐项结果**。
+///
+/// 与本模块其它处理器一样, 这里**不自己判 token**(鉴权是 `router()` 套在整张路由表外面的一层,
+/// 端点在判一次就会在修复一次漏洞时只改一处 —— 见模块头)。
+async fn move_photos(
+    State(st): State<ServerState>,
+    J(req): J<MoveReq>,
+) -> Result<Response, ApiError> {
+    // 空批次不是"什么都没要求", 而是"你不知道自己要什么" —— 与 `decisions_get` 缺 `paths`
+    // 同一档, 显式挡一道, 而不是安静地回一个全 0 的摘要。
+    if req.paths.is_empty() {
+        return Err(ApiError::BadRequest);
+    }
+
+    let shares = shares_of(&st)?;
+
+    // ① 目标目录: 校验**它自己**(理由见上面第 ① 段)。canonicalize 同时消掉 `..` 与符号链接,
+    //    所以后面所有 `join` 都发生在一条已被证明在共享根内的目录上。
+    let dest = paths::ensure_within(&shares, std::path::Path::new(&req.dest_dir))?;
+    if !dest.is_dir() {
+        // 存在, 但在共享根内是个**文件**: 手机的目录树与磁盘不一致了。用户动作是"刷新目录"
+        // (与 `ensure_within` 的 `NotFound` 同一档), 不是"换个请求"。
+        return Err(ApiError::NotFound);
+    }
+
+    // ② **先全量校验、再动手**(与 `decisions_put` 同一条纪律)。任何一条越界/不存在/不是文件
+    //    → 整批拒绝, 而且**一个文件都还没被搬过**。反过来(边校验边搬)只留得下一句 403,
+    //    手机无从知道前几张到底搬走了没有 —— 半成功态被静默吞掉(纪律②)。
+    let mut srcs: Vec<PathBuf> = Vec::with_capacity(req.paths.len());
+    for requested in &req.paths {
+        let canon = paths::ensure_within(&shares, std::path::Path::new(requested))?;
+        // 只搬**文件**。目录也能 `rename` 成功(整棵子树跟着走), 但那既不是"照片 + 同名边车"
+        // 的逐项语义, 也没有任何逐项结果可报 —— 重名/半成功全会被那棵子树吞掉。
+        // 手机只送 `/scan` 出来的文件, 所以这条只可能来自客户端 bug → `badRequest`(换个请求)。
+        if !canon.is_file() {
+            return Err(ApiError::BadRequest);
+        }
+        srcs.push(canon);
+    }
+
+    // ③ 真正的文件操作是同步阻塞的(`rename`), 不许占着 worker 线程。
+    //    也只有到最后一步才把"已全量校验过"的列表交给 mover —— mover 自己不做任何路径判断,
+    //    所以"边校验边搬"在这个结构里构造不出来。
+    let summary = tokio::task::spawn_blocking(move || crate::mover::move_many(&srcs, &dest))
+        .await
+        .map_err(|_| ApiError::Internal)?;
+    Ok(Json(summary).into_response())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -808,6 +889,26 @@ mod tests {
     /// `thumb`/`preview` 中任何一个改回裸 `Query<T>`, 这条单测当场红(缺 `path` 的 400 会变成
     /// 纯文本, `json_body` 在纯文本上直接 panic)。覆盖走 `PROTECTED_PATHS` 全表, 所以将来
     /// 新增一条吃 `path` 的端点会自动被覆盖。
+    /// 一条"方法正确、参数故意不完整"的探测请求。
+    ///
+    /// `PROTECTED_PATHS` 里既有 GET 端点, 也有 POST 端点(Task 7 的 `move`)。用错方法拿到的是
+    /// **路由**的 405 —— 那与"处理器有没有自己回 `{ code }`"无关, 会把这条测试变成一个测不到
+    /// 东西的假红。方法由这张小表决定, 与 `server_contract.rs` 里的 `post_only` 是同一份判断。
+    fn probe_request(base: &str, token: &str) -> Request<Body> {
+        let is_post = base == "/api/v1/move";
+        let mut b = if is_post {
+            Request::builder()
+                .method("POST")
+                .uri(base)
+                .header(header::CONTENT_TYPE, "application/json")
+        } else {
+            Request::builder().uri(base)
+        };
+        b = b.header(header::AUTHORIZATION, format!("Bearer {}", token));
+        b.body(if is_post { Body::from("{}") } else { Body::empty() })
+            .unwrap()
+    }
+
     #[tokio::test]
     async fn production_handlers_return_code_bodies_even_without_the_safety_net() {
         let token = "t".repeat(64);
@@ -823,17 +924,13 @@ mod tests {
 
         let mut path_endpoints = 0usize;
         for base in PROTECTED_PATHS {
-            let req = Request::builder()
-                .uri(*base)
-                .header(header::AUTHORIZATION, format!("Bearer {}", token))
-                .body(Body::empty())
-                .unwrap();
+            let req = probe_request(base, &token);
             let res = app.clone().oneshot(req).await.unwrap();
 
             if res.status() == StatusCode::BAD_REQUEST {
                 // 缺**必填参数**的端点(`browse`/`scan`/`thumb`/`preview` 缺 `path`,
-                // Task 6 的 `decisions` 缺 `paths`)。**这台路由器上没有兜底层**, 所以能给出
-                // JSON 的只有处理器自己用的 `Q<T>`。
+                // Task 6 的 `decisions` 缺 `paths`, Task 7 的 `move` 缺 `paths`/`destDir`)。
+                // **这台路由器上没有兜底层**, 所以能给出 JSON 的只有处理器自己用的 `Q<T>`/`J<T>`。
                 path_endpoints += 1;
                 assert_eq!(
                     res.headers().get(header::CONTENT_TYPE).and_then(|v| v.to_str().ok()),
