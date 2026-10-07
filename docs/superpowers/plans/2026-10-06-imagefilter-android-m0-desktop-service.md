@@ -1360,7 +1360,11 @@ impl config::ServerConfig {
 }
 ```
 
-把 `async fn ping` 改为 `pub(crate) async fn ping`（`routes.rs` 要引用它）。`server::router()` 暂时保留（只含 ping），Task 8 再统一。
+> **⚠️ 已被 Task 5 的修复轮推翻，读到这里请注意**：`server::router()`（只含 ping、**不带鉴权层**的那个公开入口）已被**删除**。原因是它构成一个后门——任何往它上面挂的端点都会**完全不带 token 地应答**，而"没人调用的第二个入口"没有任何测试能抓住（实测：把它加回来并挂上 `/shares`，无 `Authorization` 头也返回 200，且两套测试全绿）。
+>
+> **全仓库唯一的入口是 `routes::router(state)`**（鉴权层包住整张路由表；`endpoint_routes()` 是私有辅助）。后续任务（尤其 Task 8 接线）**必须**用它，**不许再长出第二个 `Router`**。下面 Task 1 的代码块是历史记录，其中的 `server::router()` 形态**不要照抄**。
+
+把 `async fn ping` 的可见性**保持私有**即可（`routes` 是 `server` 的子模块，`super::ping` 对私有项同样可达——实测无需放宽）。**`server::router()` 已在 Task 5 修复轮删除**，唯一入口是 `routes::router(state)`。
 
 - [ ] **Step 5: 跑测试**
 
