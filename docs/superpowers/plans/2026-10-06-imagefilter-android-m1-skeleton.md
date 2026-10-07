@@ -726,7 +726,11 @@ class ApiClientTest {
     private fun client() = ApiClient(
         baseUrl = server.url("/").toString().trimEnd('/'),
         token = "t".repeat(64),
-        client = OkHttpClient(),
+        // ⚠️ 不要用裸 `OkHttpClient()`: 那会丢掉 Authorization 拦截器, 于是下面那条
+        // "sends_bearer_token_on_protected_endpoints" 永远不可能通过(计划原稿的缺陷,
+        // M1′ Task 2 实测发现)。两种正确写法: (a) 让 ApiClient 用 token 自己构造带拦截器的
+        // 客户端(生产路径), 把 `client` 只当测试注入点; (b) 在这里注入带拦截器的实例。
+        client = buildHttpClient("t".repeat(64)),
     )
 
     @Test

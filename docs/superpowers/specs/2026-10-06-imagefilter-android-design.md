@@ -161,13 +161,13 @@
 
 | 端点 | 复用/新增 | 说明 |
 |---|---|---|
-| `GET /api/v1/ping` | 新增 | `{ name, version, platform, requiresToken }` —— 配对与"测试连接" |
+| `GET /api/v1/ping` | 新增 | 服务身份与是否需要 token。**实测修正（M1′ Task 2 对照 Rust 源码）：没有 `platform` 字段**——以服务端实现为准（原稿写错了） |
 | `GET /api/v1/shares` | 新增 | 桌面端已配置的**共享根列表**（手机只能在这里面活动） |
 | `GET /api/v1/drives` | `detect_drives` | 设备/盘符（可移动优先） |
 | `GET /api/v1/browse?path=` | `browse_directory` | **单层**目录（与桌面端同一语义，不做递归） |
 | `GET /api/v1/scan?path=` | `scan_directory` | 照片列表（含 EXIF）；服务端按 `SUPPORTED_EXTENSIONS` 过滤 |
 | `GET /api/v1/thumb?path=&size=300` | `thumb_single` + `thumbnails_v2` | **返回 JPEG 字节**。`size` 是**闭集 `{150, 300, 600}`**（向下吸附），`size < 150` → `badRequest` |
-| `GET /api/v1/preview?path=&max=2048&full=0` | `get_preview_image`（`full=1` 时走 `get_full_image`）+ **新增降采样** | **返回 JPEG 字节**，长边 ≤ `max`；`max` 必须落在 **[64, 5000]**，越界 → `badRequest`（**不再静默钳制**），见 §5.2 画质契约 |
+| `GET /api/v1/preview?path=&max=2048&full=true` | `get_preview_image`（`full=true` 时走 `get_full_image`）+ **新增降采样** | **返回 JPEG 字节**，长边 ≤ `max`；`max` 必须落在 **[64, 5000]**，越界 → `badRequest`（**不再静默钳制**）。**⚠️ `full` 只收 `true`/`false`**：`?full=1` / `?full=0` 会返回 **400 badRequest**（实测：axum 的 `Query` 走 `serde_urlencoded`，其 bool 用 `str::parse::<bool>()`，不认 0/1） |
 | `GET /api/v1/decisions?paths=…` | `read_decisions` | 读边车（星级/色标） |
 | `PUT /api/v1/decisions` | `write_decisions` | 写边车；**写边车的永远是桌面端** |
 | `POST /api/v1/move` | **新增**（`mover.rs`） | 移动照片 + 同名边车；返回逐项结果 |
@@ -271,7 +271,11 @@
 
 > **接口细节（Task 6 评审提出，手机端必须知道，否则一定写错）**：`PUT /api/v1/decisions` **成功时**返回 `200 + WriteSummary`，其中**逐项失败的码用的是 XMP 的码集**（`XMP_ERR_CODES`：`readOnly` / `writeProtect` / `permission` / `encoding` / `pathTooLong` / `notXmp` / `tooLarge` / `busy` / `diskFull` / `unknown`），**不是** §5.3 那个 HTTP 的 `{code}` 闭集。
 >
-> **手机端必须准备两张不同的本地化表**：HTTP 错误体的 `code` 查 §5.3 的表；`WriteSummary.failures[].code` 查 XMP 表。**绝不要混成一张**——两张表的交集只有 `notXmp` / `tooLarge` / `busy` / `diskFull` 四个，`readOnly` / `permission` / `encoding` / `pathTooLong` 在 HTTP 表里根本不存在。
+> **手机端必须准备两张不同的本地化表**：HTTP 错误体的 `code` 查 §5.3 的表；`WriteSummary.failures[].code` 查 XMP 表。**绝不要混成一张**。
+>
+> **实测修正（M1′ Task 2 对照 Rust 源码）**：
+> - 两张表的交集是 **5 个**（`notXmp` / `unsupportedForm` / `tooLarge` / `busy` / `diskFull`），不是原稿写的 4 个——`unsupportedForm` 在 `xmp.rs` 与 `server/mod.rs` **两边都存在**。所以"交集小"不能作为"混表也无所谓"的理由。
+> - **`POST /api/v1/move` 的逐项结果里没有 `code` 字段、也不含 XMP 码**：它的 `status` 是 mover.rs 的**四值闭集**（`moved` / `halfSuccess` / `conflict` / `failed`），`detail` 是本地化文案（**绝不可解析**）。XMP 码集只出现在 **decisions 的 `WriteSummary.failures[].code`** 上。手机端需要**第三张小表**给 `MoveStatus` 本地化。
 
 ---
 
