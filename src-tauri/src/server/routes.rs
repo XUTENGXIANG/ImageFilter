@@ -15,6 +15,7 @@
 //!      连只读元数据的 `browse`/`scan` 也一样: 白名单是"能不能看"的红线, 不是"能不能改"。
 
 use super::{auth, media, paths, ApiError, ServerState};
+use crate::xmp::{DecisionWrite, WriteSummary};
 use axum::body::Body;
 use axum::extract::{FromRequest, FromRequestParts, Query, Request, State};
 use axum::http::request::Parts;
@@ -23,8 +24,13 @@ use axum::middleware::{self, map_response, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
-use serde::{de::DeserializeOwned, Deserialize};
+use serde::de::{DeserializeOwned, IgnoredAny, MapAccess, Visitor};
+use serde::Deserialize;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
+use std::sync::OnceLock;
+use tokio::sync::{Mutex, MutexGuard};
 
 // ── 提取器失败的收口: 一律压成闭集错误码 ─────────────────────────────────────
 //
@@ -210,6 +216,7 @@ pub const PROTECTED_PATHS: &[&str] = &[
     "/api/v1/scan",
     "/api/v1/thumb",
     "/api/v1/preview",
+    "/api/v1/decisions",
 ];
 
 /// Bearer 校验。规格 §5.2: token 长度固定且公开, 长度不同直接拒不算泄露。
@@ -317,6 +324,7 @@ fn endpoint_routes() -> Router<ServerState> {
         .route("/api/v1/scan", get(scan))
         .route("/api/v1/thumb", get(thumb))
         .route("/api/v1/preview", get(preview))
+        .route("/api/v1/decisions", get(decisions_get).put(decisions_put))
 }
 
 /// 完整路由: **整台路由器**外面套一层鉴权中间件, 再套一层响应规范化。
@@ -458,6 +466,192 @@ async fn preview(
     let p = resolve_within_shares(&st, &q.path)?;
     let bytes = media::preview_bytes(&p.to_string_lossy(), q.max, q.full).await?;
     Ok(jpeg(bytes))
+}
+
+// ── 决策端点: 星级/色标(边车) ────────────────────────────────────────────────
+//
+// 三条边界, 都**不是**本层能自己规定的:
+//   · **写边车的永远是桌面端**: 这里只把请求转交给 `crate::xmp::write_decisions`,
+//     一个字节的 XMP 都不在本层拼 —— 于是"changed=false 不写"、"绝不静默覆盖"、
+//     1MB 上限、`XmpError` 的闭集码、`WriteSummary` 的形状全部**原样继承**,
+//     手机看到的码与桌面端自己的错误码是同一套。
+//   · **批次的半成功态必须显式**: `write_decisions` 的返回是逐项的
+//     (`written`/`skipped`/`failed` + `failures[].path`), 所以一个批次里"三张写成了、
+//     一张的边车不是 XMP"会如实报出来, 而不是一句 ok/fail。**不许**在本层把它压成
+//     一个布尔值, 也不许自己造一个 Summary 形状。
+//   · **白名单先于一切**: 越界路径必须在**写出第一个边车之前**变成 403(见 `decisions_put`)。
+
+/// 写决策时"同一路径排队"用的条带数。
+///
+/// 为什么是固定条带而不是"每条路径一个锁": 后者要为每条被写过的路径留一个锁对象、
+/// 活到进程结束(内存随写过的路径数无界增长)。64 条固定条带最坏只是**多串行**
+/// (两条不相干的路径撞进同一条带), 绝不会漏串行 —— 失败方向是"多等一会儿",
+/// 而不是"丢更新"。
+const WRITE_STRIPES: usize = 64;
+
+/// 按路径排队的锁池(懒初始化, 进程内唯一)。
+///
+/// 为什么需要这一层(以及为什么它**不是**重复实现 `xmp.rs` 的写规则):
+/// `xmp.rs` 里已有一个进程内闸门 `WRITING`(见 `write_one`), 它按**边车目标**加锁,
+/// 而且**失败方向是拒绝**(第二个并发请求拿到 `XmpError::Busy`) —— 它挡住的是
+/// "同一目标并发"。规格 §5.2 对**服务端**的要求是另一句话: "同一路径的写请求在服务端
+/// **排队**"。两者的差别是可见的: 一个批次里只要有一项撞上别人的写, 拒绝式的做法会把
+/// 整批(含没冲突的那些项)一起丢掉, 而契约要求逐项结果。
+///
+/// 已知的残留: 这一层按**照片路径**排队, 而两张不同的照片可能共用一个边车
+/// (`a.jpg` 与 `a.arw` 都写 `a.xmp`) —— 那种情况仍然只由 `xmp.rs` 的**目标级**闸门兜住
+/// (它会给出逐项的 `busy`)。两层互补, 谁都不是多余的。
+static WRITE_QUEUES: OnceLock<Vec<Mutex<()>>> = OnceLock::new();
+
+fn write_queues() -> &'static [Mutex<()>] {
+    WRITE_QUEUES
+        .get_or_init(|| (0..WRITE_STRIPES).map(|_| Mutex::new(())).collect())
+        .as_slice()
+}
+
+/// 路径 → 条带。`DefaultHasher` 的种子是固定的, 所以同一路径在同一进程里恒同一条带。
+fn stripe_of(path: &str) -> usize {
+    let mut h = DefaultHasher::new();
+    path.hash(&mut h);
+    (h.finish() as usize) % WRITE_STRIPES
+}
+
+/// 按路径取锁, 返回的守卫**拖住锁直到被 Drop**。
+///
+/// 三个刻意的细节:
+///   · **先排序再取**: 两批路径若各自有序, 就不可能出现"A 拿着 1 等 2、B 拿着 2 等 1";
+///   · **去重**: `[a, a]` 这类批次若取两次同一条带就是自锁(自己等自己, 永久挂住);
+///   · **RAII 而不是"写完手工释放"**: 手机端中途断开会让 axum **丢掉**处理器的 future,
+///     手工写在末尾的 `release` 那一行就永远不会执行 —— 那条路径会被**永久**锁死
+///     (后续请求全部排队等待)。守卫随 future 一起 Drop 才是取消安全的。
+async fn lock_write_stripes(paths: &[String]) -> Vec<MutexGuard<'static, ()>> {
+    let mut stripes: Vec<usize> = paths.iter().map(|p| stripe_of(p)).collect();
+    stripes.sort_unstable();
+    stripes.dedup();
+
+    let mut guards = Vec::with_capacity(stripes.len());
+    for i in stripes {
+        guards.push(write_queues()[i].lock().await);
+    }
+    guards
+}
+
+/// `GET /api/v1/decisions?paths=a&paths=b` 的查询串。
+///
+/// **为什么手写 `Deserialize` 而不用 `#[derive]`**: axum 的 `Query` 底下是
+/// `serde_urlencoded`, 它**不支持"同名键重复 → Vec"** —— 实测读它的实现
+/// (`serde_urlencoded 0.7.1`: `Part::deserialize_seq` 被 `forward_to_deserialize_any!`
+/// 转发到 `deserialize_any`, 即拿单个值走 `visit_str`), 于是 `#[derive]` 出来的
+/// `paths: Vec<String>` 连 `?paths=a` 这一个值都读不进来("invalid type: string,
+/// expected a sequence") → 规格 §5.1 写的 `?paths=a&paths=b` 会整体变成 400。
+/// 手写的 `visit_map` 逐对累积同名键, 才是这个线上格式的真身。
+///
+/// 未知参数**忽略**而不是报错(前向兼容: 手机端将来加 `?since=…` 之类不该被 400 挡住),
+/// 但值必须消费掉 —— 不消费就会让 `MapAccess` 的游标错位。
+struct DecisionsQ {
+    paths: Vec<String>,
+}
+
+impl<'de> Deserialize<'de> for DecisionsQ {
+    fn deserialize<D>(d: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct V;
+
+        impl<'de> Visitor<'de> for V {
+            type Value = DecisionsQ;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("查询串 paths=…(可重复)")
+            }
+
+            fn visit_map<A>(self, mut map: A) -> Result<DecisionsQ, A::Error>
+            where
+                A: MapAccess<'de>,
+            {
+                let mut paths: Vec<String> = Vec::new();
+                while let Some(key) = map.next_key::<String>()? {
+                    if key == "paths" {
+                        paths.push(map.next_value::<String>()?);
+                    } else {
+                        map.next_value::<IgnoredAny>()?;
+                    }
+                }
+                Ok(DecisionsQ { paths })
+            }
+        }
+
+        d.deserialize_map(V)
+    }
+}
+
+/// 读边车(星级/色标)。与桌面端 `read_decisions` **同一个实现**, 本层只做白名单 + 序列化。
+///
+/// 不加写锁(与 `decisions_put` 不对称是刻意的): 边车的替换是"同目录临时文件 + rename",
+/// 读到的要么是旧文本、要么是新文本, 不可能读到半截。而"读到的还是旧值"恰好就是
+/// 参数未生效时的**真实状态**(§5.2 的第三条纪律: 未同步 ≠ 已同步), 不该被锁藏起来。
+async fn decisions_get(
+    State(st): State<ServerState>,
+    Q(q): Q<DecisionsQ>,
+) -> Result<Response, ApiError> {
+    // 缺参数 = 请求本身不合法(与 `browse`/`scan`/`thumb`/`preview` 缺 `path` 同一档:
+    // 它们都由 `Q<T>` 直接给 400 badRequest)。空数组不是"什么都没要求", 而是"你不知道
+    // 自己要什么" —— 所以这里显式挡一道, 而不是安静地回一个空列表。
+    if q.paths.is_empty() {
+        return Err(ApiError::BadRequest);
+    }
+
+    let shares = shares_of(&st)?;
+    let mut checked: Vec<String> = Vec::with_capacity(q.paths.len());
+    for requested in &q.paths {
+        // 与写端点同一条规矩: 只用 `ensure_within` 返回的**规范化路径**去调既有函数。
+        // 任何一条越界 → 整条请求 403: 读也不该"读一半"。
+        checked.push(
+            paths::ensure_within(&shares, std::path::Path::new(requested))?
+                .to_string_lossy()
+                .to_string(),
+        );
+    }
+
+    // `read_decisions` 唯一会失败的地方是 `spawn_blocking` 的 JoinError(任务 panic)。
+    // 单项"读不出来"(权限/超限/不是 XMP/没有边车)在 `xmp.rs` 里本来就降级成
+    // `rating: null`(前端保留本地值), 不是错误 —— 这条语义同样原样继承。
+    let out = crate::xmp::read_decisions(checked)
+        .await
+        .map_err(|_| ApiError::Internal)?;
+    Ok(Json(out).into_response())
+}
+
+/// 写边车。请求体是 `DecisionWrite` 的数组(与桌面端同形, 见规格 §5.2)。
+async fn decisions_put(
+    State(st): State<ServerState>,
+    J(items): J<Vec<DecisionWrite>>,
+) -> Result<Response, ApiError> {
+    let shares = shares_of(&st)?;
+
+    // ① **先全量校验、再动手**。绝不允许"写了一半才发现有越界路径": 那种半成功状态只剩
+    //    一句 403 可以报, 手机无从知道前几张到底写成了没有(纪律②被静默吞掉)。所以越界是
+    //    **整批拒绝, 且一个字节都不写**。
+    let mut checked: Vec<DecisionWrite> = Vec::with_capacity(items.len());
+    for item in items {
+        let canon = paths::ensure_within(&shares, std::path::Path::new(&item.path))?;
+        checked.push(DecisionWrite {
+            path: canon.to_string_lossy().to_string(),
+            ..item
+        });
+    }
+
+    // ② 按路径排队(见 `WRITE_QUEUES`), 守卫活到本函数返回为止。
+    let paths: Vec<String> = checked.iter().map(|it| it.path.clone()).collect();
+    let _queued = lock_write_stripes(&paths).await;
+
+    // ③ 一个字节的 XMP 都不在这里拼: 整批交给既有的 `write_decisions`。
+    //    `XmpError` → 逐项 `failures[].code` 的映射也由它自己的 `code()` 给出。
+    let summary: WriteSummary = crate::xmp::write_decisions(checked)
+        .await
+        .map_err(|_| ApiError::Internal)?;
+    Ok(Json(summary).into_response())
 }
 
 #[cfg(test)]
@@ -637,8 +831,9 @@ mod tests {
             let res = app.clone().oneshot(req).await.unwrap();
 
             if res.status() == StatusCode::BAD_REQUEST {
-                // 缺 `path` 的端点。**这台路由器上没有兜底层**, 所以能给出 JSON 的只有
-                // 处理器自己用的 `Q<T>`。
+                // 缺**必填参数**的端点(`browse`/`scan`/`thumb`/`preview` 缺 `path`,
+                // Task 6 的 `decisions` 缺 `paths`)。**这台路由器上没有兜底层**, 所以能给出
+                // JSON 的只有处理器自己用的 `Q<T>`。
                 path_endpoints += 1;
                 assert_eq!(
                     res.headers().get(header::CONTENT_TYPE).and_then(|v| v.to_str().ok()),
@@ -656,7 +851,7 @@ mod tests {
                 assert_eq!(
                     res.status(),
                     StatusCode::OK,
-                    "{} 缺 path 只许 400(吃 path 的端点)或 200(不吃 path 的端点)",
+                    "{} 缺必填参数只许 400(吃参数的端点)或 200(不吃参数的端点)",
                     base
                 );
             }
@@ -666,5 +861,244 @@ mod tests {
             "至少要有 browse/scan/thumb/preview 四条吃 path 的端点, 实际 {} 条 —— 这条测试的覆盖是空的",
             path_endpoints
         );
+    }
+
+    // ── Task 6: 决策端点的**进程内**保证 ─────────────────────────────────────
+    //
+    // 对外契约(白名单/401/400/往返/逐项失败)在 `tests/server_contract.rs` 里打真 HTTP 栈验;
+    // 这里放两件只有在本模块内部才验得了的事: 写端点的**请求体提取器纪律**(靶子必须在一台
+    // 没有兜底层的路由器上, 集成层观测不到), 以及**按路径排队**(它要拿到私有的条带锁)。
+
+    /// 一个**真建出来**的共享根 + 里面一张**真存在**的照片。
+    ///
+    /// 两句断言不是装饰: `ensure_within` 只能校验已存在的路径(不存在 → 直接 `NotFound`,
+    /// 于是"越界被拒"会因为错误的原因成立), 而 `write_one` 的 `validate_photo_path` 还要求
+    /// `is_file()` —— 夹具缺了这一张, 写请求会安静地变成一条逐项 `unknown` 失败。
+    fn decision_root(tag: &str) -> std::path::PathBuf {
+        let root = std::env::temp_dir().join(format!("ifdec_{}_{}", tag, std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let photo = root.join("a.jpg");
+        std::fs::write(&photo, b"jpegbytes").unwrap();
+
+        assert!(photo.is_file(), "夹具前提: 决策端点要的照片必须真的存在");
+        assert!(
+            root.canonicalize().is_ok(),
+            "夹具前提: 共享根必须可 canonicalize, 否则 ensure_within 会跳过它"
+        );
+        root
+    }
+
+    /// 打真 `router()`(生产入口)的 app + token + 共享根。
+    fn decision_app(tag: &str) -> (Router, String, std::path::PathBuf) {
+        let root = decision_root(tag);
+        let token = "t".repeat(64);
+        let cfg = crate::server::ServerConfig {
+            enabled: true,
+            port: 0,
+            token: token.clone(),
+            shares: vec![root.clone()],
+        };
+        (router(cfg.into_state()), token, root)
+    }
+
+    /// `PUT` 的请求构造器(与既有 `post_body` 同形, 只多一个 Authorization)。
+    fn put_body(
+        uri: &str,
+        token: Option<&str>,
+        content_type: Option<&str>,
+        body: &str,
+    ) -> Request<Body> {
+        let b = Request::builder().method("PUT").uri(uri);
+        let b = match token {
+            Some(t) => b.header(header::AUTHORIZATION, format!("Bearer {}", t)),
+            None => b,
+        };
+        let b = match content_type {
+            Some(ct) => b.header(header::CONTENT_TYPE, ct),
+            None => b,
+        };
+        b.body(Body::from(body.to_string())).unwrap()
+    }
+
+    /// 一个"把 a.jpg 打成 n 星"的合法请求体。
+    fn rating_body(photo: &std::path::Path, rating: u8) -> String {
+        serde_json::to_string(&serde_json::json!([{
+            "path": photo.to_string_lossy(),
+            "rating": rating,
+            "label": null,
+            "clearLabel": false,
+        }]))
+        .unwrap()
+    }
+
+    /// **写端点的提取器靶子: `PUT /api/v1/decisions` 的请求体拒绝也必须是 `{ code }`。**
+    ///
+    /// 照本能写 axum 的 `Json<Vec<DecisionWrite>>` 会在两条路上漏出契约:
+    ///   · 坏 JSON → 400 + **纯文本**;
+    ///   · 缺 `content-type: application/json` → **415** + 纯文本 —— 而 415 在手机端
+    ///     M1′ 的 `ApiError.fromHttp` 兜底表里**没有**对应项, 于是"内容类型不对"会被显示成
+    ///     "服务端内部错误, 请报 bug"(与那个 405 的坑同源)。
+    /// `J<T>` 把两种拒绝都压成 400 + `{"code":"badRequest"}` —— 手机端一行都不用特判。
+    ///
+    /// 为什么钉在**没有兜底层**的同一张生产路由表上: 生产 `router()` 最外层的
+    /// `normalize_residual_errors` 会按状态码把上面两种纯文本也改写成形状相同的
+    /// `{code:badRequest}`, 所以"处理器到底用了哪个提取器"在集成层**观测不到**。
+    #[tokio::test]
+    async fn decisions_body_rejections_return_code_bodies_without_the_safety_net() {
+        let root = decision_root("bodyreject");
+        let token = "t".repeat(64);
+        let app = routes_without_the_safety_net(
+            crate::server::ServerConfig {
+                enabled: true,
+                port: 0,
+                token: token.clone(),
+                shares: vec![root.clone()],
+            }
+            .into_state(),
+        );
+        let photo = root.join("a.jpg");
+
+        // 正对照: 合法请求体必须真的走到处理器并写盘。没有这一条, "把所有请求都判成
+        // badRequest" 也能让下面的断言全绿。
+        let res = app
+            .clone()
+            .oneshot(put_body(
+                "/api/v1/decisions",
+                Some(&token),
+                Some("application/json"),
+                &rating_body(&photo, 4),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(json_body(res).await["written"], 1, "合法请求体必须真的写出边车");
+        assert!(root.join("a.xmp").is_file(), "边车必须落在共享根里");
+
+        for (label, ct, raw) in [
+            ("语法坏 JSON", Some("application/json"), r#"[{"path":"#),
+            ("项里缺必填字段 path", Some("application/json"), r#"[{"rating":4}]"#),
+            ("请求体不是数组", Some("application/json"), r#"{"path":"x"}"#),
+            ("没有 content-type: application/json", None, r#"[{"path":"x"}]"#),
+        ] {
+            let res = app
+                .clone()
+                .oneshot(put_body("/api/v1/decisions", Some(&token), ct, raw))
+                .await
+                .unwrap();
+            assert_eq!(
+                res.status(),
+                StatusCode::BAD_REQUEST,
+                "{} 必须是 400(裸 `Json<T>` 在缺 content-type 时给的是 415)",
+                label
+            );
+            assert_eq!(
+                res.headers().get(header::CONTENT_TYPE).and_then(|v| v.to_str().ok()),
+                Some("application/json"),
+                "{} 的拒绝必须是 JSON —— 没有兜底层时只有 `J<T>` 做得到",
+                label
+            );
+            assert_eq!(
+                json_body(res).await,
+                serde_json::json!({ "code": "badRequest" }),
+                "{} 的响应体必须恰好是 {{ code: badRequest }}",
+                label
+            );
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// **同一路径的第二个写必须排队等待, 而不是与第一个交错(丢更新的窗口)。**
+    ///
+    /// 为什么必须从 `router()` 打真请求: "排队"是**端点**的性质, 不是锁函数的性质 ——
+    /// 删掉 `decisions_put` 里那行 `lock_write_stripes(...)`, 只测锁函数的单测照样全绿。
+    ///
+    /// 判据是"**不完成**"而不是"不写": 锁被占着时, 这个请求无论在什么机器上都不可能完成,
+    /// 所以 `assert!(timeout.is_err())` 不会因为机器慢而假红; 反过来, 未排队时它会在真实
+    /// 写盘耗时内完成 —— 那个耗时是**先量出来的**(正对照), 等待窗口取它的 10 倍 + 100ms,
+    /// 于是变异检测不依赖任何"猜一个足够大的数字"。
+    ///
+    /// 顺带覆盖取消安全: 中间那次请求是被超时**丢掉**的(真实场景就是手机断开), 之后
+    /// 同一个请求必须还能正常完成 —— 那正好说明守卫是随 future 一起 Drop 的。
+    ///
+    /// 三处都套超时(取锁、被挡住的写、解锁后的写), 因为"守卫被留在锁池里"这种缺陷的
+    /// 症状是**永远等下去**: 一个挂住 CI 直到全局超时的测试不是好测试 —— 它应该是一次
+    /// 明确的失败。真实场景里等价于"手机断开 → 那条路径再也写不进去"。
+    #[tokio::test]
+    async fn decisions_writes_to_the_same_path_queue_instead_of_interleaving() {
+        let (app, token, root) = decision_app("queue");
+        let photo = root.join("a.jpg");
+        let body = rating_body(&photo, 4);
+
+        // 正对照(同时量一次真实写盘耗时): 无人持锁时, 这个请求必须真的写成。
+        let t0 = std::time::Instant::now();
+        let res = app
+            .clone()
+            .oneshot(put_body(
+                "/api/v1/decisions",
+                Some(&token),
+                Some("application/json"),
+                &body,
+            ))
+            .await
+            .unwrap();
+        let wrote = t0.elapsed();
+        let wait = wrote * 10 + std::time::Duration::from_millis(100);
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(json_body(res).await["written"], 1, "正对照必须真的写成功");
+
+        // 把这张照片的条带拿在手里。处理器用的是 `ensure_within` 返回的**规范化路径**
+        // (也是它交给 `write_decisions` 的那个值), 所以这里也先 canonicalize —— 两边算出来
+        // 的必须是同一条带, 否则下面那句会变成"没锁也过"的假绿。
+        // 这一次取锁本身就是一条断言: 刚刚那次请求**已经结束**, 条带必须是空的
+        // (守卫随 future 结束而 Drop, 而不是被留在锁池里)。
+        let canon = photo.canonicalize().unwrap().to_string_lossy().to_string();
+        let held = tokio::time::timeout(wait, lock_write_stripes(&[canon]))
+            .await
+            .expect("上一次请求结束后条带必须已经空出来 —— 取不到就说明守卫没有被释放");
+
+        let blocked = tokio::time::timeout(
+            wait,
+            app.clone().oneshot(put_body(
+                "/api/v1/decisions",
+                Some(&token),
+                Some("application/json"),
+                &body,
+            )),
+        )
+        .await;
+        assert!(
+            blocked.is_err(),
+            "同一路径的第二个写必须排在第一个后面 —— 它在锁被占着时就完成了(等待窗口 {:?}), \
+             那说明处理器根本没排队, 两个读-改-写会交错",
+            wait
+        );
+        drop(held);
+
+        // 锁一放开, 同一个请求必须照常完成。这里也套超时: 若某次请求的守卫被**留在**
+        // 锁池里(手工 `release` 的写法在被取消时就是这样), 这条路径会被永久锁死 ——
+        // 那应该是一次**失败**而不是一次挂住整个测试进程。
+        let done = tokio::time::timeout(
+            wait,
+            app.oneshot(put_body(
+                "/api/v1/decisions",
+                Some(&token),
+                Some("application/json"),
+                &body,
+            )),
+        )
+        .await
+        .expect("锁必须在持有它的那次请求结束后被释放(否则这条路径再也写不进去)");
+        let res = done.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        // 第二次是同一个星级 → `apply_decision` 报 changed=false → skipped(不白摸一次卡)。
+        assert_eq!(
+            json_body(res).await["skipped"],
+            1,
+            "排队结束后必须还能正常写(且幂等的那次报 skipped)"
+        );
+
+        std::fs::remove_dir_all(&root).ok();
     }
 }

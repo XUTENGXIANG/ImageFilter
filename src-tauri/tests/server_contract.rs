@@ -1735,3 +1735,690 @@ async fn successful_responses_pass_through_byte_for_byte() {
     drop(cache);
     std::fs::remove_dir_all(&root).ok();
 }
+
+// ════════════════════════════════════════════════════════════════════════════
+// Task 6: 决策端点(读/写边车)
+//
+// 这一段每一句都从**真 HTTP 请求**出发, 不看任何内部函数 —— 要证明的是"端点真的调了
+// 白名单 / 真的调了既有的 `write_decisions`", 而不是"某个函数判得对"。
+//
+// 三条纪律(规格 §5.2)在这里的落点:
+//   ① 绝不静默覆盖 —— 失败项的边车逐字节原样(批次那条);
+//   ② 半成功态显式化 —— 批次回 `WriteSummary` 的逐项计数与 `failures[].path`;
+//   ③ 未同步 ≠ 已同步 —— 没有边车/读不出来如实回 `null`, 不许拿 0/"" 冒充。
+// ════════════════════════════════════════════════════════════════════════════
+
+/// 一条写请求项(与桌面端 `DecisionWrite` 同形)。**四个字段都显式给出**: `null` 是
+/// "不动这个属性", 与"缺这个键"是两件事。
+fn decision_item(
+    path: &std::path::Path,
+    rating: Option<u8>,
+    label: Option<&str>,
+    clear_label: bool,
+) -> serde_json::Value {
+    serde_json::json!({
+        "path": path.to_string_lossy(),
+        "rating": rating,
+        "label": label,
+        "clearLabel": clear_label,
+    })
+}
+
+/// 单项写请求体(数组)。
+fn decision_body(
+    path: &std::path::Path,
+    rating: Option<u8>,
+    label: Option<&str>,
+    clear_label: bool,
+) -> serde_json::Value {
+    serde_json::Value::Array(vec![decision_item(path, rating, label, clear_label)])
+}
+
+/// 任意 `PUT`(坏请求体也走它)。`content_type = None` = 一个 `content-type` 都不发。
+fn put_raw(
+    uri: &str,
+    token: Option<&str>,
+    content_type: Option<&str>,
+    body: &[u8],
+) -> Request<Body> {
+    let mut b = Request::builder().method("PUT").uri(uri);
+    if let Some(t) = token {
+        b = b.header("Authorization", format!("Bearer {}", t));
+    }
+    if let Some(ct) = content_type {
+        b = b.header("content-type", ct);
+    }
+    b.body(Body::from(body.to_vec())).unwrap()
+}
+
+/// 打一次写请求, 回 (状态码, JSON 体)。响应体不是 JSON 时 `json_of` 直接 panic。
+async fn put_decisions(
+    app: axum::Router,
+    token: Option<&str>,
+    body: &serde_json::Value,
+) -> (StatusCode, serde_json::Value) {
+    let res = app
+        .oneshot(put_raw(
+            "/api/v1/decisions",
+            token,
+            Some("application/json"),
+            &serde_json::to_vec(body).unwrap(),
+        ))
+        .await
+        .unwrap();
+    let status = res.status();
+    (status, json_of(res).await)
+}
+
+/// 打一次读请求。**故意用重复键** `?paths=…&paths=…` 构造 URI —— 那是规格 §5.1 写的线上
+/// 格式, 也是 `DecisionsQ` 手写 `visit_map` 的唯一理由。空切片 → 连 `?paths=` 都不发
+/// (用来测"缺必填参数")。
+async fn get_decisions(
+    app: axum::Router,
+    token: Option<&str>,
+    paths: &[&std::path::Path],
+) -> (StatusCode, serde_json::Value) {
+    let q: Vec<String> = paths
+        .iter()
+        .map(|p| format!("paths={}", urlencode(&p.to_string_lossy())))
+        .collect();
+    let uri = if q.is_empty() {
+        "/api/v1/decisions".to_string()
+    } else {
+        format!("/api/v1/decisions?{}", q.join("&"))
+    };
+    let res = app.oneshot(get_req(&uri, token)).await.unwrap();
+    let status = res.status();
+    (status, json_of(res).await)
+}
+
+/// 服务端回传的是 `ensure_within` 规范化后的路径(Windows 上带 `\\?\` 逐字前缀),
+/// 所以比较前两边都要 canonicalize —— 直接比字符串会得到一个假的"路径不一致"。
+fn canon_path(p: &std::path::Path) -> String {
+    p.canonicalize().unwrap().to_string_lossy().to_string()
+}
+
+/// **主线往返: 写边车 → 读回来, 全程只走 HTTP。**
+///
+/// 三层断言缺一不可:
+///   ① 响应是既有 `WriteSummary` 的形状(不是本层自己造的 ok/fail);
+///   ② **边车真的躺在共享根里**, 且内容是桌面端的格式(`xmp:Rating="4"` / `xmp:Label="Red"`
+///      —— 与桌面端同一个 `xmp.rs` 写出来的, 不可能不一致);
+///   ③ 读端点回同一个值, 字段名是 `DecisionRead` 的 camelCase 形状。
+#[tokio::test]
+async fn decisions_round_trip_writes_the_sidecar_and_reads_it_back() {
+    let (app, token, root) = route_app("dec");
+    let photo = root.join("a.jpg");
+    assert!(photo.is_file(), "夹具前提: route_root 建出的 a.jpg 必须真的存在");
+
+    // ── 写: 4 星 + 红标 ──
+    let (status, s) = put_decisions(
+        app.clone(),
+        Some(&token),
+        &decision_body(&photo, Some(4), Some("red"), false),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(s["written"], 1, "必须报告 written=1: {}", s);
+    assert_eq!(s["failed"], 0, "{}", s);
+    assert_eq!(s["skipped"], 0, "{}", s);
+    assert_eq!(s["degraded"], false, "{}", s);
+    assert_eq!(s["failures"].as_array().map(|a| a.len()), Some(0), "{}", s);
+
+    // ── 边车必须真的落在共享根里, 且是桌面端的写法 ──
+    let sidecar = root.join("a.xmp");
+    assert!(sidecar.is_file(), "边车必须由服务端写出(而不是只改了内存里的值)");
+    let text = std::fs::read_to_string(&sidecar).unwrap();
+    assert!(text.contains("xmp:Rating=\"4\""), "实际内容: {}", text);
+    assert!(
+        text.contains("xmp:Label=\"Red\""),
+        "标签必须按 Adobe 认的规范写法落盘(小写 red → Red): {}",
+        text
+    );
+
+    // ── 读回来: 同一个值, 同一个字段名 ──
+    let (status, v) = get_decisions(app, Some(&token), &[&photo]).await;
+    assert_eq!(status, StatusCode::OK);
+    let arr = v.as_array().expect("读端点必须回数组");
+    assert_eq!(arr.len(), 1, "{}", v);
+    assert_eq!(arr[0]["rating"], 4, "{}", v);
+    assert_eq!(arr[0]["label"], "red", "{}", v);
+    assert_eq!(
+        arr[0]["path"].as_str().unwrap(),
+        canon_path(&photo),
+        "回传的 path 必须是服务端真正打开的那个(规范化后的)路径: {}",
+        v
+    );
+    assert_eq!(
+        arr[0]["sidecar"].as_str().unwrap(),
+        canon_path(&sidecar),
+        "读到的边车路径要如实回传(状态行/调试依赖它): {}",
+        v
+    );
+
+    std::fs::remove_dir_all(&root).ok();
+}
+
+/// **读端点的线上格式是重复键 `?paths=a&paths=b`(规格 §5.1 的原文)。**
+///
+/// 这条不只是"数组能解出来": `serde_urlencoded` 的默认行为**读不出**重复键
+/// (`Part::deserialize_seq` 被 `forward_to_deserialize_any!` 转发到 `deserialize_any`,
+/// 于是每个值都走 `visit_str`) —— 派生出来的 `Vec<String>` 连**一个**值都接不住。
+/// `DecisionsQ` 因此手写了 `visit_map`; 这条测试就是它的靶子。
+///
+/// 顺带钉住两件容易被想当然的事:
+///   · 顺序与请求一致(手机是**按 path 合并**的, 不依赖顺序, 但服务端不该乱序);
+///   · **没有边车的那张如实回 `null`** —— 拿 0/"" 冒充"读过"会让手机上凭空多出一个
+///     0 星(纪律③: 未同步 ≠ 已同步)。
+#[tokio::test]
+async fn decisions_read_accepts_repeated_paths_and_keeps_the_order() {
+    let (app, token, root) = route_app("decbatchread");
+    let a = root.join("a.jpg");
+    let b = root.join("sub").join("b.jpg");
+    assert!(a.is_file() && b.is_file(), "夹具前提: 两张照片都要真的存在");
+
+    // ① 两张都还没有边车
+    let (status, v) = get_decisions(app.clone(), Some(&token), &[&a, &b]).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "重复键 ?paths=a&paths=b 必须真的能解出来(派生的 Vec<String> 会在这里 400): {}",
+        v
+    );
+    let arr = v.as_array().unwrap();
+    assert_eq!(arr.len(), 2, "两个 paths 参数必须回两条: {}", v);
+    assert_eq!(arr[0]["path"].as_str().unwrap(), canon_path(&a));
+    assert_eq!(arr[1]["path"].as_str().unwrap(), canon_path(&b));
+    for item in arr {
+        assert!(item["rating"].is_null(), "没有边车 → rating 必须是 null: {}", item);
+        assert!(item["label"].is_null(), "{}", item);
+        assert!(
+            item["sidecar"].is_null(),
+            "没有边车 → 不许编一个 sidecar 路径出来: {}",
+            item
+        );
+    }
+
+    // ② 一次写两张不同的值 → 逐项计数, 且合并时各自取到自己的值
+    let batch = serde_json::Value::Array(vec![
+        decision_item(&a, Some(2), Some("yellow"), false),
+        decision_item(&b, Some(5), None, false),
+    ]);
+    let (status, s) = put_decisions(app.clone(), Some(&token), &batch).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(s["written"], 2, "两项都要写成: {}", s);
+    assert_eq!(s["failures"].as_array().map(|x| x.len()), Some(0), "{}", s);
+
+    // 故意把顺序反过来: 顺序由**请求**决定, 不由服务端内部怎么走决定
+    let (status, v) = get_decisions(app, Some(&token), &[&b, &a]).await;
+    assert_eq!(status, StatusCode::OK);
+    let arr = v.as_array().unwrap();
+    assert_eq!(arr.len(), 2);
+    assert_eq!(arr[0]["path"].as_str().unwrap(), canon_path(&b));
+    assert_eq!(arr[0]["rating"], 5, "{}", v);
+    assert!(arr[0]["label"].is_null(), "{}", v);
+    assert_eq!(arr[1]["path"].as_str().unwrap(), canon_path(&a));
+    assert_eq!(arr[1]["rating"], 2, "{}", v);
+    assert_eq!(arr[1]["label"], "yellow", "{}", v);
+
+    std::fs::remove_dir_all(&root).ok();
+}
+
+/// **`null`(不动) / `clearLabel`(删) / 给值(写) 三种语义必须真的分得开。**
+///
+/// 这三种语义**只存在于既有的 `apply_decision`** —— 端点是原样转交, 所以这条测试同时是
+/// "本层没有自己拼 XMP"的证据: 任何一层自作主张地"把 null 当成 0"或"顺手把旧标签抹掉",
+/// 都会在这里现形, 而用户在手机上看到的是"撤销标签后旧标签又活了"这种鬼故事。
+#[tokio::test]
+async fn decisions_write_is_idempotent_and_distinguishes_clear_from_untouched() {
+    let (app, token, root) = route_app("decstate");
+    let photo = root.join("a.jpg");
+
+    // 起点: 4 星 + 红标
+    let (_, s) = put_decisions(
+        app.clone(),
+        Some(&token),
+        &decision_body(&photo, Some(4), Some("red"), false),
+    )
+    .await;
+    assert_eq!(s["written"], 1, "{}", s);
+    let (_, v) = get_decisions(app.clone(), Some(&token), &[&photo]).await;
+    assert_eq!(v[0]["rating"], 4);
+    assert_eq!(v[0]["label"], "red");
+
+    // ① 同一个值再写一次: `changed=false` → skipped(不白写一遍, 也就不白摸一次卡)
+    let (status, s) = put_decisions(
+        app.clone(),
+        Some(&token),
+        &decision_body(&photo, Some(4), None, false),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(s["skipped"], 1, "没有变化就必须跳过: {}", s);
+    assert_eq!(s["written"], 0, "{}", s);
+    assert_eq!(s["failed"], 0, "{}", s);
+    let (_, v) = get_decisions(app.clone(), Some(&token), &[&photo]).await;
+    assert_eq!(
+        v[0]["label"], "red",
+        "`label: null` 是'不动标签', 不是'清掉标签' —— 旧标签不许被抹: {}",
+        v
+    );
+
+    // ② `clearLabel: true` 才是"删", 而且**只**删标签
+    let (_, s) = put_decisions(
+        app.clone(),
+        Some(&token),
+        &decision_body(&photo, Some(4), None, true),
+    )
+    .await;
+    assert_eq!(s["written"], 1, "删属性是一次真的变化: {}", s);
+    let (_, v) = get_decisions(app.clone(), Some(&token), &[&photo]).await;
+    assert!(v[0]["label"].is_null(), "clearLabel 必须真的删掉 xmp:Label: {}", v);
+    assert_eq!(
+        v[0]["rating"], 4,
+        "一次请求只动它要动的属性 —— rating 不许被连带清掉: {}",
+        v
+    );
+
+    // ③ `rating: null` = 不动星级, 只改标签(不许把星级改成 0 之类)
+    let (_, s) = put_decisions(
+        app.clone(),
+        Some(&token),
+        &decision_body(&photo, None, Some("blue"), false),
+    )
+    .await;
+    assert_eq!(s["written"], 1, "{}", s);
+    let (_, v) = get_decisions(app, Some(&token), &[&photo]).await;
+    assert_eq!(v[0]["rating"], 4, "`rating: null` 不许改星级(更不许当成 0): {}", v);
+    assert_eq!(v[0]["label"], "blue", "{}", v);
+
+    std::fs::remove_dir_all(&root).ok();
+}
+
+/// **每个调用方给的路径都要过白名单 —— 写端点也一样, 而且越界时一个字节都不许写。**
+///
+/// 三段(缺一段就有一个洞):
+///   (1) 单条越界 → 403 `forbiddenPath`, 且共享根外**绝不出现**边车;
+///   (2) 批次里混一条越界 → 整批 403, 且**合法那条也不许被写掉**。理由不是洁癖:
+///       先校验再动手, 越界能在写出第一个边车之前被发现; 反过来(边校验边写)只留得下
+///       一句 403, 手机无从知道前几张到底写成了没有 —— 半成功态被静默吞掉(纪律②);
+///   (3) 读端点的越界路径同样 403(白名单是"能不能看"的红线, 不是"能不能改")。
+#[tokio::test]
+async fn decisions_refuse_paths_outside_every_share_and_write_nothing() {
+    let (app, token, root) = route_app("decforbid");
+    let inside = root.join("a.jpg");
+    assert!(inside.is_file(), "夹具前提: 共享根里那张照片必须真的存在");
+
+    // 越界目标必须**真实存在**: 403 与 404 的区别只有在"存在但不在共享根内"时才唯一指向白名单。
+    let outside_dir = std::env::temp_dir().join(format!("ifdec_out_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&outside_dir);
+    std::fs::create_dir_all(&outside_dir).unwrap();
+    let outside = outside_dir.join("secret.jpg");
+    std::fs::write(&outside, b"secret bytes").unwrap();
+    assert!(outside.is_file(), "夹具前提: 越界文件必须真的存在");
+    assert!(!outside.starts_with(&root), "夹具前提: 它不许落在共享根里");
+
+    // (1) 单条越界
+    let (status, v) = put_decisions(
+        app.clone(),
+        Some(&token),
+        &decision_body(&outside, Some(5), None, false),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "共享根外写边车必须 403");
+    assert_code_only(&v, "forbiddenPath");
+    assert!(
+        !outside.with_extension("xmp").exists(),
+        "绝不能在共享根外写出边车(哪怕调用方拿着正 token)"
+    );
+    assert!(!root.join("a.xmp").exists(), "被拒的请求不许顺手写下别的东西");
+
+    // (2) 批次里混一条越界: 合法那条也**不许**先写掉
+    let batch = serde_json::Value::Array(vec![
+        decision_item(&inside, Some(4), None, false),
+        decision_item(&outside, Some(5), None, false),
+    ]);
+    let (status, v) = put_decisions(app.clone(), Some(&token), &batch).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "批次里只要有一条越界, 整批都是 403");
+    assert_code_only(&v, "forbiddenPath");
+    assert!(
+        !root.join("a.xmp").exists(),
+        "越界必须在校验阶段就被发现 —— 合法那条也不许先写掉(半成功态无处安放)"
+    );
+
+    // (3) 读: 越界同样 403; 正对照: 共享根内的那张必须能读(否则上面可能只是"什么都拒绝")
+    let (status, v) = get_decisions(app.clone(), Some(&token), &[&outside]).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "读端点的越界路径也必须 403");
+    assert_code_only(&v, "forbiddenPath");
+    let (status, v) = get_decisions(app, Some(&token), &[&inside]).await;
+    assert_eq!(status, StatusCode::OK, "共享根内的路径必须读得到: {}", v);
+    assert!(v[0]["rating"].is_null(), "还没写过 → null: {}", v);
+
+    std::fs::remove_file(&outside).ok();
+    let _ = std::fs::remove_dir_all(&outside_dir);
+    std::fs::remove_dir_all(&root).ok();
+}
+
+/// **鉴权与坏请求: 写端点和读端点一样, 先过鉴权层, 再谈路径。**
+///
+/// 为什么 Task 6 要单独钉一遍: 既有的"逐条路径"鉴权测试**只发 GET**, 而
+/// `PUT /api/v1/decisions` 是这张路由表上**第一条会改磁盘的**方法。"无 token 的写"必须
+/// 自己有一条断言 —— 顺带证明鉴权**先于**白名单: 未配对的调用方拿不到 403/404, 也就无法
+/// 用写端点探测磁盘上有什么(与 `auth_is_checked_before_the_path_whitelist` 同一条纪律)。
+#[tokio::test]
+async fn decisions_writes_need_a_token_and_reject_malformed_bodies() {
+    let (app, token, root) = route_app("decput");
+    let inside = root.join("a.jpg");
+    assert!(inside.is_file(), "夹具前提: 共享根里那张照片必须真的存在");
+
+    // (1) 鉴权: 请求体故意带一个共享根外的路径 —— 401 必须盖过 403/404
+    let probe = std::path::Path::new(r"C:\Windows\System32\config\SAM.jpg");
+    for (label, bad_token) in [
+        ("完全没有 Authorization 头", None),
+        ("错 token", Some("zzz")),
+        ("长度差一位", Some(&token[..63])),
+    ] {
+        let (status, v) = put_decisions(
+            app.clone(),
+            bad_token,
+            &decision_body(probe, Some(5), None, false),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{} 必须先被 401 挡下", label);
+        assert_code_only(&v, "unauthorized");
+    }
+    assert!(!root.join("a.xmp").exists(), "未鉴权的写不许落盘");
+
+    // (2) 坏请求体: 一律 400 + 恰好 `{ code: badRequest }`(由 `J<T>` 收口, 不是 axum 的纯文本)
+    for (label, ct, raw) in [
+        ("语法坏 JSON", Some("application/json"), r#"[{"path":"#),
+        (
+            "项里缺必填字段 path",
+            Some("application/json"),
+            r#"[{"rating":4,"label":null,"clearLabel":false}]"#,
+        ),
+        ("请求体不是数组", Some("application/json"), r#"{"path":"x"}"#),
+        ("没有 content-type", None, r#"[{"path":"x"}]"#),
+        ("content-type 是 text/plain", Some("text/plain"), r#"[{"path":"x"}]"#),
+    ] {
+        let res = app
+            .clone()
+            .oneshot(put_raw(
+                "/api/v1/decisions",
+                Some(&token),
+                ct,
+                raw.as_bytes(),
+            ))
+            .await
+            .unwrap();
+        assert_code_contract_error(res, StatusCode::BAD_REQUEST, "badRequest", label).await;
+    }
+
+    // (3) 读端点缺必填参数 → 400(与 browse/scan/thumb/preview 缺 `path` 同一档),
+    //     而不是安静地回一个空列表 ——"你什么都没要求"不是一种成功。
+    let (status, v) = get_decisions(app.clone(), Some(&token), &[]).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_code_only(&v, "badRequest");
+
+    // 正对照: 合法请求必须真的能写成(否则上面两组可能只是"什么都拒绝")
+    let (status, s) = put_decisions(
+        app,
+        Some(&token),
+        &decision_body(&inside, Some(4), None, false),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(s["written"], 1, "{}", s);
+
+    std::fs::remove_dir_all(&root).ok();
+}
+
+/// **批次的半成功态必须显式、逐项、可重试(规格 §5.2 纪律②)。**
+///
+/// 一个批次三项: 正常写 / 边车不是 XMP(`notXmp`) / 边车超过 1MB(`tooLarge`)。
+/// 全部断言, 少一条就有洞:
+///   · HTTP **200**: 请求本身没错, 是其中两项写不成 —— 把它压成整批 4xx 就等于把
+///     "三张里写成了几张"这个信息整块丢掉;
+///   · `written`/`failed` 是**逐项计数**, `failures[]` 每条带 `path` → 手机知道是哪几张;
+///   · 失败项的边车**逐字节原样**(绝不静默覆盖别人的边车, 也不留半截);
+///   · 修掉原因后**重发同一批**能逐项收敛("可重试"必须是真的逐项重试)。
+#[tokio::test]
+async fn decisions_batch_reports_each_failure_per_item_and_is_retryable() {
+    let (app, token, root) = route_app("decbatch");
+
+    let good = root.join("good.jpg");
+    std::fs::write(&good, b"jpegbytes").unwrap();
+    let bad = root.join("bad.jpg");
+    std::fs::write(&bad, b"jpegbytes").unwrap();
+    let bad_xmp = root.join("bad.xmp");
+    std::fs::write(&bad_xmp, b"this is not xmp at all").unwrap();
+    let big = root.join("big.jpg");
+    std::fs::write(&big, b"jpegbytes").unwrap();
+    let big_xmp = root.join("big.xmp");
+    let big_bytes = vec![b'x'; (1024 * 1024 + 1) as usize]; // 刚好越过 XMP_SIZE_LIMIT(1MB)
+    std::fs::write(&big_xmp, &big_bytes).unwrap();
+
+    // 夹具前提: 照片与两份"坏边车"都必须真的存在且形态正确 —— 少一条, 下面的失败就会
+    // 因为完全不同的原因发生(例如照片不存在 → `unknown`)。
+    for p in [&good, &bad, &big] {
+        assert!(p.is_file(), "夹具前提: {} 必须真的存在", p.display());
+    }
+    assert_eq!(std::fs::metadata(&big_xmp).unwrap().len(), 1024 * 1024 + 1);
+
+    let batch = serde_json::Value::Array(vec![
+        decision_item(&good, Some(3), None, false),
+        decision_item(&bad, Some(3), None, false),
+        decision_item(&big, Some(3), None, false),
+    ]);
+    let (status, s) = put_decisions(app.clone(), Some(&token), &batch).await;
+    assert_eq!(status, StatusCode::OK, "逐项失败不该变成整批请求的错误: {}", s);
+    assert_eq!(s["written"], 1, "只有 good 能写成: {}", s);
+    assert_eq!(s["failed"], 2, "两项失败必须逐项计数: {}", s);
+    assert_eq!(s["skipped"], 0, "{}", s);
+    assert_eq!(s["degraded"], false, "{}", s);
+
+    let failures = s["failures"].as_array().unwrap();
+    assert_eq!(failures.len(), 2, "两项失败必须逐条报出来(不是一句 4xx): {}", s);
+    let code_of = |want: &std::path::Path| -> Option<String> {
+        failures
+            .iter()
+            .find(|f| f["path"].as_str() == Some(canon_path(want).as_str()))
+            .and_then(|f| f["code"].as_str())
+            .map(|c| c.to_string())
+    };
+    assert_eq!(
+        code_of(&bad).as_deref(),
+        Some("notXmp"),
+        "不是 XMP 的既有边车 → notXmp(不许静默覆盖它): {}",
+        s
+    );
+    assert_eq!(
+        code_of(&big).as_deref(),
+        Some("tooLarge"),
+        "超过 1MB 上限的边车 → tooLarge: {}",
+        s
+    );
+    for f in failures {
+        // 失败项的**形状**就是桌面端既有的 `WriteFailure`(path/code/detail), 一个字段不多不少。
+        assert_eq!(
+            f.as_object().map(|o| o.len()),
+            Some(3),
+            "失败项只许有桌面端那三个字段: {}",
+            f
+        );
+        assert!(
+            f["code"].as_str().map(|c| !c.is_empty()).unwrap_or(false),
+            "每条失败都必须带闭集码(手机按码本地化): {}",
+            f
+        );
+    }
+
+    // 绝不静默覆盖: 两份坏边车逐字节原样, 失败项一个字节都没动
+    assert_eq!(std::fs::read(&bad_xmp).unwrap(), b"this is not xmp at all");
+    assert_eq!(std::fs::read(&big_xmp).unwrap(), big_bytes);
+    // 成功的那一项真的写成了
+    let good_xmp = root.join("good.xmp");
+    assert!(good_xmp.is_file(), "批次里的成功项必须真的落盘");
+    assert!(
+        std::fs::read_to_string(&good_xmp).unwrap().contains("xmp:Rating=\"3\""),
+        "成功项的内容必须是桌面端的格式"
+    );
+
+    // ── 可重试: 修掉 notXmp 那一项的原因, 重发**同一批** ──
+    std::fs::remove_file(&bad_xmp).unwrap();
+    let (status, s) = put_decisions(app, Some(&token), &batch).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(s["written"], 1, "只补写出 bad 那张: {}", s);
+    assert_eq!(s["failed"], 1, "big 仍然是 tooLarge —— 逐项重试, 不是整批重来: {}", s);
+    assert_eq!(s["failures"][0]["code"], "tooLarge", "{}", s);
+    assert!(
+        std::fs::read_to_string(root.join("bad.xmp"))
+            .unwrap()
+            .contains("xmp:Rating=\"3\""),
+        "重试后 bad 必须被写出来"
+    );
+
+    std::fs::remove_dir_all(&root).ok();
+}
+
+/// **"没有变化就不写"是继承来的** —— 用只读属性证明它不只是"报了 skipped"。
+///
+/// 做法: 先写出 rating=4, 再把边车设成**只读**, 然后打一次一模一样的写请求。
+///   · 真的 `changed=false → 不写`: 连写盘都不会尝试 → `skipped=1, failed=0`;
+///   · 若端点在 HTTP 层"总是写一遍": 只读边车会让它失败(rename 与退化的直写都撞
+///     ERROR_ACCESS_DENIED, `classify_io` 分类成 `readOnly`) → `failed=1`。
+///
+/// 后半段的**对照**必不可少: 把值改成 5(真的变了), 同一个只读边车**必须**报失败 ——
+/// 没有它, 前半段的"没失败"也可能只是因为"这台机器上根本没有东西会失败"。
+#[tokio::test]
+async fn decisions_skip_a_write_when_nothing_changed() {
+    let (app, token, root) = route_app("decskip");
+    let photo = root.join("a.jpg");
+
+    let (_, s) = put_decisions(
+        app.clone(),
+        Some(&token),
+        &decision_body(&photo, Some(4), None, false),
+    )
+    .await;
+    assert_eq!(s["written"], 1, "{}", s);
+    let sidecar = root.join("a.xmp");
+    assert!(sidecar.is_file(), "夹具前提: 第一次写必须真的落盘");
+    let before = std::fs::read_to_string(&sidecar).unwrap();
+
+    let mut perms = std::fs::metadata(&sidecar).unwrap().permissions();
+    perms.set_readonly(true);
+    std::fs::set_permissions(&sidecar, perms).unwrap();
+    assert!(
+        std::fs::metadata(&sidecar).unwrap().permissions().readonly(),
+        "夹具前提: 只读属性必须真的生效(否则下面的对照没有意义)"
+    );
+
+    // ① 值没变 → 连一次写盘都不该尝试
+    let (status, s) = put_decisions(
+        app.clone(),
+        Some(&token),
+        &decision_body(&photo, Some(4), None, false),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(s["skipped"], 1, "没有变化就不该写盘: {}", s);
+    assert_eq!(s["failed"], 0, "只读边车在这里不该失败 —— 它根本没被写过: {}", s);
+    assert_eq!(std::fs::read_to_string(&sidecar).unwrap(), before, "内容必须逐字节不变");
+
+    // ② 对照: 真的改了值, 同一个只读边车**必须**报失败
+    let (status, s) = put_decisions(
+        app.clone(),
+        Some(&token),
+        &decision_body(&photo, Some(5), None, false),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "写不进去是**逐项**失败, 不是整批请求的错: {}", s);
+    assert_eq!(s["failed"], 1, "只读边车上的真改动必须逐项报失败: {}", s);
+    assert_eq!(s["written"], 0, "{}", s);
+    assert_eq!(
+        s["failures"][0]["code"], "readOnly",
+        "只读属性必须如实报 readOnly(用户动作是去掉只读/换位置): {}",
+        s
+    );
+
+    // 还原属性再清理(Windows 上带只读属性的文件删不掉)
+    let mut perms = std::fs::metadata(&sidecar).unwrap().permissions();
+    perms.set_readonly(false);
+    std::fs::set_permissions(&sidecar, perms).unwrap();
+    std::fs::remove_dir_all(&root).ok();
+}
+
+/// **"文件被占用"必须如实报 `busy`, 而且是逐项、可重试的。**
+///
+/// 怎么造出"被占用": 拿一个**只允许别人读**的句柄把边车按住(`share_mode(FILE_SHARE_READ)`)。
+/// 读取照常(所以这不是"读不出来"), 而 `atomic_write` 的 rename 与退化的直写都会撞上
+/// ERROR_SHARING_VIOLATION(32) —— 那正是 `xmp.rs::classify_io` 映射成 `Busy` 的那一档。
+/// 用户动作因此很明确: 等那边松开再重试(M0′ 里 Lightroom 正打开边车是最常见的场景)。
+#[cfg(target_os = "windows")]
+#[tokio::test]
+async fn decisions_report_a_sidecar_held_by_another_handle_as_busy() {
+    use std::os::windows::fs::OpenOptionsExt;
+
+    let (app, token, root) = route_app("decbusy");
+    let photo = root.join("a.jpg");
+
+    let (_, s) = put_decisions(
+        app.clone(),
+        Some(&token),
+        &decision_body(&photo, Some(4), None, false),
+    )
+    .await;
+    assert_eq!(s["written"], 1, "{}", s);
+    let sidecar = root.join("a.xmp");
+    assert!(sidecar.is_file(), "夹具前提: 边车必须真的存在");
+
+    let hold = std::fs::OpenOptions::new()
+        .read(true)
+        .share_mode(1) // FILE_SHARE_READ: 别人只能读
+        .open(&sidecar)
+        .unwrap();
+    // 被占的是**句柄**而不是"这个文件读不出来了": 按住的同时读内容必须照常
+    assert!(sidecar.is_file(), "夹具前提: 被占用的路径仍然存在");
+    assert!(
+        std::fs::read_to_string(&sidecar).unwrap().contains("xmp:Rating=\"4\""),
+        "夹具前提: 被占用的边车必须仍然读得出来(否则报的不是 busy 而是读失败)"
+    );
+
+    let (status, s) = put_decisions(
+        app.clone(),
+        Some(&token),
+        &decision_body(&photo, Some(5), None, false),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "占用是逐项失败, 不是整批请求的错: {}", s);
+    assert_eq!(s["failed"], 1, "被占用的边车必须逐项报失败: {}", s);
+    assert_eq!(s["written"], 0, "{}", s);
+    assert_eq!(s["failures"][0]["code"], "busy", "占用必须如实报 busy: {}", s);
+    assert_eq!(
+        s["failures"][0]["path"].as_str().unwrap(),
+        canon_path(&photo),
+        "失败项必须带上是**哪一张**(手机按 path 标记待重试): {}",
+        s
+    );
+    assert!(
+        std::fs::read_to_string(&sidecar).unwrap().contains("xmp:Rating=\"4\""),
+        "失败的写不许留下半截内容"
+    );
+
+    // 可重试: 句柄一放, 同一个请求必须成功, 而且值真的变了
+    drop(hold);
+    let (_, s) = put_decisions(
+        app,
+        Some(&token),
+        &decision_body(&photo, Some(5), None, false),
+    )
+    .await;
+    assert_eq!(s["written"], 1, "占用解除后重试必须成功: {}", s);
+    assert!(
+        std::fs::read_to_string(&sidecar).unwrap().contains("xmp:Rating=\"5\""),
+        "重试必须真的把新值写进去"
+    );
+
+    std::fs::remove_dir_all(&root).ok();
+}
