@@ -224,8 +224,15 @@ pub const PROTECTED_PATHS: &[&str] = &[
 fn check_auth(state: &ServerState, headers: &HeaderMap) -> Result<(), ApiError> {
     let cfg = state.config.read().map_err(|_| ApiError::Internal)?;
     let got = bearer_token(headers);
-    // `eq_constant_time` 对空串一律 false(fail-closed), 所以"配置里 token 变空"不会
-    // 变成"关掉鉴权"—— 这条不变量在 auth.rs 里有自己的单测。
+    // **两道 fail-closed, 缺一不可**(Task 8)。配置里的 token 可以是空的 ——
+    // `ServerConfig::default()` 不再生成 token(启动路径不许碰随机数, 见 `config.rs`),
+    // 而"配置丢了/坏了"正是回落到 `default()` 的情形。空的 token 一旦被当成"凭证"来比,
+    // `eq_constant_time("", "")` 的历史语义是 true —— 那就是**关掉鉴权**。
+    // 所以这里显式拒: 配置侧空、请求侧空, 都是 401。
+    if cfg.token.is_empty() || got.is_empty() {
+        return Err(ApiError::Unauthorized);
+    }
+    // `eq_constant_time` 自己也不接受空串(auth.rs 有单测), 但鉴权红线不允许"只靠下层记得"。
     if auth::eq_constant_time(got, &cfg.token) {
         Ok(())
     } else {
@@ -343,6 +350,19 @@ fn endpoint_routes() -> Router<ServerState> {
 ///   · `require_bearer`: 谁能进来(白名单在 `PUBLIC_PATHS`);
 ///   · `normalize_residual_errors`: 出去的东西必须长成 `{ code }`
 ///     (只碰 405/404 这类没走到处理器的残余, 见上方长注释)。
+///
+/// **未实现(明写在代码里, 不留悬念)**: 规格 §11 风险 4 要求"同一客户端的并发限制"。
+/// 它**属于这一层**, 因为只有路由层看得到客户端身份 —— `media.rs` 的两条闸门
+/// (`THUMBNAIL_CONCURRENCY` / `PREVIEW_CONCURRENCY`)是**全局**许可, 按设计不做客户端维度。
+/// M0′ Task 8 的验收清单里没有这一条(brief 只要求启停/配置/命令接线), 所以这里**故意
+/// 没有实现**, 但把落点写清楚:
+///   ① 客户端身份只能来自 `ConnectInfo<SocketAddr>`(本进程直连, 没有反代, 不该信
+///      `X-Forwarded-For`); 这要求 `start()` 把 `axum::serve(listener, app)` 换成
+///      `axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>())` ——
+///      那是对 Task 1 已验证过的起服务路径的改动, 必须单独评估;
+///   ② 计数表要按客户端键控且有回收(否则等于一个内存泄漏点), 超限回 `423 busy`
+///      (`ApiError::Busy`)而不是 429 —— 429 会被 `code_for_status` 归成 `badRequest`,
+///      手机会显示成"请求不合法", 而真实语义是"等一下再试"。
 pub fn router(state: ServerState) -> Router {
     endpoint_routes()
         .layer(middleware::from_fn_with_state(state.clone(), require_bearer))
@@ -652,9 +672,26 @@ async fn decisions_put(
 
     // ③ 一个字节的 XMP 都不在这里拼: 整批交给既有的 `write_decisions`。
     //    `XmpError` → 逐项 `failures[].code` 的映射也由它自己的 `code()` 给出。
-    let summary: WriteSummary = crate::xmp::write_decisions(checked)
-        .await
-        .map_err(|_| ApiError::Internal)?;
+    //
+    //    发事件要的那份路径清单必须在 `checked` 被 move 进 `write_decisions` **之前**留好。
+    let touched: Vec<String> = checked.iter().map(|it| it.path.clone()).collect();
+    let result = crate::xmp::write_decisions(checked).await;
+    // 锁先放掉再发事件: 桌面上"刷新一下"这一步不许拖住手机的下一次写。
+    drop(_queued);
+    let summary: WriteSummary = result.map_err(|_| ApiError::Internal)?;
+
+    // 桌面端正在看同一个文件夹时让它立刻刷新 —— 否则手机上打了分、电脑上界面还是旧的,
+    // 用起来像 bug。
+    //
+    // 通知端由 `lib.rs` 在 setup 里注入(`decisions_notifier`), 这里只认一个不透明的函数 ——
+    // **`server` 模块刻意不出现 `tauri::AppHandle`**, 理由见 `ServerState::notify` 上面那段
+    // (它会顺着链接器把 Tauri 的窗口层拖进测试 exe, 而测试 exe 没有 v6 清单, 起不来)。
+    // 没有通知端时(`into_state()`, 即全部集成/单测)这条分支直接跳过 —— 它是一条
+    // **真实可达**的分支, 不是"理论上到不了"的死代码。
+    if let Some(notify) = st.notify.as_ref() {
+        notify(&touched);
+    }
+
     Ok(Json(summary).into_response())
 }
 
@@ -883,6 +920,12 @@ mod tests {
     /// **路由**的 405 —— 那与"处理器有没有自己回 `{ code }`"无关, 会把这条测试变成一个测不到
     /// 东西的假红。方法由这张小表决定, 与 `server_contract.rs` 里的 `post_only` 是同一份判断。
     fn probe_request(base: &str, token: &str) -> Request<Body> {
+        probe_request_raw(base, Some(&format!("Bearer {}", token)))
+    }
+
+    /// 同上, 但 `Authorization` 头由调用方**原样**给定(`None` = 完全不带这个头)。
+    /// 空凭证/空头/不带头三种形态都要能构造出来 —— 它们走的代码路径并不一样。
+    fn probe_request_raw(base: &str, authorization: Option<&str>) -> Request<Body> {
         let is_post = base == "/api/v1/move";
         let mut b = if is_post {
             Request::builder()
@@ -892,9 +935,67 @@ mod tests {
         } else {
             Request::builder().uri(base)
         };
-        b = b.header(header::AUTHORIZATION, format!("Bearer {}", token));
+        if let Some(v) = authorization {
+            b = b.header(header::AUTHORIZATION, v);
+        }
         b.body(if is_post { Body::from("{}") } else { Body::empty() })
             .unwrap()
+    }
+
+    /// **空 token 必须是"谁都进不来", 不是"谁都进得来" —— Task 8 的 fail-closed 第二道。**
+    ///
+    /// 背景: `ServerConfig::default()` 不再生成 token(Task 8: 启动路径不许碰随机数),
+    /// 所以"配置里的 token 是空串"是一个**真实可达**的状态 —— 鉴权层必须自己挡住它,
+    /// 不能指望 `start()` 永远不把这样的配置起起来(那只是第一道)。
+    ///
+    /// 这条测试同时证明: 就算把 `auth::eq_constant_time` 里"空串永不匹配"那条守卫删掉,
+    /// 这一层**单独**也仍然是 fail-closed(实测过: 删掉 auth.rs 那条守卫, 本测试仍绿)。
+    /// 两道都有, 才是"修掉一个启动 panic 不换来一个未授权入口"。
+    #[tokio::test]
+    async fn empty_configured_token_never_authenticates() {
+        let app = router(
+            crate::server::ServerConfig {
+                enabled: true,
+                port: 0,
+                token: String::new(), // ← 默认配置的真实形态
+                shares: Vec::new(),
+            }
+            .into_state(),
+        );
+
+        for base in PROTECTED_PATHS {
+            // 三种"没有凭证"的形态各挡一次 —— 它们走的代码路径并不一样:
+            // ① 空凭证(旧语义下 "空对空" 会通过); ② Authorization 头是空的; ③ 完全不带这个头。
+            for (label, auth) in [
+                ("Bearer 空凭证", Some("Bearer ")),
+                ("Authorization 空值", Some("")),
+                ("不带 Authorization", None),
+            ] {
+                let res = app.clone().oneshot(probe_request_raw(base, auth)).await.unwrap();
+                assert_eq!(
+                    res.status(),
+                    StatusCode::UNAUTHORIZED,
+                    "{} · {} 必须 401",
+                    base,
+                    label
+                );
+            }
+
+            // ④ 猜一枚形状正确的 token 也不行
+            let res = app
+                .clone()
+                .oneshot(probe_request(base, &"a".repeat(64)))
+                .await
+                .unwrap();
+            assert_eq!(res.status(), StatusCode::UNAUTHORIZED, "{} 非空错 token 必须 401", base);
+        }
+
+        // 正对照: 免鉴权端点照常 200 —— 否则"把所有请求都判 401"也能让上面全绿。
+        let res = app
+            .oneshot(Request::builder().uri("/api/v1/ping").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK, "ping 必须仍然免鉴权(规格 §5.1)");
     }
 
     /// **提取器纪律的变异靶子: 生产处理器必须自己回 `{ code }`, 不许靠兜底层。**

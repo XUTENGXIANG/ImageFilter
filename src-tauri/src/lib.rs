@@ -113,6 +113,118 @@ fn get_os_capabilities() -> OsCapabilities {
     }
 }
 
+// ── 图库服务(手机端访问) · Task 8 的 Tauri 接线 ─────────────────────────────
+//
+// 五条命令的共同纪律: **失败一律是 `Err(String)`, 绝不许 panic**。服务起不来
+// (端口被占、token 不可用、随机数不可用、配置写不进去)只该让界面显示一句理由,
+// 桌面端本身必须照常可用 —— 用户的首要约束是"别把桌面端弄坏"。
+
+/// 状态快照。前端轮询/进设置页时调它。
+#[tauri::command]
+async fn get_server_status(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, server::ServerState>,
+) -> Result<server::ServerStatus, String> {
+    server::status_of(&app, &state)
+}
+
+/// 开/关图库服务。**开启路径上的一切失败都只回 `Err`**, 桌面端不受影响。
+#[tauri::command]
+async fn set_server_enabled(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, server::ServerState>,
+    enabled: bool,
+) -> Result<server::ServerStatus, String> {
+    let st = state.inner().clone();
+    if enabled {
+        // 顺序是刻意的: ①先把 token 备好(随机数不可用 → 直接 `Err`, 配置一个字节都不动);
+        // ②再打开开关并落盘; ③最后尽力起服务。任何一步失败都只是 `Err`。
+        //
+        // ③ 失败时**不**把 enabled 回滚: 用户的选择照旧留着(下次开机还会再试一次), 而服务
+        // 并没有在监听 —— `running` 与 `enabled` 在状态里是分开的, 界面据实显示即可。
+        server::ensure_token_persisted(&st, &server::app_data_dir(&app)?)?;
+        st.config.write().map_err(|e| e.to_string())?.enabled = true;
+        server::persist(&app, &st)?;
+        server::start(st.clone()).await?;
+    } else {
+        st.config.write().map_err(|e| e.to_string())?.enabled = false;
+        server::persist(&app, &st)?;
+        // **关掉就必须真的停止监听** —— 否则"已关闭"是一句谎话(见 `server::stop`)。
+        server::stop();
+    }
+    server::status_of(&app, &st)
+}
+
+/// 轮换配对 token。已有手机需要重新配对(规格 §5.2); 服务不用重启 —— 端点每次请求
+/// 现读配置(`ServerState` 的注释)。
+#[tauri::command]
+async fn rotate_server_token(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, server::ServerState>,
+) -> Result<server::ServerStatus, String> {
+    // 用可失败的那一版: 随机数不可用只该变成一句 `Err`, 不该 panic(见 `auth::try_new_token`)。
+    let fresh = server::auth::try_new_token()?;
+    state.config.write().map_err(|e| e.to_string())?.token = fresh;
+    server::persist(&app, &state)?;
+    server::status_of(&app, &state)
+}
+
+/// 加入一个共享根。**只接受已存在的目录**(空 = 谁都访问不了, 是安全默认值)。
+#[tauri::command]
+async fn add_share(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, server::ServerState>,
+    path: String,
+) -> Result<Vec<String>, String> {
+    let p = std::path::PathBuf::from(&path);
+    if !p.is_dir() {
+        return Err("不是目录".into());
+    }
+    {
+        let mut cfg = state.config.write().map_err(|e| e.to_string())?;
+        if !cfg.shares.iter().any(|s| s == &p) {
+            cfg.shares.push(p);
+        }
+    }
+    server::persist(&app, &state)?;
+    server::share_strings(&state)
+}
+
+/// 移除一个共享根(按用户看到的那个字符串比较)。
+#[tauri::command]
+async fn remove_share(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, server::ServerState>,
+    path: String,
+) -> Result<Vec<String>, String> {
+    {
+        let mut cfg = state.config.write().map_err(|e| e.to_string())?;
+        cfg.shares.retain(|s| s.to_string_lossy() != path);
+    }
+    server::persist(&app, &state)?;
+    server::share_strings(&state)
+}
+
+/// `decisions-changed` 的发送端 —— **只有这里知道 Tauri**。
+///
+/// 为什么绕这一层(这是 Task 8 实测出来的, 不是洁癖): 单测与 `tests/` 的集成测试都会把
+/// `server` 编进各自的**测试 exe**, 而测试 exe **没有** Tauri 给正式程序嵌的
+/// `Microsoft.Windows.Common-Controls` v6 清单。`tauri::AppHandle` 一旦真的出现在测试可达的
+/// 代码里(哪怕只是被 `drop`), 链接器就会把 Tauri 的窗口/WebView 那一层拉进来 —— 它 import 了
+/// `comctl32.dll` 的 `TaskDialogIndirect` / `SetWindowSubclass` 这些**只有 v6 才导出**的函数,
+/// 于是加载期直接 `STATUS_ENTRYPOINT_NOT_FOUND (0xC0000139)`, **连 `cargo test` 都跑不起来**
+/// (实测: 保留 `Option<AppHandle>` 字段 → 两个测试 exe 都起不来; 类型擦除后正常)。
+/// 详见 `server::Notify`。
+///
+/// 这个函数只在 `run()` 的 setup 里被引用一次, 所以测试 exe 根本不会链接到它。
+fn decisions_notifier(app: tauri::AppHandle) -> server::Notify {
+    std::sync::Arc::new(move |paths: &[String]| {
+        // Tauri v2 的 `emit` 定义在 `Emitter` trait 上: **不 use 就编译不过**。
+        use tauri::Emitter as _;
+        let _ = app.emit("decisions-changed", serde_json::json!({ "paths": paths }));
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::mica_supported_by_build;
@@ -163,11 +275,11 @@ pub fn run() {
                 let _ = app.asset_protocol_scope().allow_directory(cache_root, true);
             }
 
-            let db_path = app
+            let app_data_dir = app
                 .path()
                 .app_data_dir()
-                .expect("failed to resolve app data dir")
-                .join("image-filter.db");
+                .expect("failed to resolve app data dir");
+            let db_path = app_data_dir.join("image-filter.db");
 
             // Ensure parent directory exists
             if let Some(parent) = db_path.parent() {
@@ -179,6 +291,30 @@ pub fn run() {
             })?;
 
             app_handle.manage(db::DbState { pool });
+
+            // ── 图库服务(手机端访问): **默认关闭**, 只有配置里 enabled=true 才在启动时拉起 ──
+            //
+            // 这一段**绝不能**让 setup 失败、变慢或 panic（用户第一约束: 别把桌面端弄坏）:
+            //   · `load` 只有回落, 没有 unwrap/expect —— 配置缺失/损坏 = 一份默认配置(关闭);
+            //   · 默认配置**不含 token**, 所以这条路径根本不碰随机数(`getrandom` 失败点已移走);
+            //   · 关闭时连服务任务都不 spawn: `wants_start` 为 false 就到此为止;
+            //   · 开启时只在后台任务里尽力起服务, 失败留下一句可见的理由 + 一行 stderr，
+            //     setup 立刻返回 —— 启动快慢与端口绑定的快慢无关。
+            let server_state = server::config::ServerConfig::load(&app_data_dir)
+                .into_state_with_notify(decisions_notifier(app_handle.clone()));
+            let start_service_now = server::wants_start(&server_state);
+            app_handle.manage(server_state.clone());
+            if start_service_now {
+                let dir = app_data_dir.clone();
+                tauri::async_runtime::spawn(async move {
+                    match server::boot(server_state, &dir).await {
+                        Ok(Some(p)) => println!("[server] 已监听 {}", server::primary_url(p)),
+                        Ok(None) => {}
+                        // 失败**只**留日志与 `ServerStatus.lastError`: 桌面端照常可用。
+                        Err(e) => eprintln!("[server] 启动失败(桌面端不受影响): {}", e),
+                    }
+                });
+            }
 
             Ok(())
         })
@@ -215,6 +351,13 @@ pub fn run() {
             lightroom::send_to_lightroom,
             lightroom::force_close_lightroom,
             lightroom::is_dir_empty,
+            // Phase 8 · 图库服务(手机端访问)的生命周期与配置。**默认关闭**,
+            // 用户显式开启后才监听(见 `server` 模块头与 `setup` 里的接线)。
+            get_server_status,
+            set_server_enabled,
+            rotate_server_token,
+            add_share,
+            remove_share,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
