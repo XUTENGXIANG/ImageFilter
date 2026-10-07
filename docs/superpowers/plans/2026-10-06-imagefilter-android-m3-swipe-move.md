@@ -373,7 +373,7 @@ class PendingStoreTest {
 **要求**：
 - 列出：缩略图 + 目标值（星级/色标）+ **失败原因的可执行文案**（复用 M2′ 的 `ApiException.code` → 文案映射，**不要写第二份映射**）
 - 三个动作：单项重试 / 全部重试 / 放弃本地改动（放弃前二次确认，因为它丢掉的是用户的决定）
-- 全部重试要**串行**并以最后一次结果刷新列表（失败的仍在列表里）
+- 全部重试要**串行**并以最后一次结果刷新列表（失败的仍在列表里）；**且只重发仍然待重试的项** —— 半成功项的照片路径**已经不存在**，把它一起发出去会让**整批 404**（M0′ Task 7 实测并钉了测试）。
 
 - [ ] **Step 4: 真机验证**
 
@@ -409,7 +409,11 @@ git commit -m "feat(android): 待重试队列(DataStore 持久化) + 重试面�
 **Interfaces:**
 - Produces:
   - `@Serializable data class MoveReqDto(val paths: List<String>, val destDir: String)`
-  - `@Serializable data class MoveOutcomeDto(val src: String, val dest: String? = null, val status: String, val detail: String? = null)`
+  - `@Serializable data class MoveOutcomeDto(val src: String, val dest: String? = null, val status: String, val detail: String? = null, val pendingSidecars: List<String> = emptyList())`
+    > **`pendingSidecars` 是服务端给的机器数据**（M0′ Task 7 定型：逐项**恰好五个字段**；空时是 `[]` **不是 `null`**）。每条是**留在原地的边车源路径**，可能多于一条。
+    > **半成功的重试必须用它**：`api.move(paths = item.pendingSidecars, destDir = parent(item.dest))`。
+    > **不要自己拼 `{stem}.xmp`**：规格 §3.2 第一条明令**手机不得推导路径/命名规则**；而且因为批次是"全有或全无"校验的，你**连"哪个候选存在"都探测不出来**（把两个候选一起发过去会让整批 404）。也不要解析 `detail`（那是本地化文案，不是数据通道）。
+    > **⚠️ 并且半成功项的 `src`（照片）已经被移走了** —— 任何携带它的请求都会**整批 404**。所以"全部重试"必须**剔除已不存在的 `src`**，只重发仍待重试的项。
   - `@Serializable data class MoveSummaryDto(val moved: Int, val halfSuccess: Int, val conflict: Int, val failed: Int, val items: List<MoveOutcomeDto>)`
   - `suspend fun ApiClient.move(paths: List<String>, destDir: String): MoveSummaryDto`
   - `fun summarizeMove(s: MoveSummaryDto): String`（纯函数，可测）
@@ -434,7 +438,7 @@ class MoveTest {
         // 会让用户永远不知道自己的评分丢了 —— 这是本设计明令不许的静默失败。
         val s = MoveSummaryDto(
             moved = 3, halfSuccess = 1, conflict = 0, failed = 0,
-            items = listOf(MoveOutcomeDto("D:\\p\\a.jpg", "D:\\p\\精修\\a.jpg", "halfSuccess", "边车 a.xmp 没能跟着走")),
+            items = listOf(MoveOutcomeDto("D:\\p\\a.jpg", "D:\\p\\精修\\a.jpg", "halfSuccess", "边车 a.xmp 没能跟着走", listOf("D:\\p\\a.xmp"))),
         )
         val text = summarizeMove(s)
         assertTrue(text, text.contains("成功 3"))
@@ -459,7 +463,7 @@ class MoveTest {
 - 多选：长按进入选择模式，点选切换；顶部显示已选 N 张
 - 目标文件夹：从**共享根内**的目录树里挑（复用 M1′ 的 `browse`）。
   > **已确定：不支持在手机上新建文件夹。** M0′ 的端点表里**没有** `Mkdir`（规格 §5.1 从未包含它），所以"新建"要么去电脑上做、要么另开一个服务端任务——**本计划不做**。这是**已知限制**，要如实显示在 UI 上（"只能移动到已有文件夹；新建请到电脑上操作"），**不要假装支持**。
-- 结果面板：按 `status` 分组显示 `moved / halfSuccess / conflict / failed`，半成功与冲突各自可操作（重试 / 改名后再试）
+- 结果面板：按 `status` 分组显示 `moved / halfSuccess / conflict / failed`。**半成功的"重试"直接用 `item.pendingSidecars` + `parent(item.dest)` 重发**（见本任务 Task 4 的 DTO 说明——不要推导边车命名规则）；冲突是"改名后再试"。
 
 - [ ] **Step 3: 真机验证**
 
