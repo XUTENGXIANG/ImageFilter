@@ -12,8 +12,12 @@
 /// 而 `load()` 在配置缺失/损坏时回落到 `default()`，于是"一次随机数失败"就能让整个桌面端
 /// 崩在启动上；现在 `default()` 不再生成 token，见 `config.rs`）。
 ///
-/// 签名与实现保留的理由: `auth.rs` 自己的单测与既有调用点依赖 `-> String`;
-/// 生产路径（`boot` / `set_server_enabled` / `rotate_server_token`）一律走 `try_new_token`。
+/// **它现在只存在于测试里**(`#[cfg(test)]`，本轮复审的第 5 条 minor): 生产路径
+/// （`boot` / `set_server_enabled` / `rotate_server_token`）一律走 `try_new_token`，
+/// 这个 panic 版本**一个生产调用点都没有**。留着 `pub` 只是"按时任作者别用"的约定，
+/// 而约定挡不住下一个人 —— 结构上让它不可见，才是真的把 hazard 拿掉。
+/// `auth.rs` 自己的单测需要一个 `-> String` 的形状对照物, 所以留着它, 但不导出。
+#[cfg(test)]
 pub fn new_token() -> String {
     try_new_token().expect("系统随机数不可用")
 }

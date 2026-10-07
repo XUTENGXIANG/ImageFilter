@@ -666,7 +666,8 @@ async fn decisions_put(
         });
     }
 
-    // ② 按路径排队(见 `WRITE_QUEUES`), 守卫活到本函数返回为止。
+    // ② 按路径排队(见 `WRITE_QUEUES`)。**守卫只活到下面那次 `drop`** —— 也就是
+    //    `write_decisions` 返回之后、发事件之前(见③后面的注释), 不是"活到本函数返回"。
     let paths: Vec<String> = checked.iter().map(|it| it.path.clone()).collect();
     let _queued = lock_write_stripes(&paths).await;
 
@@ -884,6 +885,74 @@ mod tests {
         ] {
             assert_eq!(code_for_status(status), want, "{} 这一档归错了码", status);
         }
+    }
+
+    /// **鉴权判据本身直接钉一遍**(本轮复审的 minor ①)。
+    ///
+    /// 为什么必须**直接**打 `check_auth`: 走 `router()` 的端到端用例只能证明"空 token 的配置
+    /// 拿不到东西", 而那个结论**同时**被 `start()` 的 `token_is_valid` 与 `eq_constant_time`
+    /// 的空串拒绝兜着 —— 实测: 把 `check_auth` 里那行 `if cfg.token.is_empty() || got.is_empty()`
+    /// 整行删掉, 两个测试套件照样全绿。那样"三层守卫各自被钉住"这句话就是**错的**。
+    ///
+    /// ⚠️ **诚实标注(实测, 三轮变异)** —— 这一层与 `eq_constant_time` 在"空串"这一点上
+    /// **行为等价**, 所以"只删它"是构造不出红的:
+    ///   · 只删 `check_auth` 的空串守卫 → 本用例仍然 ok(`eq_constant_time` 把空的拒了);
+    ///   · 只删 `eq_constant_time` 的空串拒绝 → 本用例仍然 ok(这一层把空的拒了);
+    ///   · **两个一起删** → 本用例当场红(第①组断言: 空 token 的配置放行了不带 token 的请求)。
+    /// 也就是说 "第二层能被独立观测" 这件事**不成立**(它是纵深防御, 不是唯一判据); 能钉住的
+    /// 是 `check_auth` 自己的**契约** —— 而这正是修复前缺的那一块(那时连"直接打它"的测试
+    /// 都没有, 任何一层退化都只能指望别层恰好兜住)。
+    ///
+    /// 契约本身: 配置侧 token 为空 ⇒ 一律 401(哪怕请求也什么都没带); 请求侧取不到凭证
+    /// ⇒ 一律 401(哪怕配置里的 token 是好的)。第三组是正对照。
+    #[test]
+    fn check_auth_rejects_an_empty_configured_token_and_an_empty_credential() {
+        fn state(token: &str) -> ServerState {
+            crate::server::ServerConfig {
+                enabled: true,
+                port: 0,
+                token: token.to_string(),
+                shares: Vec::new(),
+            }
+            .into_state()
+        }
+        fn headers(value: Option<&str>) -> HeaderMap {
+            let mut h = HeaderMap::new();
+            if let Some(v) = value {
+                h.insert(header::AUTHORIZATION, v.parse().expect("头值必须合法"));
+            }
+            h
+        }
+        fn code_of(res: Result<(), ApiError>) -> &'static str {
+            res.expect_err("这里必须被拒").code()
+        }
+
+        // ① **配置里 token 为空**: 任何请求都 401 —— 包括"请求侧同样是空"。
+        //    `eq_constant_time("", "")` 的历史语义是 true, 少了这道守卫就是"关掉鉴权"。
+        let empty_cfg = state("");
+        for (label, req) in [
+            ("完全不带 Authorization", headers(None)),
+            ("Bearer 后面什么都没有", headers(Some("Bearer"))),
+            ("Bearer 加一个空凭证", headers(Some("Bearer   "))),
+            ("带了一枚像样的 token 也没用", headers(Some(&format!("Bearer {}", "a".repeat(64))))),
+        ] {
+            assert_eq!(code_of(check_auth(&empty_cfg, &req)), "unauthorized", "{}", label);
+        }
+
+        // ② **配置正常、请求侧为空**: 同样 401(取不到凭证时 `bearer_token` 给 `""`,
+        //    绝不许被当成凭证去比)。
+        let good = state(&"a".repeat(64));
+        for (label, req) in [
+            ("完全不带 Authorization", headers(None)),
+            ("Authorization 是别的 scheme", headers(Some("Basic YWJj"))),
+            ("Bearer 后面是空白", headers(Some("Bearer    "))),
+        ] {
+            assert_eq!(code_of(check_auth(&good, &req)), "unauthorized", "{}", label);
+        }
+
+        // ③ **正对照**: 正确 token 必须通过 —— 没有这一条, "把所有请求都拒掉"也能让上面全绿。
+        assert!(check_auth(&good, &headers(Some(&format!("Bearer {}", "a".repeat(64))))).is_ok());
+        assert!(check_auth(&good, &headers(Some(&format!("bearer {}", "a".repeat(64))))).is_ok());
     }
 
     /// `is_body_bound_header` 只丢"描述旧 body"的头 —— `Allow` 这类描述**这次请求**的头

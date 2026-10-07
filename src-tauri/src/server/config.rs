@@ -16,11 +16,31 @@ pub const DEFAULT_PORT: u16 = 8765;
 #[serde(rename_all = "camelCase")]
 pub struct ServerConfig {
     /// **默认 false**: 服务必须由用户显式开启。规格 §4.3/§11。
+    ///
+    /// 每个字段都写了 `#[serde(default ...)]`: 少一个字段**不许**把整份配置丢掉。
+    /// 旧写法(容器上一个 default 都没有)的后果很具体 —— 用户照文档手改配置、漏了 `token`
+    /// 这一行, 整份配置反序列化失败 → `load()` 回落 `default()` → 他的 `enabled` 与
+    /// `shares` 一起人间蒸发, 服务从此默认关闭而用户不知道为什么。
+    #[serde(default)]
     pub enabled: bool,
+    /// ⚠️ 这里**不能**写裸的 `#[serde(default)]`: `u16` 的类型默认值是 **0**, 那会让
+    /// "配置里漏了 port" 变成"端口 0 = 让系统随便挑一个" —— 手机上的二维码就永远对不上了。
+    /// 字段默认值必须是 `DEFAULT_PORT`。
+    #[serde(default = "default_port")]
     pub port: u16,
+    /// 缺 `token` 时给空串 —— 空 token 是 **fail-closed** 的(`start` 拒绝启动、
+    /// 鉴权层显式拒绝), 而且 `boot`/`ensure_token` 会在起服务前重新生成一枚并落盘。
+    #[serde(default)]
     pub token: String,
     /// 共享根白名单。**空 = 谁都访问不了**（这是安全的默认值, 不是 bug）。
+    #[serde(default)]
     pub shares: Vec<PathBuf>,
+}
+
+/// `ServerConfig::port` 的 serde 默认值。单独写成函数是因为 `#[serde(default)]` 用的是
+/// **字段类型**的 `Default`(u16 → 0), 而这里要的是 `DEFAULT_PORT`。
+fn default_port() -> u16 {
+    DEFAULT_PORT
 }
 
 impl Default for ServerConfig {
@@ -140,6 +160,55 @@ mod tests {
         assert!(cfg.enabled, "用户的开关不该因为 token 坏了被清掉");
         assert_eq!(cfg.port, 8123);
         assert_eq!(cfg.shares, vec![PathBuf::from("C:\\照片")]);
+    }
+
+    /// **手改配置漏字段不许把整份配置丢掉**(本轮复审的第 3 条 minor)。
+    ///
+    /// 现场是这样的: 文档让用户手改 `server-config.json`, 而他漏了(或写错)某一行。
+    /// 没有 `#[serde(default)]` 时整份反序列化失败 → `load()` 回落 `default()` →
+    /// `enabled` 与 `shares` 一起消失, 服务从此默认关闭, 用户完全看不出原因。
+    ///
+    /// 三个字段各缺一次, 每个都断言"剩下的原样保留 + 缺的那个拿到**正确的**默认值"。
+    /// 特别是 `port`: 裸 `#[serde(default)]` 会给 0(让系统随便挑端口) —— 这条就是它的靶子。
+    #[test]
+    fn a_config_missing_any_single_field_keeps_the_rest() {
+        let dir = tmp_dir("missingfield");
+        std::fs::create_dir_all(&dir).expect("建临时目录");
+
+        // ① 缺 `token`(文档建议手改的那一行): enabled/shares/port 必须原样保留。
+        std::fs::write(
+            dir.join(CONFIG_FILE),
+            serde_json::json!({
+                "enabled": true,
+                "port": 8123,
+                "shares": ["C:\\照片"],
+            })
+            .to_string(),
+        )
+        .expect("写配置");
+        let cfg = ServerConfig::load(&dir);
+        assert!(cfg.enabled, "漏了 token 不许把用户的开关一起丢掉");
+        assert_eq!(cfg.port, 8123);
+        assert_eq!(cfg.shares, vec![PathBuf::from("C:\\照片")]);
+        assert!(cfg.token.is_empty(), "缺 token → 空串(fail-closed, 起服务前会重新生成)");
+
+        // ② 缺 `port`: 必须是 DEFAULT_PORT, **不是 0**(0 = 让系统随便挑端口)。
+        std::fs::write(
+            dir.join(CONFIG_FILE),
+            serde_json::json!({ "enabled": true, "token": "a".repeat(64) }).to_string(),
+        )
+        .expect("写配置");
+        let cfg = ServerConfig::load(&dir);
+        assert_eq!(cfg.port, DEFAULT_PORT, "漏了 port 必须回落到默认端口, 不能是 0");
+        assert!(cfg.enabled);
+
+        // ③ 缺 `enabled`: 默认关闭(安全默认值)。一个空对象也不许 panic。
+        std::fs::write(dir.join(CONFIG_FILE), "{}").expect("写配置");
+        let cfg = ServerConfig::load(&dir);
+        assert!(!cfg.enabled, "缺 enabled 必须默认关闭");
+        assert_eq!(cfg.port, DEFAULT_PORT);
+        assert!(cfg.token.is_empty());
+        assert!(cfg.shares.is_empty());
     }
 
     /// `token_is_valid` 的边界。长度对但不是十六进制 → 不可用

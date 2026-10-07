@@ -129,30 +129,17 @@ async fn get_server_status(
 }
 
 /// 开/关图库服务。**开启路径上的一切失败都只回 `Err`**, 桌面端不受影响。
+///
+/// 真正做事的顺序(含"落盘失败时端口必须照样放开"那一条)在 `server::set_enabled`:
+/// 它只认一个目录, 于是那条路径能被单测**真的走一遍**(测试把配置路径指到一个写不进去的
+/// 位置), 而不是靠读代码相信。这里只做一件事: 把 Tauri 的 app 数据目录翻译成一个 `&Path`。
 #[tauri::command]
 async fn set_server_enabled(
     app: tauri::AppHandle,
     state: tauri::State<'_, server::ServerState>,
     enabled: bool,
 ) -> Result<server::ServerStatus, String> {
-    let st = state.inner().clone();
-    if enabled {
-        // 顺序是刻意的: ①先把 token 备好(随机数不可用 → 直接 `Err`, 配置一个字节都不动);
-        // ②再打开开关并落盘; ③最后尽力起服务。任何一步失败都只是 `Err`。
-        //
-        // ③ 失败时**不**把 enabled 回滚: 用户的选择照旧留着(下次开机还会再试一次), 而服务
-        // 并没有在监听 —— `running` 与 `enabled` 在状态里是分开的, 界面据实显示即可。
-        server::ensure_token_persisted(&st, &server::app_data_dir(&app)?)?;
-        st.config.write().map_err(|e| e.to_string())?.enabled = true;
-        server::persist(&app, &st)?;
-        server::start(st.clone()).await?;
-    } else {
-        st.config.write().map_err(|e| e.to_string())?.enabled = false;
-        server::persist(&app, &st)?;
-        // **关掉就必须真的停止监听** —— 否则"已关闭"是一句谎话(见 `server::stop`)。
-        server::stop();
-    }
-    server::status_of(&app, &st)
+    server::set_enabled(state.inner(), &server::app_data_dir(&app)?, enabled).await
 }
 
 /// 轮换配对 token。已有手机需要重新配对(规格 §5.2); 服务不用重启 —— 端点每次请求

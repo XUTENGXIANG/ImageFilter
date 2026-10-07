@@ -21,7 +21,6 @@ use axum::{
 use serde::Serialize;
 use serde_json::json;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU16, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex, RwLock};
 
 /// `decisions-changed` 的发送端。**类型擦除的一层**: 函数签名里**没有** `tauri::AppHandle`。
@@ -86,9 +85,13 @@ pub struct ServerStatus {
     pub token: String,
     pub shares: Vec<String>,
     /// 用户的选择(落盘的那一份), 与 `running` 分开 —— 两者不一致本身就是有用的信息。
+    ///
+    /// **这一份的语义是"下次开机还会不会尝试开启"**: 它永远是盘上那一份(`set_enabled`
+    /// 在落盘失败时会把内存撤回成盘上的值)。所以界面不能只看它来决定"现在有没有在监听"。
     pub enabled: bool,
-    /// 上一次启动失败的原因(**可见的理由**)。启动路径不许把桌面端搞崩, 所以失败只能
-    /// 留在这里 + 一行 stderr; 界面据此给用户一句人话。启动成功后清空。
+    /// 上一次**生命周期失败**的原因(**可见的理由**)。启动路径不许把桌面端搞崩, 所以失败
+    /// 只能留在这里 + 一行 stderr; 界面据此给用户一句人话。启动成功后清空, `stop()` 也清空
+    /// (用户亲手关了它, 还挂着旧理由是噪音); "关掉了但设置没能保存"会重新记一条。
     pub last_error: Option<String>,
 }
 
@@ -205,33 +208,76 @@ async fn ping() -> Json<serde_json::Value> {
 //      (随机数不可用 → `auth::try_new_token` 给 Err; 端口全被占 → `start` 给 Err);
 //   ③ 空/坏 token **fail-closed**: 服务宁可不起, 也不许出现"空 token = 关掉鉴权"。
 
-/// 在跑的端口。0 = 没在跑。
+/// 服务生命周期的**唯一**状态: 代数、在跑的端口、停止开关、在途 bind 的票据。
 ///
-/// 为什么用静态量而不是把句柄塞进 `ServerState`: `ServerStatus` 要能在**没有 app 状态**
-/// 的地方(单测、日志)回答"到底有没有在监听", 而这是**进程级**事实。
-static RUNNING_PORT: AtomicU16 = AtomicU16::new(0);
+/// ── 为什么合成一个(本轮修复 · 复审 Critical 2) ──────────────────────────────
+/// 这三个字段原先各自是一个静态量(`SHUTDOWN` / `RUNNING_PORT` / `SERVE_GEN`), 而
+/// `start` 分三步**分别**写它们、`stop` 一次锁都不上。Tauri 把每条异步命令当成自己的任务
+/// 丢在**多线程**运行时上, 所以两条交错的 enable/disable 命令是真的并行, 于是:
+///   · stop 落在 bind 与"装停止开关"之间 → 信号发给了上一台(或没人), 新服务**一边
+///     `enabled = false` 一边永久监听**;
+///   · stop 落在"装开关"与"存端口"之间 → 端口被重新写回, 而 serve 任务因为代数已经推进
+///     不再收尾 → **端口卡住**: 状态说"在跑"却没人监听, 之后每一次开启都在幂等检查上短路。
+/// 两个窗口都是"状态被分成几份、各自上锁"造出来的。现在四个字段同住一把锁, `start` 与
+/// `stop` 对它们的每一次读写都在**同一段临界区**里完成。
+///
+/// ── 不变量(改这一节之前先读三遍) ────────────────────────────────────────────
+///   · `port == Some(p)` ⟺ 我们安装了一台监听 p 的服务(端口真的在 accept);
+///   · `port == None` ⟹ 没有任何一台"我们以为在跑"的服务, **并且** `stop()` 已经把所有
+///     在途安装作废(它在同一次临界区里推进代数), 所以端口不会卡住;
+///   · 端口的每一次写入都在同一个临界区里伴随"这一代还被要着吗"的检查 —— 既不存在
+///     "在监听但没人知道", 也不存在"没人监听却显示在跑"。
+/// 由此得到本任务要求的那句: **任意交错之后, "到底有没有在监听"都答得出真话**
+/// (`ServerStatus::running` 就是 `port.is_some()`, 见 `running_port`), **端口也不会卡住**。
+struct Lifecycle {
+    /// 服务的"代数"。安装一台服务 +1; `stop()`/自我取消也 +1 —— 后者是作废**在途**
+    /// `start` 票据的唯一手段(bind 是 await, 期间完全可能有人把服务关掉)。
+    gen: u64,
+    /// 在跑的端口(`None` = 没在跑)。
+    ///
+    /// 为什么是进程级静态量而不是塞进 `ServerState`: `ServerStatus` 要能在**没有 app 状态**
+    /// 的地方(单测、日志)回答"到底有没有在监听"。
+    port: Option<u16>,
+    /// 当前这一台的停止开关。
+    ///
+    /// 每次 `start` 造**新的一对** `watch` 通道装进这里: 复用同一个 sender 会让"上一次
+    /// stop"的许可落到下一台上(新服务一启动就被关掉)。`stop()` 只关最近起的这一台。
+    shutdown: Option<tokio::sync::watch::Sender<bool>>,
+    /// 正在 bind 中途的那次 `start` 的票据(代号); 没有在途 start 时是 `None`。
+    ///
+    /// 生产逻辑只需要 `gen` 就能做判断, 这个字段存在的唯一理由是**可观测**: 没有它,
+    /// "把 stop 插进 bind 与安装之间"这件事在测试里只能靠 sleep 猜时机 —— 要么假红
+    /// (stop 先于取号跑完, 于是 start 合法地装上了服务), 要么假绿(窗口早过去了)。
+    /// 有了它, 并发用例可以**等到**窗口真的开着再插进去(见 `mod tests` 的
+    /// `concurrent_stop_during_bind_never_leaves_a_listener_behind`)。
+    binding: Option<u64>,
+}
 
-/// 服务的"代数"。每次 `start` 递增一次。
-///
-/// 只为一件事: 上一台服务的收尾任务**不许**把下一台的端口抹成 0(否则状态里会显示
-/// "没在跑"而实际上还在监听)。收尾前对一下代数即可 —— 见 `start` 里的 spawn。
-static SERVE_GEN: AtomicU64 = AtomicU64::new(0);
+static LIFECYCLE: StdMutex<Lifecycle> =
+    StdMutex::new(Lifecycle { gen: 0, port: None, shutdown: None, binding: None });
 
-/// 当前这一台服务的停止开关。
-///
-/// 每次 `start` 造**新的一对** `watch` 通道装进这里: 复用同一个 sender 会让"上一次 stop"
-/// 的许可落到下一台上(新服务一启动就被关掉)。`stop()` 只关最近起的这一台。
-static SHUTDOWN: StdMutex<Option<tokio::sync::watch::Sender<bool>>> = StdMutex::new(None);
+/// 取生命周期锁。**中毒也照用**(`unwrap_or_else(|e| e.into_inner())`): 这个锁里放的是
+/// 普通状态, 不是"可能被写坏的不变量"; 而一旦因为别处 panic 就再也拿不到这把锁,
+/// 用户便**永远关不掉服务** —— 那正是本轮修复要消灭的那种失败。
+fn lifecycle() -> std::sync::MutexGuard<'static, Lifecycle> {
+    LIFECYCLE.lock().unwrap_or_else(|e| e.into_inner())
+}
 
-/// 起服务这条路的串行闸门。
-///
-/// 并发的两次"开启"(开机拉起与用户点开关撞在一起、或连点两下)会**各绑一个端口**,
-/// 后绑的那台把 `RUNNING_PORT` 覆盖掉 —— 先绑的那台从此没人知道它在监听, 也停不掉。
-/// 用 `tokio::sync::Mutex` 是因为要在 `.await`(建监听、拿锁)之间持锁, `std::sync::Mutex`
+/// 起服务这条路的串行闸门。**只管"两次开启不许各绑一个端口"** ——
+/// 它与 `LIFECYCLE` 是两件事, 别混:
+///   · 这一把(`tokio::sync::Mutex`)串行**两次 start**: 并发的两次"开启"(开机拉起与用户
+///     点开关撞在一起、或连点两下)会各绑一个端口, 先绑的那台从此没人知道它在监听;
+///   · `LIFECYCLE`(std, 短临界区)才是 `start` 与 `stop` 之间的互斥 —— 后者可能在
+///     bind 的 `.await` 中途发生, 所以它不能靠这把锁(拿了就没人能叫停了)。
+/// 用 `tokio::sync::Mutex` 是因为要在 `.await`(建监听)之间持锁, `std::sync::Mutex`
 /// 的守卫不是 `Send`, 会让 Tauri 命令的 future 编译不过。
 static START_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
-/// 上一次启动失败的原因。只为一件事: 让界面能给出**可见的理由**(见 `ServerStatus`)。
+/// 上一次**生命周期失败**的原因(start 失败, 或"关掉了但设置没能保存")。只为一件事:
+/// 让界面能给出**可见的理由**(见 `ServerStatus::last_error`)。
+///
+/// 由 `stop()` 清空 —— 用户已经亲手把服务关了, 还挂着一句上次启动失败的理由是噪音,
+/// 也会让"关了但它还在报错"看起来像没关掉。
 static LAST_ERROR: StdMutex<Option<String>> = StdMutex::new(None);
 
 fn record_start_error(msg: String) {
@@ -285,11 +331,21 @@ pub async fn start(state: ServerState) -> Result<u16, String> {
         return Err(msg);
     }
 
-    // 已经在跑就别再起一台: 否则第二次调用会绑到下一个端口, 而 RUNNING_PORT 被覆盖,
-    // 旧的那台从此没人知道它在监听(状态里看不见, 也停不掉)。
-    if let Some(p) = running_port() {
-        return Ok(p);
-    }
+    // 幂等 + 取票据。**这两件事必须在同一段临界区里** —— "有没有在跑"和"我要开始 bind 了"
+    // 是同一个原子事实, 否则两次并发的开启之间还会漏出第二台服务。
+    //
+    // 票据(`gen`)的用法: bind 是 `.await`, 期间完全可能有人把服务关掉。`stop()` 会推进
+    // 代数, 于是 bind 成功之后的那次安装会看到"我这一代已经不是当前这一代"并**把监听器
+    // 丢掉** —— 这就是"stop 落在 bind 与安装之间"那个窗口的解药。
+    let ticket = {
+        let mut lc = lifecycle();
+        if let Some(p) = lc.port {
+            return Ok(p);
+        }
+        lc.gen += 1;
+        lc.binding = Some(lc.gen);
+        lc.gen
+    };
 
     // 端口被占用就 +1 重试, 最多 20 次 —— 用户机器上 8765 被别的软件占了很常见
     let mut last_err = String::new();
@@ -297,18 +353,43 @@ pub async fn start(state: ServerState) -> Result<u16, String> {
         let port = cfg.port.saturating_add(offset);
         match tokio::net::TcpListener::bind(("0.0.0.0", port)).await {
             Ok(listener) => {
-                let gen = SERVE_GEN.fetch_add(1, Ordering::SeqCst) + 1;
+                // 实际绑到的端口。与 `port` 不同的唯一情形是配置里写了 0(让系统挑) ——
+                // 那时把 0 存进状态, 界面会显示一个谁都不该去连的端口。
+                let bound = listener.local_addr().map(|a| a.port()).unwrap_or(port);
                 let (tx, mut rx) = tokio::sync::watch::channel(false);
-                // 装停止开关。**这里不 await**, 所以用 `std::sync::Mutex` 是安全的
-                // (守卫在同一段同步代码里就释放了)。
-                match SHUTDOWN.lock() {
-                    Ok(mut slot) => *slot = Some(tx),
-                    Err(_) => return Err("内部状态不可用(停止开关), 服务未启动".into()),
+                // **安装这一步是整段代码的心脏。** 三个动作 —— 判断还能不能装、装停止开关、
+                // 存端口 —— 必须在**同一次**临界区里完成, 中间不许有任何 `.await`/放锁的点:
+                // Critical 2 的那两个交错窗口, 就是从把它们拆开的地方钻出来的。
+                {
+                    let mut lc = lifecycle();
+                    // 还能装吗? 两个条件都在锁里读:
+                    //   ① 代数没变 —— bind 期间没有人叫停(`stop()` 或另一个 start 的自取消);
+                    //   ② 用户还要着它 —— 期间没有并发跑完一次"关闭"。少了②, 一次乱序的
+                    //      "先点关、再点开"就能造出"enabled=false 却还在监听"。
+                    //      `wants_start` 在读锁中毒时给 false, 也就是**不装**(fail-closed)。
+                    if lc.gen != ticket || !wants_start(&state) {
+                        // 我这次 bind 结束了(以"取消"结束): 状态里**不许**留着这张票据。
+                        // 留着它, `binding` 就不再等于"有一次 start 正在 bind" —— 它会让
+                        // 下一个人(或下一条并发用例)以为窗口还开着, 从而在错误的时刻插进来。
+                        // 这正是本任务要消灭的那类"账与实际不符", 所以这里也照同一把尺子办。
+                        if lc.binding == Some(ticket) {
+                            lc.binding = None;
+                        }
+                        drop(lc);
+                        // 没装上去的监听器一个字节都不留: 端口在这一行就放开了。
+                        drop(listener);
+                        let msg = "服务在启动过程中被关闭, 未开始监听(端口已放开)".to_string();
+                        record_start_error(msg.clone());
+                        return Err(msg);
+                    }
+                    lc.shutdown = Some(tx);
+                    lc.port = Some(bound);
+                    lc.binding = None;
                 }
-                RUNNING_PORT.store(port, Ordering::SeqCst);
                 clear_start_error();
                 // **整张路由表只有一个入口** `routes::router`, 鉴权层罩住全部(见模块头)。
                 let app = routes::router(state.clone());
+                let gen = ticket;
                 tauri::async_runtime::spawn(async move {
                     let served = axum::serve(listener, app)
                         .with_graceful_shutdown(async move {
@@ -317,17 +398,32 @@ pub async fn start(state: ServerState) -> Result<u16, String> {
                             let _ = rx.changed().await;
                         })
                         .await;
-                    // 只有"我这一代"才有资格清端口: 否则上一台的收尾会把新一台抹成 0。
-                    if SERVE_GEN.load(Ordering::SeqCst) == gen {
-                        RUNNING_PORT.store(0, Ordering::SeqCst);
+                    // 只有"我这一代"才有资格清状态: 否则上一台的收尾会把**新一台**的端口
+                    // 抹掉, 状态说"没在跑"而实际上在监听。
+                    {
+                        let mut lc = lifecycle();
+                        if lc.gen == gen {
+                            lc.port = None;
+                            lc.shutdown = None;
+                        }
                     }
                     if let Err(e) = served {
                         eprintln!("[server] 服务结束: {}", e);
                     }
                 });
-                return Ok(port);
+                return Ok(bound);
             }
             Err(e) => last_err = e.to_string(),
+        }
+    }
+    // 20 个端口全绑不上。**这里天然不会留下陈旧状态**: `port` 只在上面那次安装里被写过,
+    // 一次都没走到的路径不可能留下端口; binding 也清掉, 免得让并发用例以为还有一次
+    // bind 在途。以后谁想把端口/状态的写入提前到 bind 之前, 先把这句话读一遍 ——
+    // "绑不上却显示在跑"正是本轮要消灭的第二种谎。
+    {
+        let mut lc = lifecycle();
+        if lc.binding == Some(ticket) {
+            lc.binding = None;
         }
     }
     let msg = format!(
@@ -338,29 +434,46 @@ pub async fn start(state: ServerState) -> Result<u16, String> {
     Err(msg)
 }
 
-/// 停止当前这一台服务。**幂等**: 没在跑时什么都不做。
+/// 停止当前这一台服务。**幂等**: 没在跑时什么都不做(但代数照样推进, 见下)。
 ///
 /// 为什么这一条必须在 M0′ 就有: `set_server_enabled(false)` 的语义是"用户关掉了它"。
 /// 关掉之后还继续监听, 就是在对用户撒谎 —— 而且是安全上最难察觉的那种。
 ///
-/// 端口立刻置 0(不等 serve 未来收尾): 状态查询马上能看到"没在跑"; 同时把代数推进一格,
-/// 免得即将收尾的那台任务把**下一台**的端口清掉。
+/// **与 `start` 的互斥**: 下面的每一次读写都在 `LIFECYCLE` 那一把锁里, 于是两种交错都
+/// 有确定结果:
+///   · stop 落在 bind 之后、安装之前 → 代数被推进, 那次安装自己取消并**把监听器丢掉**;
+///   · stop 落在安装之后 → 端口在同一次临界区里就被清掉, 不可能再被写回来。
+/// 端口立刻清掉(不等 serve 未来收尾): 状态查询马上能看到"没在跑"; 而推进代数是为了
+/// 让即将收尾的那台任务不去清**下一台**的状态。
+///
+/// 顺带清 `LAST_ERROR`: 用户已经把它关了, 还挂着一句上一次的启动失败理由是噪音。
+/// (关闭路径自己若在落盘上失败, 会在 `stop()` **之后**记一条新的理由 —— 见 `set_enabled`。)
 pub fn stop() {
-    if let Ok(slot) = SHUTDOWN.lock() {
-        if let Some(tx) = slot.as_ref() {
-            let _ = tx.send(true);
-        }
+    let mut lc = lifecycle();
+    if let Some(tx) = lc.shutdown.take() {
+        let _ = tx.send(true);
     }
-    SERVE_GEN.fetch_add(1, Ordering::SeqCst);
-    RUNNING_PORT.store(0, Ordering::SeqCst);
+    lc.port = None;
+    // 代数推进: **作废所有在途 start 的票据** —— 这是"stop 卡在 bind 中途"唯一可靠的解药。
+    lc.gen += 1;
+    drop(lc);
+    clear_start_error();
 }
 
 /// 在跑的端口(`None` = 没在跑)。
+///
+/// **与 `start`/`stop` 同一把锁**: 它回答的是"我们到底安装了一台服务没有", 而不是去猜。
 pub fn running_port() -> Option<u16> {
-    match RUNNING_PORT.load(Ordering::SeqCst) {
-        0 => None,
-        p => Some(p),
-    }
+    lifecycle().port
+}
+
+/// **只给测试**: 在途 bind 的票据(`None` = 没有 start 正在 bind)。
+///
+/// 生产代码不用它 —— 见 `Lifecycle::binding` 上那段说明: 它的价值是让"stop 插进 bind
+/// 窗口"这件事**可被观测**, 于是那条并发用例是确定性的, 而不是靠 sleep 猜时机。
+#[cfg(test)]
+pub(crate) fn binding_ticket_for_test() -> Option<u64> {
+    lifecycle().binding
 }
 
 /// 用本机 IPv4 拼一个手机可填的地址。检测不到就回落到 localhost。
@@ -420,6 +533,9 @@ pub fn share_strings(st: &ServerState) -> Result<Vec<String>, String> {
 ///
 /// 与 `status_of` 的差别只有一个 app 句柄: 状态本身今天是纯的(端口是进程级静态量),
 /// 所以把它单独留一个**不需要 Tauri app**的入口, 单测才能真的断言它。
+///
+/// ⚠️ **`running` 与 `enabled` 是两件事, 界面必须两个都看**(见 `ServerStatus` 的字段注释):
+/// `running` 由 `LIFECYCLE` 那一把锁给出, 任何时刻都说真话; `enabled` 是用户的选择。
 pub fn status_of_state(st: &ServerState) -> Result<ServerStatus, String> {
     let cfg = st.config.read().map_err(|e| e.to_string())?.clone();
     let running = running_port();
@@ -439,6 +555,96 @@ pub fn status_of_state(st: &ServerState) -> Result<ServerStatus, String> {
 pub fn status_of(app: &tauri::AppHandle, st: &ServerState) -> Result<ServerStatus, String> {
     let _ = app;
     status_of_state(st)
+}
+
+/// **开/关服务的完整实现**。Tauri 命令 `set_server_enabled` 只负责把 app 数据目录翻译成
+/// 一个 `&Path` 再调这里。
+///
+/// 为什么参数是 `&Path` 而不是 `AppHandle`: "落盘失败时端口也必须照样放开"是本轮修复的
+/// 核心(Critical 1), 而"盘写不进去"只有把目录当参数才**测得出来** —— 测试可以把配置路径
+/// 指到一个写不进去的位置, 让这条路径被真的走一遍, 而不是靠看代码相信它。
+///
+/// ── 落盘失败时用户看到什么(本轮明确做出的决定) ──────────────────────────────
+///   · **"关"这个动作的第一保证是端口被放开**: `stop()` 无条件执行, 与落盘成败无关。
+///   · **盘上那一份赢**: 落盘失败意味着盘上的 `enabled` 一个字节都没变, 所以内存里那个
+///     开关必须**撤回**成盘上仍然写着的值。理由是安全的 —— 下次开机读的是盘, 内存跟着盘
+///     走才不会出现"界面说已关闭、下次开机却照旧监听"(那正是 Critical 1 的一半)。
+///   · 于是状态是 `enabled: true, running: false, lastError: "…没能保存…"`: **服务真的已经
+///     停止监听**(端口放开了), 但"关掉"这个设置没保存下来, 下次启动仍会尝试开启。
+///     界面必须把 `lastError` 显示出来, 否则用户会以为自己只是没点中。
+///   · 开启路径**对称**: 落盘失败同样把 `enabled` 撤回成盘上那一份, 而且保证一个监听都没起
+///     (顺序是"先落盘、后 start", 见下)。
+pub async fn set_enabled(
+    st: &ServerState,
+    app_data_dir: &Path,
+    enabled: bool,
+) -> Result<ServerStatus, String> {
+    if enabled {
+        // 顺序是刻意的: ①先把 token 备好(随机数不可用 → 直接 Err, 配置一个字节都不动);
+        // ②再打开开关并落盘; ③最后尽力起服务。任何一步失败都只是 Err。
+        //
+        // ③ 失败时**不**把 enabled 回滚: 用户的选择照旧留着(下次开机还会再试一次), 而服务
+        // 并没有在监听 —— `running` 与 `enabled` 在状态里是分开的, 界面据实显示即可。
+        ensure_token_persisted(st, app_data_dir)?;
+        let prev = read_enabled(st);
+        write_enabled(st, true)?;
+        if let Err(e) = save_config(st, app_data_dir) {
+            // 撤回成盘上那一份。此刻**一个监听都没起**(start 在落盘之后), 所以这里没有
+            // 端口要放开 —— 与关闭路径的"无条件 stop"对应, 那边才是会留下端口的一侧。
+            let _ = write_enabled(st, prev);
+            let msg = format!(
+                "服务未启动: 设置没能保存(重启后仍是之前的状态)。{}",
+                e
+            );
+            record_start_error(msg.clone());
+            return Err(msg);
+        }
+        match start(st.clone()).await {
+            Ok(_) => status_of_state(st),
+            Err(e) => {
+                record_start_error(e.clone());
+                Err(e)
+            }
+        }
+    } else {
+        let prev = read_enabled(st);
+        // **先写内存、再停、最后落盘** —— 三步的顺序都是刻意的:
+        //   ① `enabled = false` 必须**先于** `stop()`: 在途的 `start` 会在安装前读到
+        //      "用户不要了" 从而自我取消(见 `start` 的安装检查)。反过来的话, 一次乱序的
+        //      "先点关、再点开" 就能造出"关着却还听着"。
+        //   ② `stop()` **无条件**执行: 端口必须在这一步放开, 与落盘的成败无关(Critical 1)。
+        //      落盘失败这条路上, 旧代码的 `?` 会在 stop 之前提前返回 —— 于是监听一直留着,
+        //      而内存已经说"关"、盘上还说"开": 用户**再也关不掉它**。
+        //   ③ 落盘。失败就撤回①(盘上那一份赢), 并把理由交给界面。
+        //
+        // 注意①与②之间**不许**出现 `?`: 写内存失败(配置读锁中毒)也绝不早退, 否则端口
+        // 就留下来了 —— "停"这个动作不许被任何别的事情挡在前面。
+        let wrote = write_enabled(st, false);
+        stop();
+        wrote.map_err(|e| format!("服务已停止监听, 但设置没能保存(内部状态不可用): {}", e))?;
+        if let Err(e) = save_config(st, app_data_dir) {
+            let _ = write_enabled(st, prev);
+            let msg = format!(
+                "已停止监听, 但设置没能保存(下次启动仍会尝试开启; 界面里的开关会回到'开')。{}",
+                e
+            );
+            record_start_error(msg.clone());
+            return Err(msg);
+        }
+        status_of_state(st)
+    }
+}
+
+/// 读内存里的开关。**读不到(锁中毒)或 false** —— 调用方用它做撤回, 而"读不到就当作
+/// 没开"是 fail-closed 的方向: 绝不会把服务撤回到"开着"。
+fn read_enabled(st: &ServerState) -> bool {
+    st.config.read().map(|c| c.enabled).unwrap_or(false)
+}
+
+/// 写内存里的开关。
+fn write_enabled(st: &ServerState, v: bool) -> Result<(), String> {
+    st.config.write().map_err(|e| e.to_string())?.enabled = v;
+    Ok(())
 }
 
 /// 桌面端 `setup` 的唯一入口: 按配置决定是否拉起服务。
@@ -800,6 +1006,382 @@ mod tests {
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         }
         assert!(refused, "stop 之后端口 {} 必须真的不再接受连接", port);
+    }
+
+    /// 本轮新增: **走生产入口 `set_enabled`**(Tauri 命令体里那一句)的那一层包装。
+    ///
+    /// 与 `start_on_tauri_runtime` 同一条纪律: `start` 把监听器注册在**调用方**的运行时上,
+    /// 所以必须照生产的调用方式(Tauri 运行时)进来 —— 否则表现为"起来了但请求超时"。
+    fn set_enabled_on_tauri_runtime(
+        st: &ServerState,
+        dir: &Path,
+        enabled: bool,
+    ) -> Result<ServerStatus, String> {
+        let st = st.clone();
+        let dir = dir.to_path_buf();
+        std::thread::spawn(move || tauri::async_runtime::block_on(set_enabled(&st, &dir, enabled)))
+            .join()
+            .expect("set_enabled 线程不许 panic")
+    }
+
+    /// 端口此刻真的在接受连接吗?
+    fn accepts_connections(port: u16) -> bool {
+        std::net::TcpStream::connect(("127.0.0.1", port)).is_ok()
+    }
+
+    /// 轮询到端口真的不再接受连接(或超时)。
+    ///
+    /// **必须有这一层**: 端口不是瞬间就关的 —— `stop()` 放下状态并把叫停信号发出去之后,
+    /// serve 任务要走到干净的收尾才真的关掉 socket。直接 connect 一次就断言会得到一个
+    /// 随机的红。
+    fn wait_until_refused(port: u16, within: std::time::Duration) -> bool {
+        let deadline = std::time::Instant::now() + within;
+        loop {
+            if !accepts_connections(port) {
+                return true;
+            }
+            if std::time::Instant::now() >= deadline {
+                return false;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+    }
+
+    /// 占住从 base 起的 **19** 个连续端口, 并确认第 20 个(base+19)是空的。
+    ///
+    /// 用途只有一个: 让 `start` 的 bind 循环**必须**连撞 19 次失败才会成功 —— 那个窗口
+    /// 足够长, 并发用例才插得进去(见 `concurrent_stop_during_bind_...`)。找不到就给 None
+    /// (本机端口太挤), 由调用方**大声**失败, 而不是悄悄跳过。
+    fn hold_nineteen_so_the_twentieth_bind_is_the_one(
+    ) -> Option<(u16, Vec<std::net::TcpListener>)> {
+        for candidate in (30_000u16..40_000).step_by(20) {
+            let mut held = Vec::new();
+            let mut ok = true;
+            for p in candidate..candidate + 20 {
+                match std::net::TcpListener::bind(("0.0.0.0", p)) {
+                    Ok(l) => held.push(l),
+                    Err(_) => {
+                        ok = false;
+                        break;
+                    }
+                }
+            }
+            if ok {
+                // 第 20 个(start 真正会绑上的那个)还回去, 其余 19 个继续占着。
+                drop(held.pop().expect("刚刚绑上了 20 个"));
+                return Some((candidate, held));
+            }
+        }
+        None
+    }
+
+    /// **Critical 1 的钉子: 关服务这条路上落盘失败, 也绝不许把监听留下来。**
+    ///
+    /// 旧代码的顺序是 `enabled=false` → `persist(...)?` → `stop()`: 落盘一旦失败, 那个 `?`
+    /// 就在 `stop()` **之前**返回了。后果不是"少关一次", 而是三种谎叠在一起 ——
+    /// 内存说关(界面显示关闭)、盘上还说开(下次开机照旧监听)、而端口一直在 accept,
+    /// 并且**没有任何命令能再关掉它**。
+    ///
+    /// 落盘失败在这儿是**真的**发生的, 不是注入的假错误: 把配置文件名占成一个目录,
+    /// 于是 `create_dir_all` 成功、紧接着那句 `fs::write(<目录>)` 被文件系统拒掉
+    /// (Windows: os error 5 拒绝访问)。
+    ///
+    /// 变异靶子: 把关闭分支改回 "先 `persist(...)?` 再 `stop()`" → 端口不会被放开, 这条红。
+    #[test]
+    fn disable_releases_the_port_even_when_persisting_fails() {
+        let _serialized = GLOBAL_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        reset_server_state();
+        let dir = tmp_dir("disable_persist_fail");
+        std::fs::create_dir_all(&dir).expect("建临时目录");
+
+        let st = config::ServerConfig {
+            enabled: true,
+            port: 29_876,
+            token: "c".repeat(64),
+            shares: Vec::new(),
+        }
+        .into_state();
+
+        // 先起一台**真的**在监听的服务(否则这条用例什么都没证明)。
+        let port = start_on_tauri_runtime(st.clone()).expect("应能起服务");
+        assert!(accepts_connections(port), "夹具前提: {} 必须真的在监听", port);
+        assert!(http_get(port, "/api/v1/ping", None).contains("200"));
+
+        // 把配置路径占成一个目录 —— 落盘**必然**失败(真实文件系统的 Err)。
+        std::fs::create_dir(dir.join(config::CONFIG_FILE)).expect("把配置文件名占成目录");
+
+        let err = set_enabled_on_tauri_runtime(&st, &dir, false).expect_err("落盘失败必须回 Err");
+        assert!(err.contains("没能保存"), "理由要能读: {}", err);
+
+        // ① 端口**真的**放开了(不是"状态清零"而已)。
+        assert!(
+            wait_until_refused(port, std::time::Duration::from_secs(10)),
+            "落盘失败也**必须**把 {} 放开 —— 否则 service 关不掉(旧代码的 `?` 正是这样)",
+            port
+        );
+        // ② 状态里 running 说实话。
+        assert_eq!(running_port(), None, "stop 之后状态必须立刻是'没在跑'");
+        let status = status_of_state(&st).unwrap();
+        assert!(!status.running, "状态必须说'没在跑'");
+        // ③ **盘上那一份赢**: 内存里的开关被撤回成盘上仍然写着的 true, 并给出可见的理由。
+        //    下次开机读的是盘, 所以这一份才是"接下来会发生什么"的诚实描述。
+        assert!(status.enabled, "落盘失败时内存必须撤回成盘上那一份(true)");
+        assert!(
+            status.last_error.as_deref().unwrap_or("").contains("没能保存"),
+            "界面必须能拿到一句可见的理由: {:?}",
+            status.last_error
+        );
+    }
+
+    /// **开启路径的对称性**: 落盘失败时不许留下"界面说开着、盘上没开"的错位,
+    /// 而且**一个监听都不许起**(start 在落盘之后, 顺序本身就是保证)。
+    #[test]
+    fn enable_rolls_the_flag_back_and_starts_nothing_when_persisting_fails() {
+        let _serialized = GLOBAL_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        reset_server_state();
+        let dir = tmp_dir("enable_persist_fail");
+        std::fs::create_dir_all(&dir).expect("建临时目录");
+        std::fs::create_dir(dir.join(config::CONFIG_FILE)).expect("把配置文件名占成目录");
+
+        let st = config::ServerConfig {
+            enabled: false,
+            port: config::DEFAULT_PORT,
+            token: "b".repeat(64), // token 已可用 → `ensure_token_persisted` 不动盘
+            shares: Vec::new(),
+        }
+        .into_state();
+
+        let err = set_enabled_on_tauri_runtime(&st, &dir, true).expect_err("落盘失败必须回 Err");
+        assert!(err.contains("没能保存"), "理由要能读: {}", err);
+        assert_eq!(running_port(), None, "落盘失败时一个监听都不许起");
+        let status = status_of_state(&st).unwrap();
+        assert!(!status.enabled, "内存必须撤回成盘上那一份(false)");
+        assert!(!status.running);
+    }
+
+    /// **Critical 2 的钉子(A): `stop()` 必须能作废一次"正在 bind 中途"的 `start()`。**
+    ///
+    /// 场景就是复审点名的**第一个交错**: stop 落在 bind 与"装停止开关/存端口"之间。
+    /// 旧代码里那一枪打给了上一台(或没人), 于是新服务**一边 `enabled = false`
+    /// 一边永久监听** —— 用户关不掉它。
+    ///
+    /// 怎么做到**确定性**(不靠 sleep 猜时机): `Lifecycle::binding` 在 `start` 取票据时
+    /// 立刻可见。用例先**等到**那个窗口真的开着, 再插 `stop()`; 为了让窗口足够长, 预先
+    /// 占住前 19 个候选端口, 于是 `start` 必须连撞 19 次失败的 bind 才绑得上第 20 个。
+    ///
+    /// 这条用例自己带**夹具自检**: 一轮都没命中窗口(即 `start` 全都在 `stop()` 之前就装好)
+    /// 就直接红 —— 否则它会变成一条"永远绿、什么都没证明"的用例。
+    ///
+    /// 变异靶子: 把 `stop()` 里那句 `lc.gen += 1` 删掉(等价于旧代码"stop 不与在途 start
+    /// 序列化": 信号发给旧 sender, 新服务照常安装) → 那次安装不再自我取消, 这条红。
+    #[test]
+    fn concurrent_stop_during_bind_never_leaves_a_listener_behind() {
+        let _serialized = GLOBAL_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        reset_server_state();
+        let (base, held) = hold_nineteen_so_the_twentieth_bind_is_the_one()
+            .expect("找不到 20 个连续空闲端口 —— 测试机器太挤了");
+
+        let st = config::ServerConfig {
+            enabled: true, // 这一条只打 start/stop 的交错: 开关始终"要着", 别让其它机制替它兜底
+            port: base,
+            token: "7".repeat(64),
+            shares: Vec::new(),
+        }
+        .into_state();
+
+        const ROUNDS: u32 = 40;
+        let mut hits = 0u32; // 真的命中"stop 插进 bind 窗口"的轮次
+        let mut leaks: Vec<(u32, u16)> = Vec::new();
+        for round in 0..ROUNDS {
+            assert_eq!(running_port(), None, "第 {} 轮开始前不该有监听", round);
+            // 夹具前提: 没有**上一次**遗留的"在途 bind"标记 —— 否则下面的等待会立刻返回,
+            // 于是 `stop()` 可能跑在取票据**之前**, 那是一种合法的顺序(then 服务该装上去),
+            // 这条用例就会把正确行为判成红(实测: 这正是 `binding` 没在取消路径上清掉的后果)。
+            assert!(
+                binding_ticket_for_test().is_none(),
+                "第 {} 轮开始前不该有遗留的在途票据({:?})",
+                round,
+                binding_ticket_for_test()
+            );
+            let st_start = st.clone();
+            let starter =
+                std::thread::spawn(move || tauri::async_runtime::block_on(start(st_start)));
+            // **等到窗口真的开着**: 取票据 → binding 立刻可见。自旋等, 把探测延迟压到最小。
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            while binding_ticket_for_test().is_none() {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "等不到 start 进入 bind 窗口(第 {} 轮)",
+                    round
+                );
+                std::hint::spin_loop();
+            }
+            stop();
+            let outcome = starter.join().expect("start 线程不许 panic");
+            // 命中窗口的证据: 安装那一步自己取消了(而不是"start 早就装完、stop 事后收拾")。
+            if outcome
+                .as_ref()
+                .err()
+                .map(|e| e.contains("启动过程中被关闭"))
+                .unwrap_or(false)
+            {
+                hits += 1;
+            }
+            if let Some(p) = running_port() {
+                leaks.push((round, p));
+                // 收尾: 把这台"偷活下来"的服务关掉再继续, 免得后面的轮次被幂等检查短路。
+                stop();
+                let _ = wait_until_refused(p, std::time::Duration::from_secs(5));
+            }
+        }
+        drop(held);
+        assert!(
+            leaks.is_empty(),
+            "stop 插进 bind 窗口之后仍然留下了监听(轮次, 端口): {:?}",
+            leaks
+        );
+        println!("[test] 命中 bind 窗口 {}/{} 轮(其余轮次是 stop 后到, 那也合法)", hits, ROUNDS);
+        assert!(
+            hits > 0,
+            "夹具自检失败: {} 轮里一次都没命中 'stop 与 bind 交错' 的窗口 —— 这条用例什么都没证明",
+            ROUNDS
+        );
+    }
+
+    /// **Critical 2 的钉子(B): 并发开启/关闭之后, "在跑吗"必须与"真的连得上吗"一致,
+    /// 而且端口不许被卡住(后续的开启必须真的能绑上)。**
+    ///
+    /// 与钉子(A)的分工: (A) 用可观测的 bind 窗口把"stop 与 start 交错"变成确定性的;
+    /// (B) 打的是**真实入口** `set_enabled`, 也就是 enable/disable 两条命令真的并行跑,
+    /// 逐轮断言不变量:
+    ///   · 状态说在跑 ⟹ 那个端口**此刻真的能连上**(不是"端口的账"被写坏了);
+    ///   · 全部轮次结束后干净地关一次: 状态必须说"没在跑", 且所有报告过在跑的端口都必须
+    ///     真的不再接受连接;
+    ///   · 再来一次干净的开启: 它必须**真的绑上**(旧代码的第二种交错让端口永远非 0,
+    ///     于是每一次 enable 都在幂等检查上短路 —— 状态说在跑, 却没人监听)。
+    ///
+    /// 诚实标注: (B) 的"状态与连接一致"这条断言只有在交错**真的发生**时才有杀伤力 ——
+    /// 它是一张网, 不是证明。确定性那部分由 (A) 承担。
+    #[test]
+    fn concurrent_enable_disable_keeps_status_truthful_and_the_port_unstuck() {
+        let _serialized = GLOBAL_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        reset_server_state();
+        let dir = tmp_dir("concurrent_enable_disable");
+        std::fs::create_dir_all(&dir).expect("建临时目录");
+
+        let st = config::ServerConfig {
+            enabled: false,
+            // 挑一个不常见的基端口: 被占了 start 会自己 +1, 断言用的始终是返回值。
+            port: 31_876,
+            token: "8".repeat(64),
+            shares: Vec::new(),
+        }
+        .into_state();
+        save_config(&st, &dir).expect("先把一份合法的配置落盘");
+
+        let mut reported: Vec<u16> = Vec::new();
+        for round in 0..25 {
+            let (a, b) = (st.clone(), st.clone());
+            let (da, db) = (dir.clone(), dir.clone());
+            let enable =
+                std::thread::spawn(move || tauri::async_runtime::block_on(set_enabled(&a, &da, true)));
+            let disable =
+                std::thread::spawn(move || tauri::async_runtime::block_on(set_enabled(&b, &db, false)));
+            let r_enable = enable.join().expect("enable 线程不许 panic");
+            let r_disable = disable.join().expect("disable 线程不许 panic");
+
+            // 不变量①: 状态说在跑 ⟹ 此刻真的连得上。
+            if let Some(p) = running_port() {
+                assert!(
+                    accepts_connections(p),
+                    "第 {} 轮: 状态说 {} 在跑, 但它不接受连接(端口的账被写坏了)",
+                    round,
+                    p
+                );
+                reported.push(p);
+            }
+            // 不变量②: 干净的目录上"关闭"永远该成功 —— 它失败就说明 stop 那条路被别的东西
+            // 挡住了(本轮修复的核心之一)。
+            assert!(
+                r_disable.is_ok(),
+                "第 {} 轮: 关闭失败了(不该发生): {:?}",
+                round,
+                r_disable.err()
+            );
+            let _ = r_enable; // 开启可能被并发的关闭取消 —— 那是**合法**结果(报错而不监听)
+        }
+
+        // 收尾①: 干净关闭 → 状态说没在跑, 且**所有**报告过在跑的端口最终都必须被拒。
+        set_enabled_on_tauri_runtime(&st, &dir, false).expect("干净关闭必须成功");
+        assert_eq!(running_port(), None, "干净关闭之后状态必须说'没在跑'");
+        for p in &reported {
+            assert!(
+                wait_until_refused(*p, std::time::Duration::from_secs(10)),
+                "端口 {} 在关闭之后仍然接受连接(端口被卡住了)",
+                p
+            );
+        }
+
+        // 收尾②: 后续的开启必须**真的**绑上。
+        let status = set_enabled_on_tauri_runtime(&st, &dir, true).expect("再次开启必须成功");
+        assert!(status.running, "开启之后状态必须说'在跑'");
+        let p = running_port().expect("开启之后状态必须说'在跑'");
+        assert!(accepts_connections(p), "开启之后的端口 {} 必须真的接受连接", p);
+
+        // 把全局状态还给别的用例。
+        set_enabled_on_tauri_runtime(&st, &dir, false).expect("关闭");
+        assert_eq!(running_port(), None);
+        assert!(wait_until_refused(p, std::time::Duration::from_secs(10)));
+    }
+
+    /// **minor ②: `stop()` 要清掉上一次的理由** —— 用户已经亲手把服务关了, 界面不该
+    /// 还挂着那句旧的启动失败。
+    #[test]
+    fn stop_clears_a_stale_lifecycle_error() {
+        let _serialized = GLOBAL_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        reset_server_state();
+        let st = config::ServerConfig {
+            enabled: true,
+            port: 0,
+            token: String::new(), // token 不可用 → start 拒绝并记下理由
+            shares: Vec::new(),
+        }
+        .into_state();
+        let _ = start_on_tauri_runtime(st.clone()).expect_err("空 token 必须被拒");
+        assert!(
+            status_of_state(&st).unwrap().last_error.is_some(),
+            "夹具前提: 拒绝启动必须留下一条可见的理由"
+        );
+        stop();
+        assert_eq!(
+            status_of_state(&st).unwrap().last_error,
+            None,
+            "stop() 必须清掉旧理由"
+        );
+    }
+
+    /// 配置里写 `port: 0`(= 让系统随便挑一个)时, 状态里那个端口**必须是真的那个**。
+    ///
+    /// 旧代码把请求的 `0` 存进 `RUNNING_PORT`, 而 `running_port()` 把 0 当成"没在跑" ——
+    /// 于是状态说"没在跑"而实际上在监听。这是同一类谎(lifecycle 的账与实际不符),
+    /// 所以顺手钉住。
+    #[test]
+    fn a_zero_configured_port_is_reported_as_the_port_that_is_really_listening() {
+        let _serialized = GLOBAL_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        reset_server_state();
+        let st = config::ServerConfig {
+            enabled: true,
+            port: 0,
+            token: "6".repeat(64),
+            shares: Vec::new(),
+        }
+        .into_state();
+        let port = start_on_tauri_runtime(st.clone()).expect("应能起服务");
+        assert_ne!(port, 0, "系统挑的端口不可能是 0");
+        assert_eq!(running_port(), Some(port), "状态必须报出**真的**那个端口");
+        assert!(accepts_connections(port));
+        stop();
+        assert!(wait_until_refused(port, std::time::Duration::from_secs(10)));
     }
 
     /// `ServerStatus` 的线上形状(前端 Task 10 要按这些字段名取值)。
