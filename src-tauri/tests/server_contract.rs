@@ -787,6 +787,136 @@ fn takes_path(base: &str) -> bool {
     )
 }
 
+/// 一条**必须是 JSON 错误体**的响应: 状态码对、`content-type` 是 JSON、体恰好 `{ code }`。
+///
+/// 提取器拒绝(下面 `extractor_...` 那条)与路由级兜底(405/404 那一组)期望的是**同一个
+/// 形状**, 所以共用这一个断言 —— 两处各写一份就会漂移, 而这一层要防的恰好是"某一类错误
+/// 悄悄不遵守契约"。
+async fn assert_code_contract_error(
+    res: axum::response::Response,
+    want_status: StatusCode,
+    want_code: &str,
+    label: &str,
+) {
+    assert_eq!(res.status(), want_status, "{} 的状态码不对", label);
+    assert_eq!(
+        res.headers().get("content-type").and_then(|v| v.to_str().ok()),
+        Some("application/json"),
+        "{} 的错误体必须是 JSON(axum 的原生拒绝是 400 + 纯文本)",
+        label
+    );
+    // `json_of` 在纯文本上会直接 panic —— 修复前那一轮就是靠这一句变红的。
+    // (现在 `router()` 外面还有一层 `normalize_residual_errors`, 它会把纯文本也改写成
+    //  同样的 `{code}`, 所以"提取器类型用错"在**这个文件里**已观测不到; 分工见下面
+    //  `extractor_rejections_obey_the_code_contract` 的注释。)
+    assert_code_only(&json_of(res).await, want_code);
+}
+
+/// **Fix 1 的对外证明: 提取器拒绝也必须落在 `{ code }` 契约里。**
+///
+/// 修复前 axum 在**处理器跑起来之前**就把请求挡回去了, 回的是 400 + **纯文本**
+/// (`Failed to deserialize query string`), 而规格 §5.3 给这种情况的动作很明确:
+/// `badRequest` = "换一个请求"。
+///
+/// 手机端**今天**为什么没有因此出问题(上一轮注释在这里说得过满, 已按实测更正): M1′ 的
+/// `ApiError.fromHttp(status, bodyCode)` 是 `bodyCode ?: when (status)` —— 状态码是兜底,
+/// 而 400 恰好在那张兜底表的 `badRequest` 一行, 所以一口纯文本 400 到了手机上**仍然是
+/// `badRequest`**。这条测试守的不是"手机今天会不会炸", 而是"服务端的响应形状自己成立":
+/// 兜底表里没有 405/404 的项, 且客户端一按计划收紧解析器(从响应体读码), 纯文本立刻变成
+/// 未知错误 —— 契约不该靠对端的兜底表恰好覆盖。
+///
+/// 覆盖分三段, 缺一段就有一个洞:
+///   (1) **所有吃 `path` 的端点** —— 清单从生产代码的 `PROTECTED_PATHS` 枚举(配 `takes_path`),
+///       缺 `path` → 400 + `{code:badRequest}`。上一轮的漏洞正在这里: `scan` 漏在清单外,
+///       只把它一条改回 `Query<PathQ>` 时整套契约测试仍然 25/25 全绿;
+///   (2) 其余受保护端点(不吃 path)发同一个请求: 只许 200 的 JSON, 或被 (1) 覆盖的 400。
+///       这一段**不依赖 `takes_path` 是否同步更新** —— 将来往 `PROTECTED_PATHS` 加一条吃
+///       path 的端点却忘了改 `takes_path` 时, 它照样会红;
+///   (3) `size`/`max`/`full` 的**类型错误** —— 与"缺字段"是不同的拒绝路径, 必须单独测。
+///
+/// **诚实标注一句(实测)**: 自从 `router()` 最外层有了 `normalize_residual_errors`(见下面
+/// "残余非 `{ code }` 响应"那一组), 这三段断言**同时也被那层安全网满足** —— 裸 `Query<T>`
+/// 的 400 纯文本会被它改写成形状逐字节相同的 `{code:badRequest}`。所以"某个处理器回退成裸
+/// 提取器"这件事在本文件里**已经观测不到**了(实测: 只把 `scan` 改回 `Query<PathQ>`, 全套
+/// 依然全绿);真正把它钉住的是 lib 单测
+/// `server::routes::tests::production_handlers_return_code_bodies_even_without_the_safety_net`
+/// (同一张生产路由表, 但没有那层网)。这里保留三段覆盖, 是因为它们仍然是端到端的契约断言:
+/// 两层都退化时它们会红。
+#[tokio::test]
+async fn extractor_rejections_obey_the_code_contract() {
+    let (app, token, root) = route_app("extract");
+    let enc = urlencode(&root.to_string_lossy());
+
+    // (1) 吃 path 的端点: 缺 path 必须 400 + 恰好 { code: badRequest }
+    let mut path_endpoints = 0usize;
+    for base in PROTECTED_PATHS.iter().filter(|b| takes_path(b)) {
+        path_endpoints += 1;
+        let res = app
+            .clone()
+            .oneshot(get_req(base, Some(&token)))
+            .await
+            .unwrap();
+        assert_code_contract_error(res, StatusCode::BAD_REQUEST, "badRequest", base).await;
+    }
+    // 数一下"枚举真的抓到了东西": 没有这一句, `takes_path` 哪天被改窄(比如漏掉 scan),
+    // 上面那个循环会安静地少跑几条, 测试依然全绿。
+    assert!(
+        path_endpoints >= 4,
+        "吃 path 的端点至少要有 4 条(browse/scan/thumb/preview), 实际只枚举到 {} 条 —— \
+         `takes_path` 被改窄了, 这段覆盖就是空的",
+        path_endpoints
+    );
+    assert!(
+        takes_path("/api/v1/scan"),
+        "scan 吃 path —— 它上一轮正是漏在这份清单里(裸回退到 Query<PathQ> 时全套测试仍绿), \
+         所以单独钉一句"
+    );
+
+    // (2) 盲扫生产清单: 缺 path 只许两种结果 —— 200 的 JSON, 或 400 + {code:badRequest}。
+    // 不许出现第三种(axum 的 400 + 纯文本)。这一段不看 `takes_path`, 所以它能抓住
+    // "新端点进了 PROTECTED_PATHS 但没进 takes_path"。
+    for base in PROTECTED_PATHS {
+        let res = app
+            .clone()
+            .oneshot(get_req(base, Some(&token)))
+            .await
+            .unwrap();
+        if res.status() == StatusCode::BAD_REQUEST {
+            assert_code_contract_error(res, StatusCode::BAD_REQUEST, "badRequest", base).await;
+        } else {
+            assert_eq!(
+                res.status(),
+                StatusCode::OK,
+                "{} 缺 path 的响应既不是 400 也不是 200 —— 契约里没有第三种",
+                base
+            );
+            let _ = json_of(res).await; // 200 也必须是 JSON 体
+        }
+    }
+
+    // (3) 类型错误(不是缺字段)
+    for (label, uri) in [
+        ("size 不是数字", format!("/api/v1/thumb?path={}&size=abc", enc)),
+        ("max 不是数字", format!("/api/v1/preview?path={}&max=-1", enc)),
+        ("full 不是布尔", format!("/api/v1/preview?path={}&full=abc", enc)),
+    ] {
+        let res = app
+            .clone()
+            .oneshot(get_req(&uri, Some(&token)))
+            .await
+            .unwrap();
+        assert_code_contract_error(
+            res,
+            StatusCode::BAD_REQUEST,
+            "badRequest",
+            &format!("{} ({})", label, uri),
+        )
+        .await;
+    }
+
+    std::fs::remove_dir_all(&root).ok();
+}
+
 /// 逐条挂载路径证明: **不带 token 一律 401**, 带正 token 才真的到达处理器。
 #[tokio::test]
 async fn every_mounted_endpoint_requires_a_bearer_token() {
@@ -1269,54 +1399,6 @@ async fn thumb_and_preview_endpoints_return_jpeg_and_keep_the_size_contract() {
     std::fs::remove_dir_all(&root).ok();
 }
 
-/// **Fix 1 的对外证明: 提取器拒绝也必须落在 `{ code }` 契约里。**
-///
-/// 修复前 axum 在**处理器跑起来之前**就把请求挡回去了, 回的是 400 + **纯文本**
-/// (`Failed to deserialize query string`)。手机端的 `ApiError` 只读 `code`, 于是拿到一个
-/// 解析不了的响应体, 用户看到的是"未知错误" —— 而规格 §5.3 给这种情况的动作很明确:
-/// `badRequest` = "换一个请求"。
-///
-/// 四个用例分别覆盖四类拒绝: 必填参数缺失(`browse` 的 `path`)、数字参数非数字
-/// (`thumb` 的 `size` / `preview` 的 `max`)、布尔参数非布尔(`preview` 的 `full`)。
-/// 每条都断言 **400** *且* 响应体是**只含 `code` 的 JSON**(`json_of` 在纯文本上会直接
-/// panic —— 这就是修复前会红的那一句)。
-#[tokio::test]
-async fn extractor_rejections_obey_the_code_contract() {
-    let (app, token, root) = route_app("extract");
-    let enc = urlencode(&root.to_string_lossy());
-
-    for (label, uri) in [
-        ("必填参数缺失", "/api/v1/browse".to_string()),
-        ("size 不是数字", format!("/api/v1/thumb?path={}&size=abc", enc)),
-        ("max 不是数字", format!("/api/v1/preview?path={}&max=-1", enc)),
-        ("full 不是布尔", format!("/api/v1/preview?path={}&full=abc", enc)),
-    ] {
-        let res = app
-            .clone()
-            .oneshot(get_req(&uri, Some(&token)))
-            .await
-            .unwrap();
-        assert_eq!(
-            res.status(),
-            StatusCode::BAD_REQUEST,
-            "{}: {} 的提取器拒绝必须是 400",
-            label,
-            uri
-        );
-        // 契约要求的是 JSON 体 —— 内容类型也得对上(手机端可能有按类型分发的解析器)
-        assert_eq!(
-            res.headers().get("content-type").and_then(|v| v.to_str().ok()),
-            Some("application/json"),
-            "{}: {} 的错误体必须是 JSON, 不是 axum 的纯文本",
-            label,
-            uri
-        );
-        assert_code_only(&json_of(res).await, "badRequest");
-    }
-
-    std::fs::remove_dir_all(&root).ok();
-}
-
 /// **次要修复的对外证明: RFC 7235 的 scheme 大小写不敏感。**
 ///
 /// 旧实现用 `strip_prefix("Bearer ")` 只认这一种精确写法, 于是 `bearer <token>` 或多一个
@@ -1381,17 +1463,24 @@ async fn bearer_scheme_is_case_insensitive_and_tolerates_ows() {
     std::fs::remove_dir_all(&root).ok();
 }
 
-/// **Fix 2 的证明: 全仓库只有一个路由入口, 且它罩住整张路由表。**
+/// **鉴权面: 公开的恰好是 `PUBLIC_PATHS`, 其余每条已挂载路径都在同一个鉴权层之后。**
 ///
-/// 曾经还有一个**不带鉴权层**的 `server::router()`(只挂 `ping`)。它今天无害, 但它的存在
-/// 就是一条后门: 谁把端点挂上去, 那条端点就**完全不需要 token**(与 `routes.rs` 顶部记的
-/// 那次实测同源)。它已被**删除** —— 所以"第二个入口"这件事现在构造不出来, 剩下的风险只有
-/// "鉴权层没罩住某条已挂载的路径", 这一条由本测试逐条钉死。
+/// 这条测试**能证明什么、不能证明什么**(上一版的名字与注释把它写成了"全仓库只有一个路由
+/// 入口", 而那是它看不见的性质):
+///   · **能证明(行为级)**: 从 `routes::router(state)` 逐条打请求 —— 公开面恰好
+///     `PUBLIC_PATHS`(即 `ping`)、两份清单零交集、每条受保护路径无 token 一律
+///     401 + `{code:unauthorized}`。三条都是"请求进来之后发生了什么";
+///   · **不能证明(源码级)**: "全仓库不存在第二台 Router"。本测试只跟
+///     `routes::router(state)` 说话, 第二台路由器只要没人调用它就观测不到 —— 实测: 把
+///     `routes.rs`/`mod.rs` 回退到修复前、只留下这个(新的)测试文件, 这条测试**依然 `ok`**
+///     (那一轮 23 passed / 2 failed, 红的是提取器与越界那几条)。第二台路由器的**删除**由
+///     `mod.rs` 顶部的说明 + 代码评审负责, 不由测试负责。
 ///
-/// 公开面必须是一个**闭集**: 恰好 `[ping]`, 且与受保护清单零交集(有交集就说明某条受保护
-/// 端点在无 token 时可达)。逐条从唯一入口打请求: 公开的 200, 受保护的 401。
+/// (历史: 确实存在过一台**不带鉴权层**的 `server::router()`, 只挂 `ping`; 它已被整体删除,
+/// 因为它是一条"谁往上挂端点谁就不需要 token"的后门。要强调的是: 删除它的**依据**从来不是
+/// 这条测试 —— 这条测试在它存在时也是绿的。)
 #[tokio::test]
-async fn the_secured_router_is_the_only_entry_point_and_guards_every_mounted_path() {
+async fn the_public_surface_is_exactly_ping_and_every_mounted_path_sits_behind_the_auth_layer() {
     let (app, _token, root) = route_app("oneentry");
 
     assert_eq!(PUBLIC_PATHS, &["/api/v1/ping"], "免鉴权路径只许有 ping 一条");
@@ -1424,5 +1513,225 @@ async fn the_secured_router_is_the_only_entry_point_and_guards_every_mounted_pat
         assert_code_only(&json_of(res).await, "unauthorized");
     }
 
+    std::fs::remove_dir_all(&root).ok();
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// 残余非 `{ code }` 响应: 由 `router()` 最外层的 `map_response` 兜底
+//
+// 上面 `extractor_...` 那条测的是**提取器**拒绝(请求到了处理器门口才失败)。
+// 这一组测的是另一种: 请求**根本没走到处理器** —— 方法不对(405)或路径没挂(404)。
+// 实测(修复前, 带**正** token): 两种响应都是**空体 + 没有 `content-type`**。
+// 手机端最吃亏的是 405: M1′ 的 `ApiError.fromHttp` 兜底表里没有 405, 于是"方法不对"
+// 被翻译成 `internal`, 用户被告知"服务端内部错误, 请报 bug"。
+//
+// 兜底层只重写"status >= 400 **且** `content-type` 不是 `application/json`"的响应,
+// 所以下面四条要一起证明的不是"错误被改写了", 而是**改写的边界在哪**:
+// (a) 405 → JSON + badRequest; (b) 404 → JSON + notFound;
+// (c) 已经是 JSON 的业务错误**保持自己的码**(状态码推不出来的那种, 例如 422 的
+//     `unsupportedForm`); (d) 成功响应**逐字节**不变(二进制 JPEG / JSON 成功体)。
+// ════════════════════════════════════════════════════════════════════════════
+
+/// **(a) 已挂载端点上的错误方法 + 正 token → JSON 体, 恰好 `{ code: badRequest }`。**
+///
+/// 状态码仍然是 **405**(§5.3 只规定 body 的形状, 不改状态语义): 手机按体里的码决定行为,
+/// 按状态码做日志/观测, 两者都不该丢。`Allow` 头也必须还在 —— 那是"正确的方法是哪个",
+/// 换 body 不该把它吃掉。
+#[tokio::test]
+async fn a_wrong_method_on_a_mounted_endpoint_becomes_a_code_body() {
+    let (app, token, root) = route_app("method405");
+    let enc = urlencode(&root.to_string_lossy());
+
+    // browse 只挂了 GET; 用 POST 打它(带正 token, 所以不是被鉴权层挡下的)
+    let req = Request::builder()
+        .method("POST")
+        .uri(format!("/api/v1/browse?path={}", enc))
+        .header("Authorization", format!("Bearer {}", token))
+        .body(Body::empty())
+        .unwrap();
+    let res = app.oneshot(req).await.unwrap();
+
+    assert_eq!(
+        res.headers().get("allow").and_then(|v| v.to_str().ok()),
+        Some("GET,HEAD"),
+        "405 的 `Allow` 头必须保留(它描述的是这次请求, 不是被换掉的 body)"
+    );
+    assert_code_contract_error(res, StatusCode::METHOD_NOT_ALLOWED, "badRequest", "POST /browse")
+        .await;
+
+    std::fs::remove_dir_all(&root).ok();
+}
+
+/// **(b) 未挂载路径 + 正 token → `{ code: notFound }`(不是空体)。**
+///
+/// 这条与现有 `only_ping_is_public_and_unknown_paths_fail_closed` 里那句状态码断言是
+/// 两件事: 那里证明的是"带正 token 时确实是 404", 这里证明的是"404 也得有 `{ code }` 体"。
+#[tokio::test]
+async fn an_unmounted_path_with_a_valid_token_still_returns_a_code_body() {
+    let (app, token, root) = route_app("unmounted");
+
+    let res = app
+        .clone()
+        .oneshot(get_req("/api/v1/nope", Some(&token)))
+        .await
+        .unwrap();
+    assert_code_contract_error(res, StatusCode::NOT_FOUND, "notFound", "/api/v1/nope").await;
+
+    // 对照组: 同一台路由器上, 已挂载的端点带正 token 不会变成 404 —— 免得上面那句
+    // 只是因为"什么都 404"而成立。
+    let res = app
+        .oneshot(get_req("/api/v1/shares", Some(&token)))
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+
+    std::fs::remove_dir_all(&root).ok();
+}
+
+/// **(c) 已经是 JSON 的业务错误带着自己的码通过, 不许被状态码改写。**
+///
+/// 用的是一条**状态码推不出来**的样本: 共享根内一个存在但解不了的 `note.txt` → media 层
+/// 给 422 + `unsupportedForm`。若兜底层按状态码改写, 422 那一档会变成 `badRequest` ——
+/// 也就是把"这个格式打不开"说成"换个请求", 那是两种完全不同的用户动作。所以这条能真的
+/// 把"透传"和"按状态码重写"两种实现分开。
+///
+/// 再补一条 403: 共享根外**真实存在**的路径 → `forbiddenPath`(§5.3 的语义, 不是 `notFound`)。
+#[tokio::test]
+async fn a_json_business_error_keeps_its_own_code_not_the_status_derived_one() {
+    let _cache = TempCacheRoot::new("routenorm");
+    let (app, token, root) = route_app("norm");
+
+    // 422 + unsupportedForm
+    let junk = root.join("note.txt");
+    let uri = format!("/api/v1/preview?path={}", urlencode(&junk.to_string_lossy()));
+    let res = app
+        .clone()
+        .oneshot(get_req(&uri, Some(&token)))
+        .await
+        .unwrap();
+    assert_code_contract_error(
+        res,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "unsupportedForm",
+        "preview 一个解不了的 .txt",
+    )
+    .await;
+
+    // 403 + forbiddenPath
+    let outside_dir = std::env::temp_dir().join(format!("ifroute_normout_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&outside_dir);
+    std::fs::create_dir_all(&outside_dir).unwrap();
+    let outside_file = outside_dir.join("secret.jpg");
+    std::fs::write(&outside_file, b"secret bytes").unwrap();
+    assert!(outside_file.is_file(), "夹具前提: 越界文件必须真的存在");
+    assert!(!outside_file.starts_with(&root), "夹具前提: 它不许在共享根里");
+
+    let uri = format!(
+        "/api/v1/preview?path={}",
+        urlencode(&outside_file.to_string_lossy())
+    );
+    let res = app
+        .clone()
+        .oneshot(get_req(&uri, Some(&token)))
+        .await
+        .unwrap();
+    assert_code_contract_error(res, StatusCode::FORBIDDEN, "forbiddenPath", "越界 preview").await;
+
+    let _ = std::fs::remove_dir_all(&outside_dir);
+    std::fs::remove_dir_all(&root).ok();
+}
+
+/// **(d) 成功响应逐字节原样通过 —— 兜底层不许碰它们。**
+///
+/// 两种代表, 断言的都是**字节**, 不是"字段值相等"(后者会被"重新序列化一遍"放过):
+///   · **二进制体**: `thumb` 的响应体必须**逐字节等于它这次写进隔离缓存的那个文件**
+///     (缓存根就在本测试手里, 直接从磁盘读出来比)。只要兜底层动了成功响应 —— 把 body 换成
+///     JSON、或重编码一遍 —— 这里立刻不相等。比"和另一次 media 调用对比"更硬: 那条路会走到
+///     `\\?\` 规范化路径 / WIC 外壳缩略图, 两次调用的缓存键与编码来源未必相同, 比出来的是
+///     "两次生成是否巧合一致", 而不是"这次响应有没有被改";
+///   · **JSON 成功体**: `/ping` 与 `/shares` 的字节必须与独立序列化出来的期望值完全相同。
+///
+/// 这条是变异验证的靶子: 把兜底层里的"status >= 400 才处理"这个早退拿掉, 缩略图会被换成
+/// 一个 JSON 错误体, 这里就红。
+#[tokio::test]
+async fn successful_responses_pass_through_byte_for_byte() {
+    let cache = TempCacheRoot::new("routenormok");
+    let cache_root = cache.root().to_path_buf();
+    let (app, token, root) = route_app("normok");
+
+    // (1) 二进制: 缩略图 —— 响应体必须等于缓存里那个文件本身
+    let photo = root.join("real.jpg");
+    std::fs::write(&photo, quadrant_jpeg_bytes(1200, 900, None)).unwrap();
+    let uri = format!("/api/v1/thumb?path={}", urlencode(&photo.to_string_lossy()));
+    let res = app
+        .clone()
+        .oneshot(get_req(&uri, Some(&token)))
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    assert_eq!(
+        res.headers().get("content-type").and_then(|v| v.to_str().ok()),
+        Some("image/jpeg")
+    );
+    let bytes = axum::body::to_bytes(res.into_body(), 8 << 20).await.unwrap();
+    assert_eq!(&bytes[..2], &[0xFF, 0xD8], "必须仍然是 JPEG(SOI)");
+
+    let thumbs = cache_root.join("image-filter").join("thumbnails_v2");
+    let mut entries: Vec<std::path::PathBuf> = std::fs::read_dir(&thumbs)
+        .expect("缩略图必须写进隔离的缓存根")
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| p.extension().and_then(|x| x.to_str()) == Some("jpg"))
+        .collect();
+    assert_eq!(entries.len(), 1, "这次请求应当只产出一个缩略图条目");
+    let on_disk = std::fs::read(entries.pop().unwrap()).unwrap();
+    assert_eq!(
+        bytes.as_ref(),
+        on_disk.as_slice(),
+        "缩略图的响应体必须逐字节等于缓存里的那个文件(兜底层改写/重编码了成功响应?)"
+    );
+
+    // (2) JSON 成功体: /ping(公开) 与 /shares(受保护)—— 字节层面完全一致
+    let res = app
+        .clone()
+        .oneshot(get_req("/api/v1/ping", None))
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    assert_eq!(
+        res.headers().get("content-type").and_then(|v| v.to_str().ok()),
+        Some("application/json")
+    );
+    let bytes = axum::body::to_bytes(res.into_body(), 1 << 20).await.unwrap();
+    let want = serde_json::to_vec(&serde_json::json!({
+        "name": "ImageFilter",
+        "version": env!("CARGO_PKG_VERSION"),
+        "requiresToken": true,
+    }))
+    .unwrap();
+    assert_eq!(
+        bytes.as_ref(),
+        want.as_slice(),
+        "/ping 的字节必须与独立序列化的期望值完全相同"
+    );
+
+    let res = app
+        .clone()
+        .oneshot(get_req("/api/v1/shares", Some(&token)))
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let bytes = axum::body::to_bytes(res.into_body(), 1 << 20).await.unwrap();
+    let want = serde_json::to_vec(&serde_json::json!({
+        "shares": [root.to_string_lossy()],
+    }))
+    .unwrap();
+    assert_eq!(
+        bytes.as_ref(),
+        want.as_slice(),
+        "/shares 的字节必须与独立序列化的期望值完全相同"
+    );
+
+    drop(cache);
     std::fs::remove_dir_all(&root).ok();
 }

@@ -127,6 +127,10 @@ pub use config::ServerConfig;
 // `ping` 不再需要一条独立入口 —— 它是 `PUBLIC_PATHS` 里的公开端点, 走同一个 router
 // 同样免鉴权(见下面 `mod tests` 里那条测试, 以及 `routes::PUBLIC_PATHS`)。
 //
+// 注意"只有一个入口"是**源码级事实**, 只能靠评审维持: 任何路由级测试都只能证明"打进这台
+// 路由器的请求都过了鉴权层", 观测不到另一台**没人调用**的路由器是否存在。`server_contract.rs`
+// 里那条鉴权面测试的注释记了实测(旧代码 + 新测试 = 那条测试依然 ok)。
+//
 // **Task 8 请把路由接线全部收敛到 `routes::router(state)`; 不许再长出第二个 Router。**
 
 /// 配对与"测试连接"用。**不泄露任何路径信息**。
@@ -150,9 +154,10 @@ mod tests {
 
     /// `ping` 是唯一免鉴权的端点 —— 这条测试**从唯一入口** `routes::router(state)` 打请求。
     ///
-    /// Fix 2 之前它调用的是那个不带鉴权层的 `server::router()`(已删除)。改成走唯一入口
-    /// 之后, 这条测试顺带钉住一件事: **公开端点也必须从受鉴权的那台路由器上取**, 而不是
-    /// 另开一条没有层的路。
+    /// Fix 2 之前它调用的是那个不带鉴权层的 `server::router()`(已删除)。改成走这里之后,
+    /// 这条测试钉住的是: **公开端点也在这台受鉴权的路由器上**(无 token 拿得到 200)。
+    /// 它**不能**证明"没有第二台路由器" —— 另一个入口只要没人调用就观测不到(见
+    /// `tests/server_contract.rs` 那条鉴权面测试的注释)。
     #[tokio::test]
     async fn ping_returns_product_and_version_without_token() {
         let app = routes::router(

@@ -19,7 +19,7 @@ use axum::body::Body;
 use axum::extract::{FromRequest, FromRequestParts, Query, Request, State};
 use axum::http::request::Parts;
 use axum::http::{header, HeaderMap, StatusCode};
-use axum::middleware::{self, Next};
+use axum::middleware::{self, map_response, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
@@ -30,15 +30,28 @@ use std::path::PathBuf;
 //
 // 为什么必须有这一层: 规格 §5.3 要求服务端**统一**回 `{ code }`(且只有 `code` 一个字段)。
 // 但 axum 的提取器(`Query`/`Json`/…)在**处理器跑起来之前**就会失败 —— 它回的是自己的
-// 拒绝响应: 400 + **纯文本** `Failed to deserialize query string`。手机端的 `ApiError`
-// 只读 `code`, 拿到纯文本只能当成"未知错误", 而用户真正该做的是"换一个请求"(§5.3 的
-// `badRequest` 一行)。也就是说: **提取器一失败, 契约就漏了**。
+// 拒绝响应: 400 + **纯文本** `Failed to deserialize query string`。也就是说:
+// **提取器一失败, 契约就漏了**。
+//
+// 说明(上一轮的注释在这里说得过满, 已按实测更正): **不许**把这条写成"手机因此看到未知
+// 错误"。按 M1′ 计划, 手机端的 `ApiError.fromHttp(status, bodyCode)` 是
+// `bodyCode ?: when (status)` —— 状态码是**兜底**, 而 400 恰好在那张兜底表的 `badRequest`
+// 一行。所以今天这口纯文本 400 到了手机上**仍然是 `badRequest`**, 用户行为碰巧是对的。
+// 修它不是因为手机今天坏了, 而是因为"碰巧对"不是契约:
+//   · 正确的映射依赖客户端兜底表**恰好**覆盖了这个状态 —— 那是巧合, 客户端一收紧解析器
+//     (按计划要从响应体读 `code`), 或换一个不在兜底表里的状态(405/404 就没有兜底项),
+//     纯文本立刻变成"未知错误/内部错误";
+//   · 服务端自己的响应形状应该是自洽的, 不该靠对端猜出来。
 //
 // 收口位置选在**提取器类型**上, 而不是给每个处理器写 `Option<Query<T>>` / 手工取 body:
 //   · 处理器写 `Query<T>` 是本能, 要求每个新处理器"记得多写一步"就一定会漏;
 //   · 换成 `Q<T>`/`J<T>` 只是换一个类型名, 新端点照抄既有处理器即可;
-//   · 万一有人直接用了 `Query<T>`/`Json<T>`, 缺参时漏出的是**纯文本** —— 这会被契约测试
-//     当场打红(见 `tests/server_contract.rs` 的提取器用例), 而不是在线上悄悄发纯文本。
+//   · 万一有人直接用了 `Query<T>`/`Json<T>`, 缺参时漏出的是纯文本 —— 下面那层兜底
+//     (`normalize_residual_errors`)会把它改写成同样的 `{code}`, **所以对外的契约仍然成立**。
+//     代价是实测记录在案的一件事: 兜底层让"处理器用的是哪个提取器"在集成层**不可观测**
+//     (把 `scan` 改回 `Query<PathQ>`, 整套 `tests/server_contract.rs` 依然全绿)。
+//     纪律的变异靶子因此放在 `mod tests::production_handlers_return_code_bodies_even_without_the_safety_net`:
+//     它在**没有网**的同一张生产路由表上打请求, 回退成裸 `Query<T>` 会当场红。
 // 所以本模块的纪律是: **处理器一律用 `Q<T>`(查询串)/ `J<T>`(JSON 请求体) 取参数,
 // 不许直接用 axum 的 `Query<T>` / `Json<T>`。**
 //
@@ -84,6 +97,106 @@ where
             .map(|Json(v)| J(v))
             .map_err(|_| ApiError::BadRequest)
     }
+}
+
+// ── 残余非 `{ code }` 响应的兜底: 路由级响应规范化 ───────────────────────────
+//
+// `Q<T>`/`J<T>` 收口的是**提取器**拒绝; 还有一类请求根本走不到任何处理器, 响应由 axum 的
+// 路由表自己生成: 方法不对(405)、路径没挂(404)。实测(带**正** token):
+//   · `POST /api/v1/browse` → 405, **没有 `content-type`, body 是空的**;
+//   · 未挂载的 `/api/v1/nope` → 404, 同样空体。
+// 这两条都违反 §5.3 的"统一回 `{ code }`"。手机端尤其吃亏的是 405: M1′ 的
+// `ApiError.fromHttp` 兜底表里**没有** 405, 于是"你请求的方法不对"被翻译成 `internal`
+// ——用户看到的提示是"服务端内部错误, 请报 bug"。
+//
+// 所以这里在**整台路由器**外面再加一层 `map_response`: 只重写
+// "status >= 400 **且** `content-type` 不是 `application/json`"的响应。这条边界保证下面
+// 两类响应**逐字节原样通过**(原对象直接 move 出去, 一个字节都不重建):
+//   · 所有成功响应: 200 的 JSON 业务体, 以及 `image/jpeg` 的缩略图/预览字节;
+//   · 所有已经是 JSON 的错误: `ApiError`(`Q<T>`/`J<T>`/处理器返回的 400/401/403/422/…)——
+//     它们的状态与语义更准(422 到底是 `notXmp` 还是 `unsupportedForm`, 只有处理器知道),
+//     状态码推不出来。
+// 所以这层是**安全网, 不是主机制**: 主机制仍是 `Q<T>`/`J<T>` + `ApiError`。它只负责
+// "将来某个处理器照本能写了 `Json<T>`/`Query<T>`"与"请求压根没到处理器"这两类残余。
+//
+// 这层**也会**看见提取器拒绝(提取器在处理器门口跑, 它生成的响应同样要穿过这一层)。
+// 实测确认过, 于是有两个后果, 都记在这里:
+//   · **好事**: 契约多了一层保障 —— 即使将来有人写了裸 `Query<T>`/`Json<T>`, 对外形状
+//     依然是 `{ code }`;
+//   · **代价**: "处理器用的是哪个提取器"在**集成层变得不可观测**。实测: 只把 `scan` 改回
+//     `Query<PathQ>`, `tests/server_contract.rs` 从 25 条到 29 条**全绿**。所以提取器纪律的
+//     变异靶子放在 `mod tests::production_handlers_return_code_bodies_even_without_the_safety_net`
+//     —— 那台路由器上**没有这层网**, 回退成裸 `Query<T>` 会当场红。
+// 即便如此, 主机制仍然是 `Q<T>`/`J<T>`: 它们的状态与语义更精确(`J<T>` 缺
+// `content-type` 给的是 400, axum 原生 `Json<T>` 给 415), 而这层只能按状态码猜一档。
+
+/// HTTP 状态 → 闭集码。**只用 `ApiError` 已有的码, 这里不新造任何码。**
+///
+/// §5.3 点名的那几档按表走; 表里没列出的状态按大类兜底(其余 4xx → `badRequest`,
+/// 其余 5xx → `internal`)。兜底是刻意的: 调用方的成立条件是"每个 >= 400 的非 JSON 响应
+/// 都必须拿到一个码", 只要漏一档, 契约就又有一个洞。
+fn code_for_status(status: StatusCode) -> &'static str {
+    match status {
+        StatusCode::BAD_REQUEST
+        | StatusCode::METHOD_NOT_ALLOWED
+        | StatusCode::UNSUPPORTED_MEDIA_TYPE
+        | StatusCode::UNPROCESSABLE_ENTITY => ApiError::BadRequest.code(),
+        StatusCode::UNAUTHORIZED => ApiError::Unauthorized.code(),
+        StatusCode::FORBIDDEN => ApiError::ForbiddenPath.code(),
+        StatusCode::NOT_FOUND => ApiError::NotFound.code(),
+        StatusCode::PAYLOAD_TOO_LARGE => ApiError::TooLarge.code(),
+        StatusCode::LOCKED => ApiError::Busy.code(),
+        StatusCode::INSUFFICIENT_STORAGE => ApiError::DiskFull.code(),
+        s if s.is_client_error() => ApiError::BadRequest.code(),
+        s if s.is_server_error() => ApiError::Internal.code(),
+        // 调用方保证了 status >= 400, 所以上面两条至少命中一条; 这里只是不让 match 有洞。
+        _ => ApiError::Internal.code(),
+    }
+}
+
+/// 描述"原来那个 body"的头 —— 换了 body 就必须丢掉, 否则新体上的头是假的。
+fn is_body_bound_header(name: &header::HeaderName) -> bool {
+    matches!(
+        name.as_str(),
+        "content-type" | "content-length" | "content-encoding" | "transfer-encoding"
+    )
+}
+
+/// 兜底规范化: 只动"status >= 400 且不是 JSON"的响应, 其余原样返回。
+async fn normalize_residual_errors(res: Response) -> Response {
+    // 成功响应(含 `image/jpeg` 的二进制体)**在这里就返回**, 连 header 都不读第二遍 ——
+    // "不许误伤成功响应"是靠这个早退分支结构上保证的, 不是靠后面的判断恰好为真。
+    if res.status() < StatusCode::BAD_REQUEST {
+        return res;
+    }
+    let is_json = res
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        // `application/json; charset=utf-8` 这类带参数的值同样算 JSON。
+        .map(|v| {
+            v.split(';')
+                .next()
+                .unwrap_or("")
+                .trim()
+                .eq_ignore_ascii_case("application/json")
+        })
+        .unwrap_or(false);
+    if is_json {
+        return res;
+    }
+
+    let status = res.status();
+    let mut out = Json(serde_json::json!({ "code": code_for_status(status) })).into_response();
+    // 保留原来的状态码(405 仍是 405 —— §5.3 只规定 body 的形状, 不改状态语义),
+    // 顺带保留 `Allow` 这类描述**这次请求**的头; 只丢描述旧 body 的那几个。
+    *out.status_mut() = status;
+    for (name, value) in res.headers() {
+        if !is_body_bound_header(name) {
+            out.headers_mut().append(name.clone(), value.clone());
+        }
+    }
+    out
 }
 
 /// 受保护端点的路径清单。
@@ -206,15 +319,22 @@ fn endpoint_routes() -> Router<ServerState> {
         .route("/api/v1/preview", get(preview))
 }
 
-/// 完整路由: **整台路由器**外面套一层鉴权中间件。
+/// 完整路由: **整台路由器**外面套一层鉴权中间件, 再套一层响应规范化。
 ///
 /// 免鉴权的只有 `PUBLIC_PATHS` 里那几个(即 `ping`)。未挂载的路径也走这一层
 /// (axum 的 `layer` 会罩住兜底路由), 所以不存在的路径在未鉴权时同样是 401 ——
 /// 失败方向是"更严", 顺带也不向未配对的调用方泄露端点清单。带上正 token 时
 /// 未挂载路径仍然是 404, 手机据此区分"服务没有这个功能"。
+///
+/// 两层各管一件事, 顺序是刻意的(`map_response` 在**最外层**, 所以它也能看见鉴权层自己
+/// 生成的响应):
+///   · `require_bearer`: 谁能进来(白名单在 `PUBLIC_PATHS`);
+///   · `normalize_residual_errors`: 出去的东西必须长成 `{ code }`
+///     (只碰 405/404 这类没走到处理器的残余, 见上方长注释)。
 pub fn router(state: ServerState) -> Router {
     endpoint_routes()
         .layer(middleware::from_fn_with_state(state.clone(), require_bearer))
+        .layer(map_response(normalize_residual_errors))
         .with_state(state)
 }
 
@@ -424,5 +544,127 @@ mod tests {
                 label
             );
         }
+    }
+
+    /// 兜底规范化器的**状态 → 码**表逐档钉住。
+    ///
+    /// 表本身只从 `ApiError::code()` 取值(所以"不新造码"是结构上成立的), 这条测试管的是
+    /// 另一件事: **哪一档归哪个码**。写错一档的后果很具体 —— 例如把 405 归成 `internal`,
+    /// 手机就把"方法不对"显示成"服务端内部错误, 请报 bug"(那正是加这层的原因)。
+    #[test]
+    fn residual_status_codes_match_the_documented_table() {
+        for (status, want) in [
+            (StatusCode::BAD_REQUEST, "badRequest"),
+            (StatusCode::METHOD_NOT_ALLOWED, "badRequest"),
+            (StatusCode::UNSUPPORTED_MEDIA_TYPE, "badRequest"),
+            (StatusCode::UNPROCESSABLE_ENTITY, "badRequest"),
+            (StatusCode::UNAUTHORIZED, "unauthorized"),
+            (StatusCode::FORBIDDEN, "forbiddenPath"),
+            (StatusCode::NOT_FOUND, "notFound"),
+            (StatusCode::PAYLOAD_TOO_LARGE, "tooLarge"),
+            (StatusCode::LOCKED, "busy"),
+            (StatusCode::INSUFFICIENT_STORAGE, "diskFull"),
+            // 表里没列出的按大类兜底: 4xx 是"请求的问题", 5xx 是"服务端的问题"
+            (StatusCode::CONFLICT, "badRequest"),
+            (StatusCode::TOO_MANY_REQUESTS, "badRequest"),
+            (StatusCode::INTERNAL_SERVER_ERROR, "internal"),
+            (StatusCode::BAD_GATEWAY, "internal"),
+        ] {
+            assert_eq!(code_for_status(status), want, "{} 这一档归错了码", status);
+        }
+    }
+
+    /// `is_body_bound_header` 只丢"描述旧 body"的头 —— `Allow` 这类描述**这次请求**的头
+    /// 必须留下, 否则 405 的响应会比 axum 原生给的还少一个语义头。
+    #[test]
+    fn only_body_bound_headers_are_dropped() {
+        for keep in [header::ALLOW, header::RETRY_AFTER, header::WWW_AUTHENTICATE] {
+            assert!(!is_body_bound_header(&keep), "{} 不该被丢掉", keep);
+        }
+        for drop in [
+            header::CONTENT_TYPE,
+            header::CONTENT_LENGTH,
+            header::CONTENT_ENCODING,
+        ] {
+            assert!(is_body_bound_header(&drop), "{} 必须被丢掉", drop);
+        }
+    }
+
+    /// **"没有安全网"的那台路由器**: 生产路由表 + 生产鉴权层, 但**不加** `normalize_residual_errors`。
+    ///
+    /// 它只是 `router()` 接线的前两行(见 `router` 的注释), **不是第二个入口**: 私有、只被
+    /// 下面那条单测使用, 也不会被任何生产路径调用。存在的唯一理由是让"处理器自己有没有回
+    /// `{ code }`"这件事重新变得**可观测** —— 兜底层会把裸 `Query<T>` 的 400 纯文本也改写成
+    /// 形状逐字节相同的 `{code:badRequest}`, 在 `routes::router` 上根本分不出来(实测见下)。
+    fn routes_without_the_safety_net(state: ServerState) -> Router {
+        endpoint_routes()
+            .layer(middleware::from_fn_with_state(state.clone(), require_bearer))
+            .with_state(state)
+    }
+
+    /// **提取器纪律的变异靶子: 生产处理器必须自己回 `{ code }`, 不许靠兜底层。**
+    ///
+    /// 为什么要在"无网"的路由器上测: 实测过 —— **只**把 `scan` 改回 `Query<PathQ>`, 整套
+    /// 集成契约测试(含 `extractor_rejections_obey_the_code_contract` 里逐条端点的用例)
+    /// **依然全绿**, 因为兜底层把它的 400 + 纯文本改写成了与 `Q<T>` 逐字节相同的
+    /// `{code:badRequest}`。也就是说: 网让"某个处理器回退成裸提取器"在**对外行为**上无害,
+    /// 但也让它在**集成层不可观测**。
+    ///
+    /// 所以把纪律钉在这里 —— 同一张生产路由表, 少掉的只有那层网。谁把 `browse`/`scan`/
+    /// `thumb`/`preview` 中任何一个改回裸 `Query<T>`, 这条单测当场红(缺 `path` 的 400 会变成
+    /// 纯文本, `json_body` 在纯文本上直接 panic)。覆盖走 `PROTECTED_PATHS` 全表, 所以将来
+    /// 新增一条吃 `path` 的端点会自动被覆盖。
+    #[tokio::test]
+    async fn production_handlers_return_code_bodies_even_without_the_safety_net() {
+        let token = "t".repeat(64);
+        let app = routes_without_the_safety_net(
+            crate::server::ServerConfig {
+                enabled: true,
+                port: 0,
+                token: token.clone(),
+                shares: Vec::new(),
+            }
+            .into_state(),
+        );
+
+        let mut path_endpoints = 0usize;
+        for base in PROTECTED_PATHS {
+            let req = Request::builder()
+                .uri(*base)
+                .header(header::AUTHORIZATION, format!("Bearer {}", token))
+                .body(Body::empty())
+                .unwrap();
+            let res = app.clone().oneshot(req).await.unwrap();
+
+            if res.status() == StatusCode::BAD_REQUEST {
+                // 缺 `path` 的端点。**这台路由器上没有兜底层**, 所以能给出 JSON 的只有
+                // 处理器自己用的 `Q<T>`。
+                path_endpoints += 1;
+                assert_eq!(
+                    res.headers().get(header::CONTENT_TYPE).and_then(|v| v.to_str().ok()),
+                    Some("application/json"),
+                    "{} 的提取器拒绝必须是 JSON —— 没有兜底层时只有 `Q<T>` 做得到",
+                    base
+                );
+                assert_eq!(
+                    json_body(res).await,
+                    serde_json::json!({ "code": "badRequest" }),
+                    "{} 必须自己回 {{ code: badRequest }}",
+                    base
+                );
+            } else {
+                assert_eq!(
+                    res.status(),
+                    StatusCode::OK,
+                    "{} 缺 path 只许 400(吃 path 的端点)或 200(不吃 path 的端点)",
+                    base
+                );
+            }
+        }
+        assert!(
+            path_endpoints >= 4,
+            "至少要有 browse/scan/thumb/preview 四条吃 path 的端点, 实际 {} 条 —— 这条测试的覆盖是空的",
+            path_endpoints
+        );
     }
 }
