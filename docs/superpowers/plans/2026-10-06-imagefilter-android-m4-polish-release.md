@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** 把"能用"变成"别人下载下来也能用"——扫码配对代替手输 64 位配对码、内置打通引导（EasyTier/Tailscale）把"外网怎么连"讲清楚、补上只读模式与"谁在连我"，最后把发布流程钉死（固定签名 + CI 出 APK）。
+**Goal:** 把"能用"变成"别人下载下来也能用"——扫码配对代替手输 64 位配对码、**局域网地址枚举与防火墙引导**把"同一 WiFi 怎么连"讲清楚（**不做隧道**，2026-10-07 决策）、补上只读模式与"谁在连我"，最后把发布流程钉死（固定签名 + CI 出 APK）。
 
-**Architecture:** 唯一的跨端改动在这里：桌面端要**生成二维码**并**探测本机已装的组网工具**，手机端要**扫码**并展示引导。只读模式与已连接来源是服务端的事，手机端只消费。
+**Architecture:** 唯一的跨端改动在这里：桌面端要**生成二维码**并**枚举本机私有网段地址、检测网络类别**，手机端要**扫码**并展示引导。只读模式与已连接来源是服务端的事，手机端只消费。
 
 **Tech Stack:** 在 M1′–M3′ 之上**只允许一个新依赖**：`com.journeyapps:zxing-android-embedded`（Apache-2.0，离线可用，不依赖 Google Play 服务）。桌面端新增 `qrcode` crate（MIT/Apache-2.0）。
 
@@ -14,7 +14,7 @@
 
 - **本计划只允许两个新依赖**：手机端 `zxing-android-embedded`、桌面端 `qrcode`。**其他一律不加**；想加就报 NEEDS_CONTEXT。
 - **发布签名必须固定**：同一个 release keystore 用到底。换签名会让新版本**无法覆盖安装**（只能卸载重装，丢本地缓存与待重试项）——这是自用侧载最容易忽略、后果最烦人的一条。
-- **首启引导必须把 §1.3 的四条排查清单原样呈现**（电脑没睡眠 / ImageFilter 在运行 / 服务已开启 / 同一网络或同一隧道）——用户从手机这一侧看不出这四条里哪一条不成立。
+- **首启引导必须把 §1.3 的四条排查清单原样呈现**（电脑没睡眠 / ImageFilter 在运行 / 服务已开启 / **手机与电脑在同一个 WiFi**）——用户从手机这一侧看不出这四条里哪一条不成立。
 
 ---
 
@@ -112,18 +112,23 @@ git commit -m "feat(android): 扫码配对(zxing, 保留手输退路)"
 
 ---
 
-### Task 2: 打通引导与自动探测（EasyTier 优先）
+### Task 2: 局域网地址枚举 + 公网网络防护（LAN-only）
 
-**这是"别人下载下来也能用"的关键**：不假设任何人会配路由器、有公网 IP 或 IPv6（规格 §4.2）。
+**为什么这仍是"别人下载下来也能用"的关键**：现在只剩局域网一种模式，于是**"填哪个地址"成了配对里唯一的技术门槛**，而**"防火墙拦了"成了第一大失败原因**。规格 §4.2 只要求三件事：列私有地址、醒目说明防火墙、二维码。
+
+> **决策（2026-10-07，使用者拍板）**：隧道/组网工具引导**整体删除**——原来的 EasyTier / Tailscale / Cloudflare Tunnel 三条指引**不复存在**。理由见规格 §4 与附录 A #4/#5。
 
 **Files:**
-- 桌面端：Create `src-tauri/src/server/network.rs`、Modify `src/components/settings-dialog.tsx`
-- 手机端：Modify `ui/PairingScreen.kt`
+- 桌面端：Create `src-tauri/src/server/network.rs`、Modify `src/components/settings-dialog.tsx`、Modify `src-tauri/src/server/mod.rs`（暴露探测入口与启动前防护）
+- 手机端：Modify `ui/PairingScreen.kt`（**只改文案**：去掉"隧道"字样，第一条改成"手机和电脑要在同一个 WiFi"）
 
 **Interfaces:**
 - Produces:
-  - `#[derive(Serialize)] pub struct NetHints { pub lan: Vec<String>, pub tailscale: Vec<String>, pub easytier: Vec<String>, pub has_public_ipv4: bool }`
+  - `#[derive(Serialize)] pub struct NetHints { pub lan: Vec<LanAddress>, pub public_ipv4: Vec<String>, pub profile: NetworkProfile, pub firewall_hint: String }`
+  - `pub struct LanAddress { pub address: String, pub interface: String }`
+  - `pub enum NetworkProfile { Private, Public, Unknown }`
   - `server::network::detect_hints() -> NetHints`
+  - `server::network::should_refuse_to_start(&NetHints) -> Option<String>`（`None` = 可启动；`Some(理由)` = 拒绝并要求用户确认）
 
 - [ ] **Step 1: 实现探测（纯本机、不联网）**
 
@@ -143,48 +148,60 @@ use serde::Serialize;
 #[derive(Debug, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NetHints {
-    /// 局域网地址(192.168./10./172.16-31.), 同 WiFi 直接用
-    pub lan: Vec<String>,
-    /// Tailscale 网段 100.64.0.0/10
-    pub tailscale: Vec<String>,
-    /// EasyTier 常用虚拟网段 10.126.126.0/24(默认) —— 命中就说明 EasyTier 在跑
-    pub easytier: Vec<String>,
-    /// 是否检测到公网 IPv4 网卡地址(仅用于给出"别直接暴露公网"的警告)
-    pub has_public_ipv4: bool,
+    /// **私有网段**地址(10./172.16-31./192.168.), 每条带网卡名 —— 配对时要填的就是它
+    pub lan: Vec<LanAddress>,
+    /// 公网 IPv4 地址: **只用于警告, 绝不进候选列表**
+    pub public_ipv4: Vec<String>,
+    /// 当前网络类别(Windows NetworkListManager)
+    pub profile: NetworkProfile,
+    /// 怎么在「专用网络」上放行入站(局域网模式下第一大"连不上"的原因)
+    pub firewall_hint: String,
 }
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LanAddress { pub address: String, pub interface: String }
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum NetworkProfile { Private, Public, #[default] Unknown }
 ```
 
-实现要点：枚举本机 IPv4（`std::net::UdpSocket::connect` 取默认出口 + 可遍历网卡时用系统 API；**若遍历网卡要引入依赖就不做**，只做出口地址 + `localhost`），按网段归类。**这一条要写进 KDoc**：宁可给少而准的候选，也不要为"列全所有网卡"引入平台依赖。
+实现要点：枚举本机 IPv4 并按网段归类（**公网地址只进 `public_ipv4`，绝不进 `lan`**）；网络类别走 Windows `NetworkListManager` 的 COM 接口，**若取类别要引入依赖或大量 unsafe，就退化为"只检测是否有公网 IPv4"并把这个退化写进 KDoc**——宁可少一个信号，也不引入一个平台 crate。**KDoc 还要写明**：本模块必须保持**纯数据类型**，绝不能把 `AppHandle`/窗口类型带进来——本项目已踩过这个坑：那会让测试可执行文件在**加载时**就死（缺 Common-Controls v6 清单），而不是测试变红。
 
-- [ ] **Step 2: 桌面端 UI：把候选地址与引导一起给出**
+- [ ] **Step 2: 启动前的安全防护（规格 §4.3 的硬约束）**
+
+- `profile == Public` 时**不自动启动**：`start()` 返回一个可读理由，UI 显示"当前网络被 Windows 标为『公用』。共享网络（咖啡厅/办公室/酒店）上配对码可能被明文嗅探——确认要继续吗？"，**用户确认后才启动，且这次确认要记进状态**（不能静默放行）。
+- 检测到**公网 IPv4** 时给出警告。**仍然不提供任何端口转发/公网暴露功能**，也不做成一键。
+- **默认行为不变**：服务依旧**默认关闭**；这条防护的作用是让"开了但它本不该开"无法悄悄发生。
+
+- [ ] **Step 3: 桌面端 UI**
 
 服务面板里显示：
-- 候选地址列表，每个带一句用途（"同一 WiFi 用这个" / "装过 Tailscale 用这个" / "装过 EasyTier 用这个"）
-- **三条打通指引**（平级列出，EasyTier 排第一并标注"无需账号、无需公网 IP"）：
-  - **EasyTier**（首选）：电脑装 GUI 选"公共服务器组网"，手机装 APK 输入同一网络名与密钥 → 然后上面对应的 `10.126.126.x` 地址就能用
-  - **Tailscale**：两端装客户端登录（**注明登录页在境外，国内可能需要能访问境外网络**）
-  - **Cloudflare Tunnel**：手机端零安装、自带 HTTPS，但需要域名与 Cloudflare 账号，国内速度一般
-- 检测到公网 IPv4 时给一句警告："**不要把这个服务直接暴露到公网**"（规格 §4.3）
+- **私有地址列表**，每条标明网卡（"同一 WiFi 用这个"）——**这就是配对时要填的地址**
+- **防火墙提示**（在「专用网络」上放行的步骤）——局域网模式下"连不上"的第一大原因
+- `Public` 类别时的**警告 + 二次确认**入口
+- 检测到公网 IPv4 时的警告
+- **面板里不应再出现任何"隧道 / EasyTier / Tailscale"字样**
 
-**不要**把"打开端口转发"做成一键功能。
+- [ ] **Step 4: 手机端配对页文案同步**
 
-- [ ] **Step 3: 手机端配对页展示同一份引导**
+配对失败且错误像"连不上"时，展开一段可折叠引导（与桌面端文案一致，**别写第二份说法**），包含 §1.3 的四条清单，且**第一条是"手机和电脑要在同一个 WiFi"**——**不再有"同一隧道"这个选项**。
 
-配对失败且错误像"连不上"时，展开一段可折叠的引导（与桌面端文案一致，**别写第二份说法**），包含 §1.3 的四条排查清单。
+- [ ] **Step 5: 验证**
 
-- [ ] **Step 4: 验证**
+1. 同一 WiFi：候选里的**私有地址**能直接配对成功
+2. 把网络类别改成 `Public`（或在 `Public` 网络上）→ 服务**不自动启动**并给出可确认的提示；确认后能启动
+3. 临时移除防火墙放行规则 → 面板提示能指向"放行专用网络"
+4. 关掉 WiFi 用流量：私有地址连不上 → 手机端给出引导而不是干巴巴的"网络错误"，且引导里**没有隧道字样**
+5. **不去验证公网暴露**（本设计明确不支持，只警告）
 
-1. 同一 WiFi：候选地址里的局域网地址能直接配对成功
-2. 装 EasyTier 并加入同一网络（或至少让 EasyTier 起在默认网段）→ 桌面端出现 `10.126.126.x` 候选
-3. 关掉 WiFi 用流量：局域网地址连不上 → 手机端给出引导而不是干巴巴的"网络错误"
-4. **不去验证公网暴露**（本设计明确不支持，只警告）
-
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: Commit**
 
 ```powershell
 cd A:\tenent
 git add src-tauri/src/server/network.rs src-tauri/src/server/mod.rs src/components/settings-dialog.tsx
-git commit -m "feat(server): 本机地址探测与打通引导(EasyTier 优先, 明确不做公网暴露)"
+git commit -m "feat(server): 局域网地址枚举 + Public 网络类别不自动启动(LAN-only, 明确不做公网暴露)"
 ```
 ```powershell
 git add android/app/src/main/kotlin/com/imagefilter/mobile/ui/PairingScreen.kt
@@ -371,8 +388,8 @@ git commit -m "chore(android): 固定签名与 CI 出 APK(签名走 secret, 首�
 | 规格条目 | 由哪个任务实现 |
 |---|---|
 | §4.2 L1 打通引导 + **自动探测**本机已装工具 | Task 2 |
-| §4.2 EasyTier 优先（无需账号/公网 IP） | Task 2 |
-| §4.3 不提供公网暴露模式，仅警告 | Task 2 |
+| §4.2 私有地址枚举 + 防火墙引导（LAN-only） | Task 2 |
+| §4.3 不提供公网暴露模式；`Public` 类别不自动启动 | Task 2 |
 | §1.3 四条排查清单 | Task 2 |
 | §5.1 `GET /clients`（已连接来源） | Task 3 |
 | §11 权衡里的"只读模式" | Task 3 |
@@ -386,7 +403,7 @@ git commit -m "chore(android): 固定签名与 CI 出 APK(签名走 secret, 首�
 |---|---|
 | 手机端显示二维码给电脑扫 | 电脑侧没有摄像头；方向反了 |
 | 短配对码（6–8 位）代替二维码 | 需要服务端加"限时配对会话"，是新的状态机；二维码用熟练的库更省事 |
-| 公网暴露 / 一键端口转发 | 规格 §4.3 明确不做；只在检测到公网 IPv4 时警告 |
+| 公网暴露 / 一键端口转发 | 规格 §4.3 明确不做；检测到公网 IPv4 时警告，且 **`Public` 网络类别下不自动启动** |
 | 自建中继 | 规格决策 #4：连 Immich 都不做 |
 | 单一来源版本号生成 | 独立小步；本计划只做"手工同步 5 处"并把清单写进文档 |
 | 把 `GET /events`（SSE）做到手机端 | 手机端刷新靠"重进文件夹"已够用（M2′ 验收过）；等有真实需求再加 |
