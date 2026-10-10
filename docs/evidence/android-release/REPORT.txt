@@ -1,0 +1,129 @@
+ImageFilter Mobile —— 发布构建实测证据(M4′ Task 4)
+===================================================
+记录时间: 2026-10-11 (本机)
+环境: Windows / PowerShell 5.1
+  JAVA_HOME   = %LOCALAPPDATA%\Programs\jdk-21\jdk-21.0.12.1+1
+  ANDROID_HOME= %LOCALAPPDATA%\Android\Sdk
+  Gradle 8.11.1 / AGP 8.7.3 / compileSdk 35 / build-tools 35.0.0
+本机 HEAD: 见 git log(本次改动提交后记录)
+机器可读的完整日志(不入库): A:\tenent\.scratch\m4t4-*.log
+
+
+1. 版本号单一事实来源
+----------------------
+android/version.properties : versionName=1.1.2  versionCode=1
+桌面端对照: package.json=1.1.2, src-tauri/tauri.conf.json=1.1.2, src-tauri/Cargo.toml=1.1.2
+APK 内实测(aapt2 dump badging app-release.apk):
+  package: name='com.imagefilter.mobile' versionCode='1' versionName='1.1.2'
+=> 版本号确实从单一文件流进了产物, 不是"配置里改了、包里没改"。
+
+
+2. assembleRelease **不带**签名环境变量(回退路径)
+-------------------------------------------------
+命令: gradlew --no-daemon assembleRelease        (四个 IMAGEFILTER_* 均未设置)
+结果: BUILD SUCCESSFUL in 1m 54s(冷构建, 含首次编译)
+警告(实测输出, 原样):
+  !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+  !! 未检测到发布签名环境变量 -> release 变体将【使用 debug 签名】
+  !! 这样打出来的 app-release.apk **不是**正式发布包: 不能覆盖安装别人的正式版。
+  !! 缺失: IMAGEFILTER_KEYSTORE, IMAGEFILTER_KEYSTORE_PASSWORD, IMAGEFILTER_KEY_ALIAS, IMAGEFILTER_KEY_PASSWORD
+  !! 正式签名步骤: docs/ImageFilter-安卓发版与签名.md
+  !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+产物: android/app/build/outputs/apk/release/app-release.apk = 7,940,634 字节(7.57 MiB)
+签名自证: apksigner verify --print-certs
+  Signer #1 certificate DN: C=US, O=Android, CN=Android Debug
+  SHA-256: 45c18e866d9bf28fd6ec83b84e264937988039f9d6f273e0683a6719dd08b669
+=> 确认是 debug 签名, 与警告一致(没有假装签过名)。
+旁证文件: 同目录 SIGNING-PROVENANCE.txt, 内容随构建自动生成, 写明签名来历。
+
+
+3. assembleRelease **带**签名环境变量(正式路径, 用一次性测试 keystore)
+-----------------------------------------------------------------------
+说明: 正式发布 keystore 是**人工资产**, 必须由人按 docs/ImageFilter-安卓发版与签名.md §2
+生成并备份。本次为了证明"环境变量这条路真的通", 在 **A:\tenent\.scratch\**(gitignore)
+临时生成了一把**一次性测试 keystore**(密码 m4t4-throwaway, 仅本机, 已声明作废),
+用它跑通了正式签名路径。**它不是**项目要长期使用的那把。
+
+命令: keytool -genkeypair -keystore .scratch/m4t4-release-test.keystore -alias imagefilter
+        -keyalg RSA -keysize 4096 -validity 10000 -storetype PKCS12
+        -dname "CN=ImageFilter Mobile, O=XUTENGXIANG, C=CN"
+      gradlew --no-daemon assembleRelease       (四个 IMAGEFILTER_* 均已设置)
+结果: BUILD SUCCESSFUL in 17s;日志中**没有**回退警告(有密钥时不警告, 符合预期)
+产物: app-release.apk = 7,944,730 字节(7.58 MiB)
+signingConfig = release (不是 debug)
+
+签名自证: apksigner verify --print-certs
+  Signer #1 certificate DN: CN=ImageFilter Mobile, O=XUTENGXIANG, C=CN
+  Signer #1 certificate SHA-256 digest: b0a5d421e38e0a2dc7e0f30fbbada7924810d5faf4a6286999e34dd038f9560c
+keytool -list -v 同一把 keystore 的指纹:
+  SHA256: B0:A5:D4:21:E3:8E:0A:2D:C7:E0:F3:0F:BB:AD:A7:92:48:10:D5:FA:F4:A6:28:69:99:E3:4D:D0:38:F9:56:0C
+=> 两者一致: APK 就是这把 keystore 签的, Gradle 的环境变量读取路径可用。
+SIGNING-PROVENANCE.txt 也如实写成 "签名=发布密钥"。
+
+
+4. 图标(Step 0)
+----------------
+资源(全部是 XML, 仓库里**没有**任何二进制图片):
+  app/src/main/res/values/ic_launcher_background.xml      (#101014)
+  app/src/main/res/drawable/ic_launcher_foreground.xml    (108x108 矢量, 取景 28..80 在安全区内)
+  app/src/main/res/mipmap-anydpi-v26/ic_launcher.xml      (adaptive-icon + monochrome)
+Manifest: <application android:icon="@mipmap/ic_launcher" ...>("刻意不声明"的注释已删除)
+APK 内实测(aapt2 dump xmltree app-release.apk --file res/BW.xml):
+  E: adaptive-icon
+      E: background  -> @0x7f020004 (color/ic_launcher_background)
+      E: foreground  -> @0x7f040007 (drawable/ic_launcher_foreground)
+      E: monochrome  -> @0x7f040007
+aapt2 dump badging: application: label='ImageFilter' icon='res/BW.xml'(不再是默认灰块)
+=> 图标真的进了包; 但"启动器里长什么样"**未经真机目视验证**(见 §7)。
+
+
+5. 版本号校验的**反面**测试(release 必须大声失败)
+---------------------------------------------------
+场景 A: versionName 改成 9.9.9(与桌面端不一致)
+  gradlew assembleRelease -> EXIT=1(执行到 :app:verifyReleaseVersion 失败)
+  报错原文:
+    版本号校验失败 —— release 构建必须停下:
+      - 版本号不一致: android/version.properties=9.9.9, package.json=1.1.2 ...
+      - 版本号不一致: android/version.properties=9.9.9, src-tauri/tauri.conf.json=1.1.2 ...
+      - 版本号不一致: android/version.properties=9.9.9, src-tauri/Cargo.toml=1.1.2 ...
+  gradlew assembleDebug   -> EXIT=0 BUILD SUCCESSFUL(debug 不受影响)
+场景 B: 直接删掉 android/version.properties
+  gradlew assembleRelease -> EXIT=1(同一个任务失败)
+  gradlew assembleDebug   -> EXIT=0 BUILD SUCCESSFUL
+两个场景测完已把 version.properties 还原为 versionName=1.1.2 / versionCode=1。
+
+
+6. 单元测试与 debug 构建
+------------------------
+gradlew --no-daemon testDebugUnitTest -> BUILD SUCCESSFUL in 20s
+  build/test-results/testDebugUnitTest/*.xml 汇总:
+    测试类 23 个 / 测试 292 个 / 失败 0 / 错误 0 / 跳过 0
+  注: 计划里写的是基线 221 个; 并发推进的其它任务往 android/ 里加了测试, 所以现在是 292。
+      本次改动**没有**增删任何测试, 292 全绿是既有测试在本次改动后仍通过。
+gradlew --no-daemon assembleDebug -> BUILD SUCCESSFUL in 20s
+  app-debug.apk = 11,074,679 字节(10.56 MiB)
+
+
+7. 尚未验证(诚实清单)
+----------------------
+- **真机安装/启动器目视**: `adb devices` 输出为空 —— 本机没有连接任何设备,
+  所以"覆盖安装成功""启动器里能看到新图标""versionCode 降级被拒"这三项**没有实测**,
+  需要在有手机的机器上人工补做(步骤见 docs/ImageFilter-安卓发版与签名.md §4)。
+- **CI 运行**: 未推送(用户未授权 push), 所以 .github/workflows/android.yml 只做了
+  YAML 解析校验(js-yaml 解析通过), **没有**跑过一次真实 GitHub Actions。
+  两分支的红色警告文案已在本地用相同逻辑核对。
+- **正式 keystore 指纹**: 上面 §3 的指纹来自一次性测试 keystore。
+  人工生成正式 keystore 后, 请把 `keytool -list -v` 的 SHA-256 **只记指纹**追加到本文件。
+
+
+8. 本次改动文件
+---------------
+android/version.properties                                   (新增, 版本号单一来源)
+android/app/build.gradle.kts                                 (签名环境变量 + 版本校验 + 签名来历)
+android/app/src/main/AndroidManifest.xml                     (加回 android:icon, 删旧注释)
+android/app/src/main/res/values/ic_launcher_background.xml    (新增)
+android/app/src/main/res/drawable/ic_launcher_foreground.xml  (新增)
+android/app/src/main/res/mipmap-anydpi-v26/ic_launcher.xml    (新增)
+android/.gitignore                                           (挡 *.keystore/*.jks/*.p12)
+.github/workflows/android.yml                                (新增, CI 出 APK)
+docs/ImageFilter-安卓发版与签名.md                            (新增, 发版手册)

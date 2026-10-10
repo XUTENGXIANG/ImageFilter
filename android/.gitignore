@@ -5,3 +5,10 @@ local.properties
 .idea/
 .cxx/
 captures/
+
+# 发布签名材料绝不进仓库 —— keystore 与它的密码只存在于仓库之外
+# (本机在 %USERPROFILE%\.imagefilter-mobile\, CI 在 GitHub secret 里)。
+# 生成步骤见 docs/ImageFilter-安卓发版与签名.md。
+*.keystore
+*.jks
+*.p12

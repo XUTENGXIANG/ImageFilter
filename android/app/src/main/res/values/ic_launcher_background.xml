@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Copyright (c) 2026 XUTENGXIANG / SPDX-License-Identifier: MIT -->
+<resources>
+    <!-- 自适应图标的背景层: 与手机端暗色主题(#101014)对齐。 -->
+    <color name="ic_launcher_background">#101014</color>
+</resources>

@@ -1,0 +1,125 @@
+# ImageFilter 安卓 APK 构建
+#
+# 与 build.yml(桌面端安装包)分开: 桌面端只在 tag 上跑, 安卓这边每次碰到
+# android/ 的改动都该被验一遍。
+#
+# **诚实条款**(见 docs/ImageFilter-安卓发版与签名.md §6):
+#   配了 IMAGEFILTER_KEYSTORE_BASE64 等 secret -> 出发布密钥签名的 release APK;
+#   没配 -> 只出 debug 签名 APK, 并在 job 摘要/日志/artifact 名里明说"不是正式包"。
+#   绝不在没有密钥的情况下谎称产物已正式签名。
+name: Android APK
+
+on:
+  push:
+    # 分支与 tag 都要跑, 所以 branches 和 tags 都得显式写(GitHub 的规则:
+    # 只写 tags 不写 branches, 分支推送就完全不会触发)。
+    # 另外: paths 过滤对 tag push 不生效(tag 一定跑) —— 这正是我们要的, 打 v* tag
+    # 时无论改了哪些文件都要出包。
+    branches: ['**']
+    tags: ['v*']
+    paths:
+      - 'android/**'
+      - '.github/workflows/android.yml'
+  pull_request:
+    paths:
+      - 'android/**'
+      - '.github/workflows/android.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  apk:
+    name: Build APK
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      # 仓库是在 Windows 上提交的, gradlew 可能没带上可执行位。
+      - name: Ensure gradlew is executable
+        working-directory: android
+        run: chmod +x gradlew
+
+      # 先决定走哪条路 —— 后面所有步骤都按它分支, 不允许"假装签过名"。
+      - name: Decide signing path
+        id: signing
+        env:
+          KS_B64: ${{ secrets.IMAGEFILTER_KEYSTORE_BASE64 }}
+        run: |
+          if [ -n "$KS_B64" ]; then
+            echo "signed=true" >> "$GITHUB_OUTPUT"
+            echo "::notice title=签名::检测到 IMAGEFILTER_KEYSTORE_BASE64 —— 走 assembleRelease, 用发布密钥签名。"
+          else
+            echo "signed=false" >> "$GITHUB_OUTPUT"
+            echo "::warning title=没有发布密钥::未配置 IMAGEFILTER_KEYSTORE_BASE64 secret。本次**只构建 debug 签名 APK**, 它不是可发布的正式包(不能覆盖安装正式版)。要出正式包请按 docs/ImageFilter-安卓发版与签名.md §6 配置 secrets。"
+          fi
+
+      - name: Unit tests
+        working-directory: android
+        run: ./gradlew --no-daemon --stacktrace testDebugUnitTest
+
+      - name: Restore keystore from secret
+        if: steps.signing.outputs.signed == 'true'
+        env:
+          KS_B64: ${{ secrets.IMAGEFILTER_KEYSTORE_BASE64 }}
+        run: |
+          # 写到 $RUNNER_TEMP: 不进工作区, 不随 artifact 上传, runner 销毁即消失。
+          printf '%s' "$KS_B64" | base64 -d > "$RUNNER_TEMP/release.keystore"
+          test -s "$RUNNER_TEMP/release.keystore"
+
+      - name: assembleRelease (发布密钥签名)
+        if: steps.signing.outputs.signed == 'true'
+        working-directory: android
+        env:
+          IMAGEFILTER_KEYSTORE: ${{ runner.temp }}/release.keystore
+          IMAGEFILTER_KEYSTORE_PASSWORD: ${{ secrets.IMAGEFILTER_KEYSTORE_PASSWORD }}
+          IMAGEFILTER_KEY_ALIAS: ${{ secrets.IMAGEFILTER_KEY_ALIAS }}
+          IMAGEFILTER_KEY_PASSWORD: ${{ secrets.IMAGEFILTER_KEY_PASSWORD }}
+        run: ./gradlew --no-daemon --stacktrace assembleRelease
+
+      - name: 自证签名(apksigner verify --print-certs)
+        if: steps.signing.outputs.signed == 'true'
+        working-directory: android
+        run: |
+          APK=$(ls app/build/outputs/apk/release/*.apk | head -n1)
+          APKSIGNER=$(find "${ANDROID_SDK_ROOT:-$ANDROID_HOME}/build-tools" -type f -name 'apksigner*' ! -name '*.bat' | sort | tail -n1)
+          "$APKSIGNER" verify --print-certs "$APK"
+          cat app/build/outputs/apk/release/SIGNING-PROVENANCE.txt
+
+      - name: assembleDebug (没有发布密钥, 只出 debug 包)
+        if: steps.signing.outputs.signed != 'true'
+        working-directory: android
+        run: ./gradlew --no-daemon --stacktrace assembleDebug
+
+      - name: Job summary (说清这份产物是什么)
+        if: always()
+        run: |
+          {
+            echo "## Android APK"
+            if [ "${{ steps.signing.outputs.signed }}" = "true" ]; then
+              echo "- 产物: **release APK, 已用发布密钥签名**(上面 apksigner 输出为证)"
+              echo "- 可直接用于发布/侧载覆盖安装"
+            else
+              echo "- 产物: **debug 签名 APK —— 不是正式发布包**"
+              echo "- 原因: 仓库未配置 \`IMAGEFILTER_KEYSTORE_BASE64\` 等 secrets"
+              echo "- 它可以装到手机上跑, 但**不能**覆盖安装已有正式版, 也不应对外分发"
+              echo "- 出正式包: 见 \`docs/ImageFilter-安卓发版与签名.md\` §6"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: imagefilter-mobile-apk-${{ steps.signing.outputs.signed == 'true' && 'release-signed' || 'debug-not-for-release' }}
+          path: android/app/build/outputs/apk/*/*.apk
+          if-no-files-found: error
