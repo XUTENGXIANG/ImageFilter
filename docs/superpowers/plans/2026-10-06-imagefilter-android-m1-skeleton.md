@@ -929,7 +929,7 @@ import java.util.concurrent.TimeUnit
  * 而且连接池/线程池会翻倍。给 Coil 的是**同一个实例**(见 ui/GridScreen.kt)。
  *
  * 超时按"最慢的真实操作"定: 服务端首次预览 RAW 要做全解码(maybe 数秒) + 降采样,
- * 所以 readTimeout 给到 60s; 连接超时短(隧道断了要尽快报错, 别让用户干等)。
+ * 所以 readTimeout 给到 60s; 连接超时短(网络断了要尽快报错, 别让用户干等)。
  */
 fun buildHttpClient(token: String?): OkHttpClient = OkHttpClient.Builder()
     .connectTimeout(10, TimeUnit.SECONDS)
@@ -1194,15 +1194,15 @@ class PairingStore(private val context: Context) {
 
 `ui/PairingScreen.kt` 的**要求**（布局细节由实现者定，但以下必须成立）：
 
-- 三个输入：**地址**（`http://192.168.x.x:8765` 或隧道虚拟网地址）、**配对码**（64 位 hex）、可选备注
+- 三个输入：**地址**（`http://192.168.x.x:8765` —— 局域网私有地址）、**配对码**（64 位 hex）、可选备注
 - 一个 **「测试连接」**按钮：调 `ApiClient(url, token).ping()` 与 `.shares()`
   - `ping` 失败 → 按 `ApiException.code` 给**可执行提示**（规格 §5.3 的要求）：
     - `unauthorized` → "配对码不对，或已在电脑上轮换过——去电脑上重新复制"
-    - 网络异常 → 给 §1.3 的四条排查清单：① 电脑没睡眠 ② ImageFilter 正在运行 ③ 服务已开启 ④ 手机与电脑在同一网络（或都加入了同一个 EasyTier/Tailscale 网络）
+    - 网络异常 → 给 §1.3 的四条排查清单：① 电脑没睡眠 ② ImageFilter 正在运行 ③ 服务已开启 ④ **手机与电脑连在同一个 WiFi**（LAN-only 决策后不再有"隧道"选项）
   - `shares` 返回**空列表** → 明确提示"电脑上还没共享任何目录，服务对所有路径都会返回无权限"（这是有意的安全默认，不是 bug）
   - `shares` 有内容 → 显示共享根列表，允许"开始使用"
 - 成功后调 `PairingStore.save(url, token)`，再回调 `onPaired`
-- **不提供"忽略证书错误"之类的开关**（规格 §4.3：服务端不做 TLS，加密交给隧道）
+- **不提供"忽略证书错误"之类的开关**（规格 §4.3：服务端不做 TLS，加密由**局域网边界**提供——所以不要在不可信 WiFi 上开服务）
 
 - [ ] **Step 4: 手工验证（真机）**
 
@@ -1406,7 +1406,7 @@ git commit -m "feat(android): 缩略图网格(Coil 3 与 ApiClient 共用鉴权 
 | §12 Token 纪律（不引 Room、不引 SubsamplingScaleImageView、单文件 ≤300 行） | 全任务 |
 | §5.1 `/preview` `/decisions` `/move` | **不在本计划** → M2′/M3′ |
 | §8.2 滑卡 / §8.3 未同步 | **不在本计划** → M3′ |
-| §4.2 EasyTier/Tailscale 自动探测与打通引导 | **不在本计划** → M4′ |
+| §4.2 局域网地址枚举 + 防火墙引导（LAN-only） | **不在本计划** → M4′ Task 2 |
 
 ## 附录 B · 本计划刻意不做的事
 
