@@ -257,6 +257,15 @@ data class ViewerState(
      * 所以界面用 [reloadNonce] 当 `key{}` 重建那个 AsyncImage(见 ViewerScreen)。
      */
     val reloadNonce: Int = 0,
+    /**
+     * 上一次**滑卡**结论的那句话(M3′): "已保留 · 保持 5★"这类 —— 规格 §8.2 要求命中
+     * "不降级"那一支时**不写**但**仍要前进并给出明确反馈**, 这句话就是那个反馈。
+     *
+     * 它**不随换张清空**: 说完这句话正好滑到下一张, 那句话必须还在屏幕上, 否则用户看到的
+     * 只是一张卡片无声地换了。下一次滑卡会覆盖它, 用手点星级/色标([ViewerViewModel.setRating])
+     * 会清掉它(那句话不再适用)。没有话说时为 null。
+     */
+    val swipeNote: String? = null,
 ) {
     val current: ViewerPhoto? get() = photos.getOrNull(index)
     val count: Int get() = photos.size
@@ -318,6 +327,10 @@ data class ViewerState(
  *   6. **打完分/标完色: 乐观更新 + 失败可见 + 可重试**([setRating] / [setLabel]) ——
  *      星级色标**只由服务端确认**(客户端不许自己判成功), 失败**不回滚**本地值,
  *      并把失败与"未同步 N 张"摆到界面上(规格 §11 纪律③)。
+ *
+ * M3′ 在同一个状态机上加了**滑卡**([swipe]): 手势 → 纯函数 [decideSwipe] → 写入。语义
+ * (保留不降级 / 只写星级不碰色标)全在那个纯函数里, 这里只做三件事: 不写就不发请求、
+ * 写成功才前进([advanceOnWriteSuccess])、失败把结论与失败卡都留在屏幕上。
  */
 class ViewerViewModel(
     private val pairing: Pairing,
@@ -356,6 +369,14 @@ class ViewerViewModel(
     private val clientFactory: (url: String, token: String) -> ApiClient = { url, token ->
         ApiClient(url, token)
     },
+    /**
+     * 向后(下一张方向)预取几张,**默认 1**(与 M2′ 的查看器逐字一致: 左右邻张)。
+     *
+     * M3′ 的滑卡页传 `2`: 规格 §8.2 要的是"当前张 + **后 2 张**预取" —— 它用的是**同一个**
+     * 预取器(见 [prefetchUrls]), 只是把前向窗口开大一张; **绝不**另写一套预取
+     * (那正是"预取高清"这类错误最容易溜进来的地方)。
+     */
+    private val prefetchAhead: Int = 1,
 ) {
     /**
      * ⚠️ **必须声明在 [_state] 之前**: `_state` 的初值里就要拼默认档的 URL, 而 Kotlin 的
@@ -411,13 +432,14 @@ class ViewerViewModel(
      * 进查看器: 把邻张(默认档)拉起来, 左右切换是瞬时的。
      *
      * **不带 `full`**: 高清只由用户显式触发(理由见类 KDoc 第 3 条)。
-     * 计划写的是 `index+1` 与 `index-1`(§8.2 里"当前张 + 后 2 张"是 M3′ 滑卡那一页的事);
-     * 当前这张不发 —— 它正在被 [ViewerState.defaultUrl] 加载。
+     * 向后几张由 [prefetchAhead] 决定(M2′ 的查看器是 1; M3′ 的滑卡页是 2, 规格 §8.2
+     * "当前张 + 后 2 张")。当前这张不发 —— 它正在被 [ViewerState.defaultUrl] 加载。
      */
     fun prefetchUrls(): List<String> {
         val st = _state.value
         if (st.photos.isEmpty()) return emptyList()
-        return listOf(st.index - 1, st.index + 1)
+        val indices = listOf(st.index - 1) + (1..prefetchAhead).map { st.index + it }
+        return indices
             .filter { it in st.photos.indices }
             .mapNotNull { urlFor(it, full = false) }
     }
@@ -428,6 +450,14 @@ class ViewerViewModel(
         if (urls.isEmpty()) return
         prefetch(urls)
     }
+
+    /**
+     * 任意一张的**默认档** URL(`null` = 列表里没有这一张)。
+     *
+     * 给滑卡页的"后面那张卡"用: 它必须与显示用的那张**同源**([urlFor]) —— 自己另拼一个
+     * URL(哪怕只差一个参数)就等于让 Coil 把同一张图拉两次, 而预取也就白预取了。
+     */
+    fun defaultUrlAt(index: Int): String? = urlFor(index, full = false)
 
     fun open() {
         prefetchNeighbours()
@@ -554,6 +584,41 @@ class ViewerViewModel(
     suspend fun setLabel(label: String?): PushResult = commit { it.withLabel(label) }
 
     /**
+     * 一次**滑卡**(M3′ 的主动作): 手势 → [decideSwipe] → 写入。
+     *
+     * 三条分支, 每一条都对应一次用户可能会被误导的机会:
+     *   · **没什么要写**([SwipeOutcome.unchanged], 例如对一张已经 5 星的照片右滑) ——
+     *     **一个请求都不发**, 但**照样前进**并显示那句 [SwipeOutcome.message]
+     *     ("已保留 · 保持 5★")。不发请求是硬要求: 无条件写 3 会把电脑上的 5 星降成 3 星;
+     *   · **要写** —— 先`applyLocal`(乐观更新: 界面立刻变, 且**留下**这份意图),
+     *     再推送; 送去的是 [SwipeOutcome.applyTo] 落下来之后的那一份意图(整份, 逐字,
+     *     与用户手点星级走的是**同一条**写入链路);
+     *   · **写失败** —— 本地意图与失败卡都留着, 而且**绝不前进**(那会让用户以为打过了)。
+     *
+     * 返回的是服务端说了什么([PushResult]); `unchanged` 那一支回 [PushResult.NothingToPush]
+     * (确实一个字节都没发出去 —— 与"发了但服务端没回报"必须分得清)。
+     */
+    suspend fun swipe(
+        direction: SwipeDirection,
+        config: SwipeConfig = DEFAULT_SWIPE_CONFIG,
+    ): PushResult {
+        val path = currentPath() ?: return PushResult.NothingToPush(0)
+        val outcome = decideSwipe(decisions.get(path), direction, config)
+        if (outcome.unchanged) {
+            // 不产生写入 ⇒ 不碰本地意图(凭空标一条"未同步"会让角标撒谎), 也不发请求。
+            _state.update { it.copy(swipeNote = outcome.message) }
+            if (advanceOnWriteSuccess) go(+1)
+            return PushResult.NothingToPush(1)
+        }
+        decisions.applyLocal(outcome.applyTo(decisions.get(path)))
+        _state.update { refresh(it).copy(swipeNote = outcome.message) }
+        val result = push(listOf(path))
+        // 与手点星级同一条纪律(规格 §8.2): **写成功才前进**。失败留在这一张, 失败卡可见、可重试。
+        if (result is PushResult.Ok && advanceOnWriteSuccess) go(+1)
+        return result
+    }
+
+    /**
      * 「重试写入」: 把**当前这张**的本地意图再推一次。
      *
      * 重试不产生新决策, 所以**不会**触发自动前进(那是"用户刚打了一张"才该发生的事)。
@@ -600,7 +665,8 @@ class ViewerViewModel(
     private suspend fun commit(mutate: (Decision) -> Decision): PushResult {
         val path = currentPath() ?: return PushResult.NothingToPush(0)
         decisions.applyLocal(mutate(decisions.get(path)))
-        _state.update { refresh(it) }
+        // 手点了星级/色标 ⇒ 上一句滑卡的结论不再适用(它说的是"这一滑没写"), 清掉。
+        _state.update { refresh(it).copy(swipeNote = null) }
         val result = push(listOf(path))
         // 规格 §8.2: 写成功才自动前进。失败**绝不**前进 —— 那会让用户以为打过了,
         // 而实际上那张在电脑上还是旧的(本任务最不能出的一种错)。

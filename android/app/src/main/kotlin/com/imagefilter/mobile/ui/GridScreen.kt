@@ -80,6 +80,14 @@ fun GridScreen(
     // null = 没开查看器; 非 null = 正在看第几张。**不用任何文案判断查看器开没开**
     // (桌面端为此误判过两次: 文案是给人看的, 不能当状态)。
     var viewerIndex by remember { mutableStateOf<Int?>(null) }
+    /**
+     * 滑卡那一批(**打开那一刻**筛出来的那些), null = 没开滑卡页。
+     *
+     * 为什么是**快照**而不是"每次重组都重新算": 滑卡会改星级/色标, 筛选条件(比如 ≥3★)会因此
+     * 重新解释同一批照片 —— 若队列跟着变, 列表会在用户屁股底下缩短、下标会跳, 滑到一半就
+     * 换了另一张。这一批就是"你现在要过的这一叠", 打开时定下, 关掉再进才重算。
+     */
+    var cullQueue by remember { mutableStateOf<List<GridItem>?>(null) }
 
     /**
      * 星级/色标的本地镜像 —— **由 ViewModel 持有, 由查看器借用**。
@@ -101,9 +109,11 @@ fun GridScreen(
     // 只调一次 loadAll 是刻意的: 谁忘了第二步, 筛选栏就会安静地整页说"未统计"。
     LaunchedEffect(vm) { vm.loadAll() }
 
-    // 关掉查看器回到网格那一刻: store 里可能刚多了"改了但没写成"或"已同步"的条目,
+    // 关掉查看器/滑卡页回到网格那一刻: store 里可能刚多了"改了但没写成"或"已同步"的条目,
     // 抄一份进来(不碰网络) —— 否则角标与未同步边框会缺一块, 而那正是纪律③最怕的静默。
-    LaunchedEffect(viewerIndex) { if (viewerIndex == null) vm.refreshDecisions() }
+    LaunchedEffect(viewerIndex, cullQueue) {
+        if (viewerIndex == null && cullQueue == null) vm.refreshDecisions()
+    }
 
     // Box 是为了让查看器盖在网格之上(而不是替换掉网格 —— 替换会把滚动位置丢掉)
     Box(modifier = Modifier.fillMaxSize()) {
@@ -115,6 +125,8 @@ fun GridScreen(
             onBack = onBack,
             scope = scope,
             onOpenViewer = { index -> viewerIndex = index },
+            // 筛片队列 = **此刻**筛出来的那些(见 cullQueue 的 KDoc); 一张都没有时按钮是禁用的
+            onOpenCull = { cullQueue = state.visibleItems },
         )
 
         val index = viewerIndex
@@ -132,6 +144,20 @@ fun GridScreen(
                 onReloadFolder = { scope.launch { vm.loadAll() } },
             )
         }
+
+        // 滑卡筛片(M3′ 的主动作): 同样是盖在网格上的一层。用的是**冻结的那一批**
+        // ([cullQueue]), 与查看器同一个 store。
+        val queue = cullQueue
+        if (queue != null && queue.isNotEmpty()) {
+            SwipeScreen(
+                pairing = pairing,
+                items = queue,
+                startIndex = 0,
+                decisions = decisions,
+                onClose = { cullQueue = null },
+                onReloadFolder = { scope.launch { vm.loadAll() } },
+            )
+        }
     }
 }
 
@@ -146,6 +172,8 @@ private fun GridContent(
     onBack: () -> Unit,
     scope: CoroutineScope,
     onOpenViewer: (Int) -> Unit,
+    /** 打开**滑卡筛片**(M3′ 的主动作): 队列是此刻筛出来的那些, 由调用方冻结。 */
+    onOpenCull: () -> Unit,
 ) {
     Scaffold(
         topBar = {
@@ -172,6 +200,9 @@ private fun GridContent(
                             Text(unsynced, color = MaterialTheme.colorScheme.error)
                         }
                     }
+                    // 滑卡筛片: **筛出来的那些**就是这一叠(队列在按下这一刻冻结, 见 GridScreen)。
+                    // 一张可滑的都没有时禁用 —— 打开一个空队列只会给出一张白屏。
+                    TextButton(onClick = onOpenCull, enabled = state.hasVisiblePhotos) { Text("筛片") }
                     TextButton(onClick = { scope.launch { vm.loadAll() } }) { Text("刷新") }
                 },
             )

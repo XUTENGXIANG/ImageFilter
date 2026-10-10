@@ -316,7 +316,7 @@ fun ViewerScreen(
  * "重试写入"与"知道了（要去电脑上改）"要做的事不在一台设备上, 字必须不一样。
  */
 @Composable
-private fun WriteFailureCard(
+internal fun WriteFailureCard(
     head: String,
     text: String,
     action: WriteAction?,
@@ -402,7 +402,7 @@ private fun ViewerTopBar(
  * 高清失败那条**必须带动作**(用户的第一反应是"再点一次"), 而进度条那条不需要。
  */
 @Composable
-private fun ViewerNotice(
+internal fun ViewerNotice(
     loading: Boolean,
     text: String,
     modifier: Modifier = Modifier,
@@ -446,7 +446,7 @@ private fun ViewerNotice(
  * 两台不同的设备上), 所以这里不能用 `ErrorCard` 那个写死"重试"的版本。
  */
 @Composable
-private fun ViewerErrorCard(
+internal fun ViewerErrorCard(
     error: ViewerError,
     onRetry: () -> Unit,
     onReloadFolder: () -> Unit,
