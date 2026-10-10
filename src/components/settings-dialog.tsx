@@ -72,7 +72,34 @@ interface ServerStatus {
   shares: string[];
   enabled: boolean;
   lastError: string | null;
+  /**
+   * M4′ Task 2: 用户在"当前网络是公用"那条警告下**显式确认过**的时刻(unix 秒)。
+   * `null` = 本次运行还没确认过。它只活在**本次运行**里 —— 重启后回到 null, 于是下次开机
+   * 在公用网络上还会再拦一次(确认是一次动作, 不是永久豁免)。
+   */
+  publicAckAt: number | null;
 }
+
+/**
+ * 本机"手机可能能用的地址"快照 —— 与 `src-tauri/src/server/network.rs` 的 `NetHints`
+ * 一一对应(serde camelCase)。
+ *
+ * `lan` 只包含**私有网段**地址(公网地址只在 `publicIpv4` 里, 只用于警告); `profile` 是
+ * Windows 的网络类别; `firewallHint` 是一个**机器码**, 不是文案 —— 文案按当前语言在这里查表
+ * (见下面 `FIREWALL_HINT_ALLOW_PRIVATE`)。
+ */
+interface NetHints {
+  lan: { address: string; interface: string }[];
+  publicIpv4: string[];
+  profile: "private" | "public" | "unknown";
+  firewallHint: string;
+}
+
+/**
+ * 后端唯一会发的防火墙提示码(`network.rs` 的 `FIREWALL_HINT_ALLOW_INBOUND_PRIVATE`)。
+ * 不认识的码落到 `server.firewallHintGeneric` —— 后端加档时面板不会变成空白。
+ */
+const FIREWALL_HINT_ALLOW_PRIVATE = "allowInboundPrivateProfile";
 
 /**
  * 设置里的「图库服务」面板(Phase 8)。**全部长在设置对话框里** —— 不新增窗口、不动布局。
@@ -81,20 +108,29 @@ interface ServerStatus {
  *   ① 现在到底是开是关、**有没有真的在监听**(开 ≠ 在跑, 这两件事分开显示);
  *   ② 配对码: 看得见、能复制、能轮换(轮换两段确认 —— 它会让所有手机重新配对);
  *   ③ 共享目录的增删(空 = 服务对所有路径回"无权限", 这是有意的安全默认, 面板要说清);
- *   ④ 起不来时给出**可行动**的理由 + 一张排查清单。
+ *   ④ 起不来时给出**可行动**的理由 + 一张排查清单;
+ *   ⑤ M4′ Task 2: 手机该填哪个地址(私有地址 + 网卡名, 一键复制)、**防火墙**怎么放行、
+ *      "当前网络是公用"时的**警告 + 二次确认入口**、检测到非局域网地址时的警告。
  *
  * 纪律: 状态永远以后端为准(`get_server_status`) —— 每次动作之后再读一次, 面板开着时每 4 秒
  * 再读一次。前端**不**自己猜"应该开着了吧": `enabled`/`running`/`lastError` 三个字段合起来
  * 才是真相, 而真相只有 `server::status_of_state` 说得清。
+ *
+ * **本面板不提供任何公网暴露 / 端口转发 / 隧道入口**(规格 §4.3 明确不做): 检测到不是局域网的
+ * 地址时**只警告** —— 不做成一键, 也不给引导。
  */
 function ServerPanel({ open }: { open: boolean }) {
   const { t } = useTranslation();
   const [status, setStatus] = useState<ServerStatus | null>(null);
+  /** 本机探测快照(私有地址 / 网络类别 / 防火墙码)。`null` = 没读到 → 那两块整个不渲染。 */
+  const [hints, setHints] = useState<NetHints | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
   /** 至少成功读到过一次状态 —— 决定一条失败信息该说"读不到状态"还是"这个操作失败了"。 */
   const [loadedOnce, setLoadedOnce] = useState(false);
   const [busy, setBusy] = useState(false);
   const [copied, setCopied] = useState(false);
+  /** 刚从地址列表里复制走的那一条(按钮高亮 1.5 秒), 与配对码那个 `copied` 分开。 */
+  const [copiedAddr, setCopiedAddr] = useState<string | null>(null);
   const [confirmRotate, setConfirmRotate] = useState(false);
   const [draftPath, setDraftPath] = useState("");
   const [showTips, setShowTips] = useState(false);
@@ -111,18 +147,36 @@ function ServerPanel({ open }: { open: boolean }) {
     }
   }, []);
 
+  /**
+   * 读本机探测快照。**只在打开面板与每次动作之后读**, 不进 4 秒轮询 —— 它要枚举网卡并向
+   * Windows 的网络列表问一次, 没必要每 4 秒做一遍; "网络刚换了"这件事用户自己会点"重新检测"。
+   *
+   * 拿不到**不设 `problem`**: 后端那一步不会失败(任何失败都降级成"这一项没有值"), 走到这里
+   * 只可能是 IPC 不通(浏览器探针)—— 那时状态那块已经报了同一件事。拿不到就 `null` → 地址块
+   * 整个不渲染, 绝不拿一份猜的列表撑场面。
+   */
+  const loadHints = useCallback(async () => {
+    try {
+      setHints(await invoke<NetHints>("get_server_network_hints"));
+    } catch {
+      setHints(null);
+    }
+  }, []);
+
   useEffect(() => {
     if (!open) return; // 关着的时候不轮询: 一次 invoke 也不该白花
     void load();
+    void loadHints();
     const id = window.setInterval(() => void load(), 4000);
     return () => window.clearInterval(id);
-  }, [open, load]);
+  }, [open, load, loadHints]);
 
   /**
    * 所有动作共用同一条收尾: 忙 → 做 → 失败就显示后端那句人话 → **无论如何**重读一次权威状态。
    *
    * 重读是必需的, 不是保险: 开启失败时后端**刻意不回滚开关**(开关仍是"开"、服务没在跑、
-   * 理由在 `lastError`), 只有重读才能让界面显示这个真实组合。
+   * 理由在 `lastError`), 只有重读才能让界面显示这个真实组合。探测结果一起重读: 一次动作之后
+   * 网络类别可能已经变了(用户刚换 WiFi 再点开关)。
    */
   const run = async (fn: () => Promise<unknown>) => {
     setBusy(true);
@@ -134,6 +188,7 @@ function ServerPanel({ open }: { open: boolean }) {
     } finally {
       setBusy(false);
       void load();
+      void loadHints();
     }
   };
 
@@ -201,6 +256,51 @@ function ServerPanel({ open }: { open: boolean }) {
   const shares = status?.shares ?? [];
   const disabled = busy || !status;
 
+  /** 把一条候选地址拼成手机要填的完整 URL(端口取状态里那个)。 */
+  const lanUrl = (address: string) => `http://${address}:${status?.port ?? 0}`;
+
+  const copyAddress = async (url: string) => {
+    try {
+      await navigator.clipboard.writeText(url);
+      setCopiedAddr(url);
+      window.setTimeout(() => setCopiedAddr((v) => (v === url ? null : v)), 1500);
+    } catch {
+      // 复制不了不是致命的: 地址本身就是可见、可选的文本(见那段 <code> 的 select-all)。
+      setProblem(t("server.copyFailed"));
+    }
+  };
+
+  /** 用户点了"我了解风险，仍要开启" —— **只有这一个动作**会带 `confirmPublic: true`。 */
+  const confirmAndEnable = () =>
+    run(() => invoke("set_server_enabled", { enabled: true, confirmPublic: true }));
+
+  /**
+   * 什么时候显示"警告 + 二次确认入口": 当前网络**不是"专用"**那一档的时候。
+   *   · `public` —— 后端一定会拒(网络被 Windows 标为公用);
+   *   · `unknown` —— 后端**可能**拒(退化判定: 读不出类别但本机有不是局域网的地址)。
+   *
+   * ⚠️ 这一条**不是**判定本身: 能不能开只由后端的 `network::should_refuse_to_start` 说了算。
+   * 前端这一份最多让入口早显示或晚显示一会儿, **绝不会**让一次公用网络上的开启静默发生 ——
+   * 那才是规格 §4.3 要的那条保证。反过来也成立: 这里少显示了一次, 用户点开关时后端仍会拒并
+   * 把理由放进 `lastError`(下一块就会显示出来)。
+   */
+  const guardProfile = hints && hints.profile !== "private" ? hints.profile : null;
+
+  const firewallHintText =
+    hints?.firewallHint === FIREWALL_HINT_ALLOW_PRIVATE
+      ? t("server.firewallHint")
+      : t("server.firewallHintGeneric");
+
+  /** "这次确认过"那条记录(后端 `ServerStatus.publicAckAt`)。 */
+  const ackText = (() => {
+    const at = status?.publicAckAt ?? null;
+    if (at === null) return null;
+    // 0 = 确认过, 但系统时钟读不出来(见后端 `record_public_ack`)。
+    return at > 0
+      ? t("server.publicAck", { time: new Date(at * 1000).toLocaleString() })
+      : t("server.publicAckNoTime");
+  })();
+
   // 状态行 —— 三句话各自对应一个真实状态, 不合并、不含糊:
   //   · 开着且在跑 → 把地址念出来(用户就是拿它填手机的);
   //   · 开着但没在跑 → 直说"你要它开, 它没在跑"(理由在下面的错误块里);
@@ -236,9 +336,61 @@ function ServerPanel({ open }: { open: boolean }) {
         <Toggle
           checked={status?.enabled ?? false}
           disabled={disabled}
-          onChange={() => void run(() => invoke("set_server_enabled", { enabled: !(status?.enabled ?? false) }))}
+          onChange={() =>
+            void run(() =>
+              invoke("set_server_enabled", {
+                enabled: !(status?.enabled ?? false),
+                // 开关本身**永不**带确认: 公用网络下它会被后端拒(理由进 lastError), 要开就
+                // 必须走下面那个显式确认按钮。于是"静默开启"在结构上不成立。
+                confirmPublic: false,
+              }),
+            )
+          }
         />
       </div>
+
+      {/* ── M4′ Task 2 · 公用网络防护: 警告 + 二次确认 ──
+          「公用」正是"不可信局域网"那一档: 明文 HTTP 下配对码可能被同网段设备嗅探(规格 §4.3)。
+          确认**只对这一次开启有效** —— 它由后端记进状态(`publicAckAt`), 重启后重新问一次。 */}
+      {guardProfile !== null && (
+        <div className="rounded-md border border-amber-500/50 bg-amber-500/10 px-2 py-1.5 text-xs text-muted-foreground space-y-1">
+          <p className="font-medium text-foreground">
+            {guardProfile === "public" ? t("server.publicTitle") : t("server.profileUnknown")}
+          </p>
+          {guardProfile === "public" && (
+            <>
+              <p className="break-words">{t("server.publicWarn")}</p>
+              <p className="break-words">{t("server.publicOffer")}</p>
+            </>
+          )}
+          {/* 二次确认按钮只在"没在跑"时出现: 已经在跑说明这一次开启**已经**确认过了(状态里那条
+              `publicAckAt` 就是它), 再摆一个"仍要开启"只会让人以为哪里没点上。 */}
+          {!status?.running && (
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => void confirmAndEnable()}
+              className="px-2 py-1 rounded-md border border-amber-500/60 text-xs text-foreground hover:bg-amber-500/20 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {t("server.publicConfirm")}
+            </button>
+          )}
+        </div>
+      )}
+
+      {/* "这次开启是有人确认过的"那条记录(仅本次运行)。它不是豁免凭证 —— 每次开启都要当场确认。 */}
+      {ackText && <p className="text-xs text-muted-foreground">{ackText}</p>}
+
+      {/* 检测到不是局域网的地址: **只警告**。这里刻意没有任何"端口转发 / 公网暴露"入口
+          (规格 §4.3 明确不做, 也不做成一键)。 */}
+      {hints && hints.publicIpv4.length > 0 && (
+        <div className="rounded-md border-l-2 border-amber-500/70 bg-muted/40 px-2 py-1.5 text-xs text-muted-foreground space-y-0.5">
+          <p className="font-medium text-foreground">{t("server.publicIpTitle")}</p>
+          <p className="break-words">
+            {t("server.publicIpWarn", { list: hints.publicIpv4.join("、") })}
+          </p>
+        </div>
+      )}
 
       {/* 安全警告: 左侧那条琥珀色竖线是"这是条警告"的唯一视觉信号 —— 文字色仍用
           muted-foreground(两个主题下都过对比度, 不为一句文案另造一个颜色)。 */}
@@ -261,6 +413,73 @@ function ServerPanel({ open }: { open: boolean }) {
                 : t("server.unavailable", { reason: problem })}
             </p>
           )}
+        </div>
+      )}
+
+      {/* ── M4′ Task 2 · 局域网地址: 手机配对时填的就是这里的地址(规格 §4.2 第 1 条) ──
+          只列**私有网段**的地址(公网地址一个都不在这里, 只在上面的警告里); 每条后面是网卡名
+          —— 虚拟网卡(VMware/WSL/虚拟机)的地址多半连不上, 所以后端**只排序不丢弃**, 让用户
+          照着网卡名自己判断。"重新检测"是给"刚换了 WiFi"那个现场用的(它不进 4 秒轮询)。 */}
+      {hints && (
+        <div className="space-y-1">
+          <div className="flex items-center justify-between gap-2">
+            <p className="text-xs text-muted-foreground">{t("server.lanTitle")}</p>
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => void loadHints()}
+              className="px-2 py-1 rounded-md border border-border text-xs text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {t("server.rescan")}
+            </button>
+          </div>
+          {hints.lan.length === 0 ? (
+            <p className="text-xs text-muted-foreground">{t("server.lanEmpty")}</p>
+          ) : (
+            <ul className="space-y-1 min-w-0">
+              {hints.lan.map((l) => {
+                const url = lanUrl(l.address);
+                return (
+                  <li key={l.address} className="flex items-center gap-2 min-w-0">
+                    <code
+                      className="flex-1 min-w-0 truncate rounded-md bg-muted/40 px-2 py-1 font-mono text-xs text-foreground select-all"
+                      title={url}
+                    >
+                      {url}
+                    </code>
+                    <span
+                      className="shrink-0 max-w-28 truncate text-xs text-muted-foreground"
+                      title={l.interface}
+                    >
+                      {l.interface}
+                    </span>
+                    <button
+                      type="button"
+                      disabled={busy}
+                      aria-label={`${t("server.copy")}: ${url}`}
+                      onClick={() => void copyAddress(url)}
+                      className="shrink-0 px-2 py-1 rounded-md border border-border text-xs text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      {copiedAddr === url ? t("server.copied") : t("server.copy")}
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+          <p className="text-xs text-muted-foreground">{t("server.lanDesc")}</p>
+        </div>
+      )}
+
+      {/* ── M4′ Task 2 · 防火墙(规格 §4.2 第 2 条: 局域网模式下"连不上"的第一大原因) ──
+          文案按后端给的**机器码**查表(未知码落到通用那句), 所以它跟着界面语言走 ——
+          后端不把中文塞进这里。 */}
+      {hints && (
+        <div className="space-y-0.5">
+          <p className="text-xs text-muted-foreground">{t("server.firewallHintTitle")}</p>
+          <p className="rounded-md border-l-2 border-amber-500/70 bg-muted/40 px-2 py-1.5 text-xs text-muted-foreground">
+            {firewallHintText}
+          </p>
         </div>
       )}
 

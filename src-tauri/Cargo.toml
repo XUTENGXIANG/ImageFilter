@@ -55,9 +55,14 @@ memmap2 = "0.9.11"
 # Win32_System_Registry              ← Phase 7: 读 .lrcat 文件关联 / 卸载项, 定位 Lightroom.exe
 # Win32_System_Diagnostics_ToolHelp  ← Phase 7: 判断 Lightroom 是否正在运行
 # Win32_UI_WindowsAndMessaging       ← Phase 7: 等 Lightroom 主窗口出现(进程出现≠窗口出现)
+# Win32_Networking_NetworkListManager ← M4′ Task 2: 读网络类别(公用/专用/域)
+# Win32_NetworkManagement_IpHelper + Win32_NetworkManagement_Ndis + Win32_Networking_WinSock
+#                                    ← M4′ Task 2: 枚举本机网卡的私有 IPv4 与网卡名
+# 注意这几个只是**同一个 windows crate 的 feature**(没有引入新依赖);
+# 理由与取舍见 src-tauri/src/server/network.rs 的模块头。
 [target.'cfg(target_os = "windows")'.dependencies]
 inspect_path = "0.3"
-windows = { version = "0.62.2", features = ["Win32_UI_Shell", "Win32_Graphics_Gdi", "Win32_System_Com", "Win32_System_Com_StructuredStorage", "Win32_System_Ole", "Win32_Storage_FileSystem", "Win32_Foundation", "Win32_Graphics_Imaging", "Win32_System_IO", "Win32_Security", "Win32_System_Registry", "Win32_System_Diagnostics_ToolHelp", "Win32_UI_WindowsAndMessaging"] }
+windows = { version = "0.62.2", features = ["Win32_UI_Shell", "Win32_Graphics_Gdi", "Win32_System_Com", "Win32_System_Com_StructuredStorage", "Win32_System_Ole", "Win32_Storage_FileSystem", "Win32_Foundation", "Win32_Graphics_Imaging", "Win32_System_IO", "Win32_Security", "Win32_System_Registry", "Win32_System_Diagnostics_ToolHelp", "Win32_UI_WindowsAndMessaging", "Win32_Networking_NetworkListManager", "Win32_NetworkManagement_IpHelper", "Win32_NetworkManagement_Ndis", "Win32_Networking_WinSock"] }
 
 # zune-jpeg SIMD is slow in debug builds
 [profile.dev.package.zune-jpeg]

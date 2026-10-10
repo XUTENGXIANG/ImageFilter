@@ -10,6 +10,7 @@
 pub mod auth;
 pub mod config;
 pub mod media;
+pub mod network;
 pub mod paths;
 pub mod routes;
 
@@ -94,6 +95,18 @@ pub struct ServerStatus {
     /// 只能留在这里 + 一行 stderr; 界面据此给用户一句人话。启动成功后清空, `stop()` 也清空
     /// (用户亲手关了它, 还挂着旧理由是噪音); "关掉了但设置没能保存"会重新记一条。
     pub last_error: Option<String>,
+    /// 用户在"当前网络是公用"这条警告下**显式确认过**这件事(仅**本次运行**有效)。
+    ///
+    /// `Some(unix 秒)` = 确认过, 值是确认发生的时刻; `None` = 没确认过。它存在的唯一理由是
+    /// M4′ Task 2 的那条硬约束: **公用网络下开启服务绝不能静默发生** —— 界面因此有据可查地
+    /// 显示"这次开启是有人点过确认的"。
+    ///
+    /// 两条语义都是刻意的:
+    ///   · **记录不参与判定**: 它**不会**让下一次开启自动放行 —— 每一次开启都要**当场**拿到
+    ///     `confirm_public = true`(见 `set_enabled`)。"上次确认过"永远不当成"这次的许可"。
+    ///   · **只活在本次运行里**: 进程重启后必然回到 `None`, 于是下次开机在公用网络上**还会
+    ///     再拦一次**。确认是一次动作, 不是一份永久豁免(把它落盘就会变成后者)。
+    pub public_ack_at: Option<u64>,
 }
 
 /// 闭集错误码（规格 §5.3）。**每条都必须落到"用户下一步做什么"**。
@@ -350,6 +363,73 @@ fn last_start_error() -> Option<String> {
     LAST_ERROR.lock().unwrap_or_else(|e| e.into_inner()).clone()
 }
 
+// ── M4′ Task 2 · 公用网络防护的状态 ─────────────────────────────────────────
+//
+// 三件东西: ①一份探测结果(测试可注入); ②那道拒绝规则; ③"用户确认过"这条记录。
+// 探测的**实现**全在 `network.rs`(纯数据 + Win32), 这里只做"什么时候问它、问了怎么办"。
+
+/// "公用网络风险"最近一次被用户**显式确认**的时刻(unix 秒)。
+///
+/// 与 `LAST_ERROR` 同一条纪律: 中毒也照用 —— 这里放的是一句给人看的事实, 不是"可能被写坏的
+/// 不变量"; 一旦拿不到锁就整个丢掉, 用户会看到"确认了却什么都没记", 那正是本任务要消灭的
+/// "静默放行"。
+static PUBLIC_ACK: StdMutex<Option<u64>> = StdMutex::new(None);
+
+/// 记下"用户在公用网络警告下点了确认"。**只在用户显式确认的那一次调用里被调用**
+/// (见 `set_enabled` 的 `confirm_public`), 没有任何自动路径会碰它。
+fn record_public_ack() {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        // 系统时钟被设到 1970 之前时给 0(不 panic、也不假装知道时刻)。
+        // 界面把 0 显示成"已确认"(不带时间), 见 `settings-dialog.tsx`。
+        .unwrap_or(0);
+    *PUBLIC_ACK.lock().unwrap_or_else(|e| e.into_inner()) = Some(now);
+}
+
+fn public_ack_at() -> Option<u64> {
+    *PUBLIC_ACK.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// 清掉确认记录。**只在测试里用**(每个用例从干净状态出发) —— 生产里这条记录活到进程退出,
+/// 那正是"每次开机都要重新确认"这个语义的实现方式。
+#[cfg(test)]
+fn clear_public_ack() {
+    *PUBLIC_ACK.lock().unwrap_or_else(|e| e.into_inner()) = None;
+}
+
+/// 启动前防护要用的那份本机探测结果。
+///
+/// 生产路径就是 `network::detect_hints()`; 测试可以注入一份假快照 —— **本机的真实网络类别
+/// 没法在测试里改**(把系统网络设成"公用"会影响这台机器上别的一切, 而 NLM 的
+/// `SetSimulatedProfileInfo` 是动系统状态的东西, 更不该在测试里碰), 所以"公用网络"这种
+/// 现场只能靠注入造出来。注入点与 `persist_config` 那个一样: 只在 `#[cfg(test)]` 存在。
+fn current_hints() -> network::NetHints {
+    #[cfg(test)]
+    if let Some(h) = seams::hints_override() {
+        return h;
+    }
+    network::detect_hints()
+}
+
+/// **开启路径上的那道防护**。`Some(理由)` = 这一次不许开; `None` = 可以开。
+///
+/// `confirm_public` 是**这一次**调用带来的用户确认(不是历史记录 —— 见 `public_ack_at`)。
+/// 它在用户确认后记一次 `PUBLIC_ACK`, 于是"这次开启有人确认过"进得了状态。
+///
+/// 关闭路径**绝不**经过这里: 用户必须永远关得掉服务(与本模块其它纪律同源)。
+fn guard_refusal(confirm_public: bool) -> Option<String> {
+    match network::should_refuse_to_start(&current_hints()) {
+        None => None,
+        Some(_) if confirm_public => {
+            record_public_ack();
+            None
+        }
+        Some(reason) => Some(reason),
+    }
+}
+
+
 /// 起服务。**用 Tauri 的运行时 spawn**(Task 1 已验证可行), 不另建 runtime。
 ///
 /// 失败一律是 `Err`, 绝不 panic:
@@ -365,6 +445,11 @@ fn last_start_error() -> Option<String> {
 /// 从别的运行时(例如 `#[tokio::test]` 的 current_thread 运行时)直接 await 它, 监听器会
 /// 注册错地方 —— accept 永远等不到就绪事件, 表现为"起来了但所有请求超时"(实测 10060)。
 /// `mod tests` 里的 `start_on_tauri_runtime` 就是按生产调用方式包的一层。
+///
+/// ⚠️ **M4′ Task 2 之后, 别再从别的地方直接调它**: 启动前的公用网络防护长在
+/// `set_enabled`(用户开关)与 `boot`(开机自动拉起)上, 而这两条都在这条原语**之上**。
+/// 新增一条"自己想开服务"的路时, 请走那两个入口 —— 否则新路会**绕过**规格 §4.3 的防护
+/// (这正是本模块头部记过的"两个安全属性不同的入口 = 迟早有人挂错那个", 同源)。
 pub async fn start(state: ServerState) -> Result<u16, String> {
     let _serialized = START_LOCK.lock().await;
 
@@ -663,6 +748,7 @@ pub fn status_of_state(st: &ServerState) -> Result<ServerStatus, String> {
         shares: cfg.shares.iter().map(|p| p.to_string_lossy().to_string()).collect(),
         enabled: cfg.enabled,
         last_error: last_start_error(),
+        public_ack_at: public_ack_at(),
     })
 }
 
@@ -698,11 +784,34 @@ pub fn status_of(app: &tauri::AppHandle, st: &ServerState) -> Result<ServerStatu
 ///     `lastError` 显示出来, 否则用户会以为自己只是没点中。
 ///   · 开启路径**对称**: 落盘失败同样把开关(以及这一次换过的 token)按盘对齐, 而且保证一个
 ///     监听都没起 —— 顺序是"先落盘、后 start", 见下。
+///
+/// ── M4′ Task 2: `confirm_public`(公用网络防护) ─────────────────────────────
+/// 开启之前先过 `guard_refusal`: 当前网络被 Windows 标为**公用**(`network::should_refuse_to_start`)
+/// 时, **没有 `confirm_public = true` 就直接 `Err` 返回, 一个字节都不动**(不写内存、不落盘、
+/// 不绑端口、不记 `enabled`)。理由同时被记进 `LAST_ERROR`, 于是界面看得见"为什么这次没开",
+/// 并给出一个二次确认入口。
+///
+/// `confirm_public` 是**这一次调用**带来的用户确认(面板上那一下点击), 不是历史记录:
+/// `ServerStatus::public_ack_at` 只是**记录**(供界面显示"这次是有人确认过的"),
+/// **不参与判定** —— 所以"上次确认过"永远不会变成"这次自动放行"。
+///
+/// 关闭路径(`enabled == false`)**绝不**过这道闸: 无论当前是什么网络, 用户必须永远关得掉它。
 pub async fn set_enabled(
     st: &ServerState,
     app_data_dir: &Path,
     enabled: bool,
+    confirm_public: bool,
 ) -> Result<ServerStatus, String> {
+    // 防护放在拿 `CONFIG_WRITE_LOCK` **之前**: 它不碰配置, 也不该占着那条串行闸门去问网络。
+    // (被拒时直接返回: 开关保持原样 —— 通常就是 `false`, 也就是"这次没开成"。)
+    if enabled {
+        if let Some(reason) = guard_refusal(confirm_public) {
+            // 用户可见的理由不许静默丢掉: 与启动失败同一条路, 界面从 `lastError` 读它。
+            record_start_error(reason.clone());
+            return Err(reason);
+        }
+    }
+
     // **整条命令串行**(见 `CONFIG_WRITE_LOCK`)。拿在手上直到本次返回 —— 包括 `start().await`:
     // 那个 await 正是旧实现里"窗口"能开到没有上界的原因。
     let _serialized = CONFIG_WRITE_LOCK.lock().await;
@@ -944,6 +1053,10 @@ mod seams {
     static WINDOW: StdMutex<Option<WindowHook>> = StdMutex::new(None);
     /// 一次性注入的落盘失败(模拟"这个文件此刻被别的程序锁着")。
     static PERSIST_FAILURE: StdMutex<Option<String>> = StdMutex::new(None);
+    /// 注入的"本机网络探测结果"(见 `current_hints`)。**粘性**: 一个用例里可能要走好几步
+    /// (先被拒、再确认后开启), 所以它是"读到就一直在", 由 `clear()` 清掉 —— 与 `WINDOW` 同款,
+    /// 而不是 `take_persist_failure` 那种一次性。
+    static HINTS: StdMutex<Option<network::NetHints>> = StdMutex::new(None);
 
     pub(super) fn set_window(hook: WindowHook) {
         *WINDOW.lock().unwrap_or_else(|e| e.into_inner()) = Some(hook);
@@ -966,10 +1079,20 @@ mod seams {
         PERSIST_FAILURE.lock().unwrap_or_else(|e| e.into_inner()).take()
     }
 
-    /// 把两个槽清空。用例从干净状态出发(与前一个用例中途 panic 时不把钩子带进下一个)。
+    pub(super) fn set_hints_override(h: network::NetHints) {
+        *HINTS.lock().unwrap_or_else(|e| e.into_inner()) = Some(h);
+    }
+
+    /// `None` = 没注入 → 走真实探测(`network::detect_hints`)。
+    pub(super) fn hints_override() -> Option<network::NetHints> {
+        HINTS.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    /// 把三个槽清空。用例从干净状态出发(与前一个用例中途 panic 时不把钩子带进下一个)。
     pub(super) fn clear() {
         *WINDOW.lock().unwrap_or_else(|e| e.into_inner()) = None;
         *PERSIST_FAILURE.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        *HINTS.lock().unwrap_or_else(|e| e.into_inner()) = None;
     }
 }
 
@@ -1016,6 +1139,18 @@ where
         // 随机数不可用 / 落盘失败: 服务不启动, 但**理由要留给界面**(见 `ServerStatus`)。
         record_start_error(e.clone());
         return Err(e);
+    }
+    // ── M4′ Task 2 · **自动启动**上的同一道防护 ────────────────────────────────
+    // 位置是刻意的(在 `ensure_token` 之后、`start` 之前): token 那一步是"配置完整性", 与
+    // 网络无关, 先让它把话说完; 而这里问的才是"现在到底该不该开始监听"。
+    //
+    // 这条路上**没有** `confirm_public` 这个口子, 而且是故意的: 开机自动拉起时**没有人**在
+    // 场可以确认。于是"公用网络上它自己起来了"在结构上构造不出来 —— 用户必须在设置面板里
+    // 当场点一次确认(走 `set_enabled(.., true)`)才会开始监听。
+    // 失败只留一条可见理由 + Err, 桌面端照常可用(见 `boot` 的返回语义)。
+    if let Some(reason) = guard_refusal(false) {
+        record_start_error(reason.clone());
+        return Err(reason);
     }
     match start(st).await {
         Ok(p) => Ok(Some(p)),
@@ -1141,6 +1276,9 @@ mod tests {
         // 注入点也是全局状态: 上一个用例若在装好钩子之后 panic, 钩子会活到下一个用例里
         // (那时它会在**别人**的 `set_enabled` 里开火)。与 `stop()` 同一个理由, 一起清干净。
         seams::clear();
+        // "用户确认过公用网络风险"也是全局状态(见 `PUBLIC_ACK`): 不清的话, 一个用例留下的
+        // 确认会让下一个用例看不到"没确认过"那个起点。
+        clear_public_ack();
     }
 
     /// 在 **Tauri 的运行时**上跑 `start` —— 与生产路径完全相同的调用方式。
@@ -1367,16 +1505,22 @@ mod tests {
     ///
     /// 与 `start_on_tauri_runtime` 同一条纪律: `start` 把监听器注册在**调用方**的运行时上,
     /// 所以必须照生产的调用方式(Tauri 运行时)进来 —— 否则表现为"起来了但请求超时"。
+    ///
+    /// `confirm_public` 原样透传: 用例要么显式确认(等于"用户在面板上点了确认"), 要么注入
+    /// 一份探测结果来造出"公用网络"那个现场 —— 两条路都不依赖跑测试这台机器的真实网络。
     fn set_enabled_on_tauri_runtime(
         st: &ServerState,
         dir: &Path,
         enabled: bool,
+        confirm_public: bool,
     ) -> Result<ServerStatus, String> {
         let st = st.clone();
         let dir = dir.to_path_buf();
-        std::thread::spawn(move || tauri::async_runtime::block_on(set_enabled(&st, &dir, enabled)))
-            .join()
-            .expect("set_enabled 线程不许 panic")
+        std::thread::spawn(move || {
+            tauri::async_runtime::block_on(set_enabled(&st, &dir, enabled, confirm_public))
+        })
+        .join()
+        .expect("set_enabled 线程不许 panic")
     }
 
     /// 端口此刻真的在接受连接吗?
@@ -1478,7 +1622,7 @@ mod tests {
         // 把配置路径占成一个目录 —— 落盘**必然**失败(真实文件系统的 Err)。
         std::fs::create_dir(dir.join(config::CONFIG_FILE)).expect("把配置文件名占成目录");
 
-        let err = set_enabled_on_tauri_runtime(&st, &dir, false).expect_err("落盘失败必须回 Err");
+        let err = set_enabled_on_tauri_runtime(&st, &dir, false, false).expect_err("落盘失败必须回 Err");
         assert!(err.contains("没能保存"), "理由要能读: {}", err);
 
         // ① 端口**真的**放开了(不是"状态清零"而已)。
@@ -1534,7 +1678,7 @@ mod tests {
         }
         .into_state();
 
-        let err = set_enabled_on_tauri_runtime(&st, &dir, true).expect_err("落盘失败必须回 Err");
+        let err = set_enabled_on_tauri_runtime(&st, &dir, true, true).expect_err("落盘失败必须回 Err");
         assert!(err.contains("没能保存"), "理由要能读: {}", err);
         assert_eq!(running_port(), None, "落盘失败时一个监听都不许起");
         let status = status_of_state(&st).unwrap();
@@ -1586,7 +1730,7 @@ mod tests {
         .into_state();
         seams::fail_next_persist("模拟: 这一次写失败了");
 
-        let err = set_enabled_on_tauri_runtime(&st, &dir, true).expect_err("落盘失败必须回 Err");
+        let err = set_enabled_on_tauri_runtime(&st, &dir, true, true).expect_err("落盘失败必须回 Err");
         assert!(err.contains("没能保存"), "理由要能读: {}", err);
 
         assert!(
@@ -1653,7 +1797,7 @@ mod tests {
         // 关闭**自己**这一次的落盘失败(真实成因: 杀软/OneDrive 恰好锁住了刚写完的配置文件)。
         seams::fail_next_persist("模拟: server-config.json 此刻被别的程序占着");
 
-        let err = set_enabled_on_tauri_runtime(&st, &dir, false).expect_err("落盘失败必须回 Err");
+        let err = set_enabled_on_tauri_runtime(&st, &dir, false, false).expect_err("落盘失败必须回 Err");
 
         // 夹具自检: 窗口里那次落盘必须真的把 true 写进了盘, 否则这条什么都没证明。
         let on_disk = config::ServerConfig::load(&dir).enabled;
@@ -1915,7 +2059,7 @@ mod tests {
         // 第一条: 开启。它会卡在窗口里, 并且**一直持有** `CONFIG_WRITE_LOCK`。
         let (st_first, dir_first) = (st.clone(), dir.clone());
         let first = std::thread::spawn(move || {
-            tauri::async_runtime::block_on(set_enabled(&st_first, &dir_first, true))
+            tauri::async_runtime::block_on(set_enabled(&st_first, &dir_first, true, true))
         });
         entered_rx
             .recv_timeout(std::time::Duration::from_secs(10))
@@ -1926,7 +2070,7 @@ mod tests {
         let (st_second, dir_second) = (st.clone(), dir.clone());
         let flag = second_done.clone();
         let second = std::thread::spawn(move || {
-            let r = tauri::async_runtime::block_on(set_enabled(&st_second, &dir_second, false));
+            let r = tauri::async_runtime::block_on(set_enabled(&st_second, &dir_second, false, false));
             flag.store(true, Ordering::SeqCst);
             r
         });
@@ -2082,9 +2226,13 @@ mod tests {
             let (a, b) = (st.clone(), st.clone());
             let (da, db) = (dir.clone(), dir.clone());
             let enable =
-                std::thread::spawn(move || tauri::async_runtime::block_on(set_enabled(&a, &da, true)));
+                std::thread::spawn(move || {
+                    tauri::async_runtime::block_on(set_enabled(&a, &da, true, true))
+                });
             let disable =
-                std::thread::spawn(move || tauri::async_runtime::block_on(set_enabled(&b, &db, false)));
+                std::thread::spawn(move || {
+                    tauri::async_runtime::block_on(set_enabled(&b, &db, false, false))
+                });
             let r_enable = enable.join().expect("enable 线程不许 panic");
             let r_disable = disable.join().expect("disable 线程不许 panic");
 
@@ -2110,8 +2258,16 @@ mod tests {
         }
 
         // 收尾①: 干净关闭 → 状态说没在跑, 且**所有**报告过在跑的端口最终都必须被拒。
-        set_enabled_on_tauri_runtime(&st, &dir, false).expect("干净关闭必须成功");
+        set_enabled_on_tauri_runtime(&st, &dir, false, false).expect("干净关闭必须成功");
         assert_eq!(running_port(), None, "干净关闭之后状态必须说'没在跑'");
+        // **去重是必需的, 不是优化**: 每轮都用同一个基端口(31876), 而这一版并发用例里
+        // "开启"经常是**后**拿到锁的那一个(先被并发关闭挡住、再自己开起来), 于是同一轮结束
+        // 时留下的端口就是它 —— 25 轮会把同一个端口记 25 遍。去重之后断言的信息量一模一样
+        // (一个端口有没有被放开, 与它被记了几遍无关), 而**不去重就要多等 25 次探测**:
+        // 这台机器上"连一个已经没人监听的端口"要 ~2.05 秒才返回 Err(见 `accepting_within`
+        // 的注释), 25 次就是 50 秒的纯等待。
+        reported.sort_unstable();
+        reported.dedup();
         for p in &reported {
             assert!(
                 wait_until_refused(*p, std::time::Duration::from_secs(10)),
@@ -2121,13 +2277,13 @@ mod tests {
         }
 
         // 收尾②: 后续的开启必须**真的**绑上。
-        let status = set_enabled_on_tauri_runtime(&st, &dir, true).expect("再次开启必须成功");
+        let status = set_enabled_on_tauri_runtime(&st, &dir, true, true).expect("再次开启必须成功");
         assert!(status.running, "开启之后状态必须说'在跑'");
         let p = running_port().expect("开启之后状态必须说'在跑'");
         assert!(accepts_connections(p), "开启之后的端口 {} 必须真的接受连接", p);
 
         // 把全局状态还给别的用例。
-        set_enabled_on_tauri_runtime(&st, &dir, false).expect("关闭");
+        set_enabled_on_tauri_runtime(&st, &dir, false, false).expect("关闭");
         assert_eq!(running_port(), None);
         assert!(wait_until_refused(p, std::time::Duration::from_secs(10)));
     }
@@ -2264,6 +2420,7 @@ mod tests {
             shares: vec!["C:\\照片".into()],
             enabled: false,
             last_error: None,
+            public_ack_at: None,
         })
         .unwrap();
         assert_eq!(v["running"], false);
@@ -2273,7 +2430,203 @@ mod tests {
         assert_eq!(v["shares"][0], "C:\\照片");
         assert_eq!(v["enabled"], false);
         assert!(v["lastError"].is_null());
+        assert!(v["publicAckAt"].is_null(), "确认记录也要用 camelCase 出去");
         assert!(v.get("last_error").is_none(), "字段名必须是 camelCase");
+    }
+
+    // ── M4′ Task 2 · 公用网络防护 ───────────────────────────────────────────
+    //
+    // 这一批用例守的是规格 §4.3 的两条硬约束:
+    //   ① 当前网络被 Windows 标为**公用**时, 服务**不许自动启动**(`boot`);
+    //   ② 用户显式确认之后才允许开, 而且**这次确认要进状态**(不能静默放行)。
+    //
+    // 「公用网络」这个现场只能靠**注入探测结果**造出来: 本机的真实类别没法在测试里改
+    // (改系统网络设置会波及这台机器上别的一切; NLM 的 `SetSimulatedProfileInfo` 是动系统
+    // 状态的东西, 更不该碰)。所以这里注入的是 `current_hints()` 那一层的**输入**,
+    // 判定与落点(start/端口/状态)全是真的 —— 这不是"假跑一遍"。
+    //
+    // 反过来说清一件事: **"这台机器的真实类别读得对不对"没法被单测证明**。`detect_hints`
+    // 只被钉住"分类的不变量"(见 network.rs 的 `real_snapshot_respects_the_classification_invariants`),
+    // 那是刻意的 —— 断言"本机此刻是 Private"这种话只会变成看运气的红。
+
+    /// 一份"当前网络是公用"的假探测结果(其余字段照真实形状给)。
+    fn public_hints() -> network::NetHints {
+        network::NetHints {
+            lan: vec![network::LanAddress {
+                address: "192.168.3.10".into(),
+                interface: "以太网".into(),
+            }],
+            public_ipv4: Vec::new(),
+            profile: network::NetworkProfile::Public,
+            firewall_hint: network::FIREWALL_HINT_ALLOW_INBOUND_PRIVATE.to_string(),
+        }
+    }
+
+    /// 一份"当前网络是专用"的假探测结果(**成对的对照**, 用来证明防护不是"一律拒绝")。
+    fn private_hints() -> network::NetHints {
+        network::NetHints { profile: network::NetworkProfile::Private, ..public_hints() }
+    }
+
+    /// **自动启动这条路: 公用网络下必须不起服务**, 只留一句可见的理由。
+    ///
+    /// 变异靶子: 把 `boot_with` 里那句 `guard_refusal(false)` 删掉(或让
+    /// `network::should_refuse_to_start` 对 `Public` 返回 `None`)→ 这条当场红: `boot_with`
+    /// 会返回 `Ok`, 而且 `port: 0` 意味着它**真的**会绑上一个端口(不是靠"绑不上"蒙混过去)。
+    #[tokio::test]
+    async fn public_profile_does_not_auto_start_and_leaves_a_visible_reason() {
+        let _serialized = GLOBAL_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        reset_server_state();
+        seams::set_hints_override(public_hints());
+        let dir = tmp_dir("guard_boot");
+        let st = config::ServerConfig {
+            enabled: true,
+            port: 0,
+            token: "7".repeat(64), // token 是好的 → 唯一的拦路者只能是那道防护
+            shares: Vec::new(),
+        }
+        .into_state();
+
+        let err = boot_with(st.clone(), &dir, || panic!("token 已经可用, 不该走生成这条路"))
+            .await
+            .expect_err("公用网络上不许自动启动");
+        assert!(err.contains("公用"), "理由要能读、且说清是哪一档: {err}");
+        assert_eq!(running_port(), None, "被拒的服务不许留下'在跑'的痕迹");
+        assert_eq!(
+            status_of_state(&st).unwrap().last_error.as_deref(),
+            Some(err.as_str()),
+            "界面必须能拿到这句理由(否则用户只看到'开着但没在跑')"
+        );
+        assert_eq!(
+            status_of_state(&st).unwrap().public_ack_at,
+            None,
+            "自动启动这条路没有人可以确认, 因此也不该有确认记录"
+        );
+    }
+
+    /// 对照组: **专用网络下自动启动照常**(防护不许变成"一律拒绝")。
+    #[tokio::test]
+    async fn private_profile_still_auto_starts() {
+        let _serialized = GLOBAL_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        reset_server_state();
+        seams::set_hints_override(private_hints());
+        let dir = tmp_dir("guard_boot_private");
+        let st = config::ServerConfig {
+            enabled: true,
+            port: 0,
+            token: "8".repeat(64),
+            shares: Vec::new(),
+        }
+        .into_state();
+
+        let port = boot_with(st.clone(), &dir, || panic!("token 可用"))
+            .await
+            .expect("专用网络上应当照常自动启动")
+            .expect("必须真的起来了一个端口");
+        assert_eq!(running_port(), Some(port));
+        assert!(accepts_connections(port));
+        stop();
+    }
+
+    /// **开关这条路: 没确认 → 拒绝, 而且一个字节都不动; 确认之后 → 真的开, 且确认进状态。**
+    ///
+    /// 三件事一起钉住(缺一条, "静默放行"就还活着):
+    ///   ① 被拒时 `enabled` 不许被留在"开"(否则下次开机它会自己再试一次);
+    ///   ② 被拒时不许落盘(落盘的语义是"下次开机还会尝试开启");
+    ///   ③ 确认之后 `public_ack_at` 必须有值 —— 这就是"这次开启不是静默发生的"那条证据。
+    ///
+    /// 变异靶子: 把 `set_enabled` 里 `guard_refusal` 那一段删掉/改成不看 `confirm_public`
+    /// → 第①条当场红(它会在公用网络上直接开起来)。
+    #[tokio::test]
+    async fn public_profile_refuses_the_switch_until_the_user_confirms_then_records_it() {
+        let _serialized = GLOBAL_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        reset_server_state();
+        seams::set_hints_override(public_hints());
+        let dir = tmp_dir("guard_switch");
+        let st = config::ServerConfig {
+            enabled: false,
+            port: 0,
+            token: "9".repeat(64),
+            shares: Vec::new(),
+        }
+        .into_state();
+
+        // ① 没确认: 拒绝, 而且开关/盘/端口三处都不许留下"开过"的痕迹。
+        let err = set_enabled_on_tauri_runtime(&st, &dir, true, false)
+            .expect_err("公用网络上不许静默开启");
+        assert!(err.contains("公用"), "理由要能读、且说清是哪一档: {err}");
+        assert_eq!(running_port(), None, "被拒的开启不许留下监听");
+        let refused = status_of_state(&st).unwrap();
+        assert!(!refused.enabled, "被拒的开启不许把开关留在'开'");
+        assert_eq!(refused.public_ack_at, None, "没确认过就不该有确认记录");
+        assert_eq!(refused.last_error.as_deref(), Some(err.as_str()));
+        assert!(!dir.exists(), "被拒的开启不许落盘(盘上写着'开'= 下次开机还会再试)");
+
+        // ② 确认之后: 真的起来, 而且这次确认被记进状态。
+        let started = set_enabled_on_tauri_runtime(&st, &dir, true, true)
+            .expect("用户显式确认之后应当能开");
+        assert!(started.enabled && started.running, "确认后应当真的在监听: {started:?}");
+        assert!(
+            started.public_ack_at.is_some(),
+            "这次确认必须被记进状态(绝不静默放行): {started:?}"
+        );
+        assert!(accepts_connections(started.port));
+
+        // ③ 关掉这条路**绝不**过防护(无论当前是什么网络, 用户必须永远关得掉它):
+        //    这里连确认都不带。
+        let stopped = set_enabled_on_tauri_runtime(&st, &dir, false, false)
+            .expect("关闭永远不许被网络类别挡住");
+        assert!(!stopped.running && !stopped.enabled);
+        assert_eq!(running_port(), None);
+    }
+
+    /// 开关这条路上的**对照组**: 专用网络下不带确认也能开(否则"防护"就变成了"谁都开不了")。
+    #[tokio::test]
+    async fn private_profile_switch_needs_no_confirmation() {
+        let _serialized = GLOBAL_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        reset_server_state();
+        seams::set_hints_override(private_hints());
+        let dir = tmp_dir("guard_switch_private");
+        let st = config::ServerConfig {
+            enabled: false,
+            port: 0,
+            token: "a".repeat(64),
+            shares: Vec::new(),
+        }
+        .into_state();
+
+        let s = set_enabled_on_tauri_runtime(&st, &dir, true, false)
+            .expect("专用网络上不需要任何确认");
+        assert!(s.enabled && s.running);
+        assert_eq!(s.public_ack_at, None, "没发生过确认, 就不该有记录");
+        set_enabled_on_tauri_runtime(&st, &dir, false, false).expect("关闭");
+    }
+
+    /// **读不出类别时的退化判定**要走同一条闸: 有非局域网地址 → 拒绝(这是
+    /// `network::should_refuse_to_start` 的第二条规则, 这里钉住它真的接到了开关上)。
+    #[tokio::test]
+    async fn unknown_profile_with_a_public_address_also_refuses_the_switch() {
+        let _serialized = GLOBAL_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        reset_server_state();
+        seams::set_hints_override(network::NetHints {
+            public_ipv4: vec!["203.0.113.9".into()],
+            // 类别**读不出来**(COM 不可用那一档) —— 这正是要测的退化输入。
+            profile: network::NetworkProfile::Unknown,
+            ..private_hints()
+        });
+        let dir = tmp_dir("guard_degraded");
+        let st = config::ServerConfig {
+            enabled: false,
+            port: 0,
+            token: "b".repeat(64),
+            shares: Vec::new(),
+        }
+        .into_state();
+
+        let err = set_enabled_on_tauri_runtime(&st, &dir, true, false)
+            .expect_err("退化判定也要拦在同一个地方");
+        assert!(err.contains("203.0.113.9"), "理由里要带上那个地址: {err}");
+        assert_eq!(running_port(), None);
+        assert!(!status_of_state(&st).unwrap().enabled);
     }
 
     /// `local_ipv4` 不许 panic(取不到就是 `None`, 由 `primary_url` 回落到 127.0.0.1)。

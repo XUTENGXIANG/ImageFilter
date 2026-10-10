@@ -410,7 +410,30 @@ export default {
     tipsTitle: "If your phone cannot connect, check these in order",
     sleepTip: "The PC must not sleep during remote access: Settings → System → Power → Screen and sleep → set to “Never”",
     firewallTip: "The first time you enable it, Windows asks about the firewall — you must allow “Private networks”",
-    appRunningTip: "If the phone cannot connect, check: ① the PC is not asleep ② ImageFilter is running ③ the service is enabled ④ the phone and the PC are on the same network (or both joined the same EasyTier/Tailscale network)",
+    // M4′ Task 2: after the LAN-only decision (2026-10-07) there is **no tunnel option any more**
+    // — the old “or both joined the same EasyTier/Tailscale network” wording is gone by decision.
+    appRunningTip: "If the phone cannot connect, check: ① the PC is not asleep ② ImageFilter is running ③ the service is enabled ④ the phone and the PC are on the same WiFi",
+
+    // ── M4′ Task 2 · LAN addresses / firewall / Public-network guard (LAN-only) ──
+    // Rendered by ServerPanel; the data comes from `get_server_network_hints`
+    // (NetHints, camelCase). Same rule as the Chinese side: no entry point for
+    // tunnels / port forwarding / public exposure — this design only warns.
+    lanTitle: "LAN addresses (type one of these on the phone)",
+    lanDesc: "Phone and PC must be on the same WiFi. The name after each address is the network adapter — addresses on virtual adapters (VMware / WSL) usually will not work, so prefer “WLAN” or “Ethernet”.",
+    lanEmpty: "No LAN address detected — the phone cannot reach this PC right now. Check that the PC is connected to WiFi or a wired network.",
+    rescan: "Scan again",
+    firewallHintTitle: "Firewall (the #1 reason the phone cannot connect)",
+    firewallHint: "Windows Security → Firewall & network protection → Allow an app through firewall → find ImageFilter and tick “Private” — Private only, never Public.",
+    firewallHintGeneric: "Allow ImageFilter through Windows Firewall on the “Private” network profile — the #1 reason the phone cannot connect on a LAN.",
+    publicTitle: "Windows marks the current network as “Public”",
+    publicWarn: "“Public” means an untrusted network (a shared WiFi such as a café, office or hotel). Your pairing code travels as plain text there: any device on the same segment could sniff it and then read the folders you share.",
+    publicOffer: "The safer move is to enable the service again from a trusted home WiFi.",
+    publicConfirm: "I understand the risk — turn it on anyway",
+    publicAck: "You accepted the Public-network risk at {time} (this run only; you will be asked again after a restart)",
+    publicAckNoTime: "You accepted the Public-network risk for this run (system clock unavailable)",
+    publicIpTitle: "Addresses outside your LAN detected",
+    publicIpWarn: "{list} — these may be reachable from outside your LAN. This service is meant for the same WiFi only; make sure you really need it running.",
+    profileUnknown: "The current network category cannot be read (Windows network list service unavailable, or no connected network). When you enable the service the backend falls back to “is there an address outside your LAN?”, and may ask you to confirm first.",
   },
 
 };

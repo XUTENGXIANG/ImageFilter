@@ -133,13 +133,37 @@ async fn get_server_status(
 /// 真正做事的顺序(含"落盘失败时端口必须照样放开"那一条)在 `server::set_enabled`:
 /// 它只认一个目录, 于是那条路径能被单测**真的走一遍**(测试把配置路径指到一个写不进去的
 /// 位置), 而不是靠读代码相信。这里只做一件事: 把 Tauri 的 app 数据目录翻译成一个 `&Path`。
+///
+/// `confirm_public`(M4′ Task 2): 用户在"当前网络是公用"那条警告下点了"仍要开启"时, 前端
+/// 把它传成 `true`。**当前网络类别是 `Public` 而不带这个确认时, `set_enabled` 直接 `Err`
+/// 且什么都不做** —— 公用网络上开启服务绝不允许静默发生(规格 §4.3)。这个参数由用户那一下
+/// 点击产生, 不是一个"记住上次确认"的开关。
 #[tauri::command]
 async fn set_server_enabled(
     app: tauri::AppHandle,
     state: tauri::State<'_, server::ServerState>,
     enabled: bool,
+    confirm_public: bool,
 ) -> Result<server::ServerStatus, String> {
-    server::set_enabled(state.inner(), &server::app_data_dir(&app)?, enabled).await
+    server::set_enabled(state.inner(), &server::app_data_dir(&app)?, enabled, confirm_public).await
+}
+
+/// 本机"手机可能能用的地址"快照(M4′ Task 2): 私有地址候选 + 网卡名 + 网络类别 + 防火墙提示码。
+///
+/// 为什么不并进 `get_server_status`: 它是**探测**(枚举网卡 + 一次 COM 调用), 与"服务此刻
+/// 在不在监听"是两件事, 前者的代价没必要加到每 4 秒一次的状态轮询上 —— 面板只在打开时与
+/// 每次动作之后再问它。
+///
+/// **失败也只是空/未知**, 没有 `Err`: `detect_hints` 自己保证任何一步失败都退化成"这一项没有
+/// 值"(见 `network.rs` 模块头), 所以前端拿到的永远是一份能渲染的快照。
+///
+/// `spawn_blocking`: 探测是同步的 Win32/COM 调用(毫秒级), 不该占着异步运行时的工作线程 ——
+/// 那正是 `network.rs` 里 COM 初始化那一段要斤斤计较的原因。
+#[tauri::command]
+async fn get_server_network_hints() -> Result<server::network::NetHints, String> {
+    tauri::async_runtime::spawn_blocking(server::network::detect_hints)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 /// 轮换配对 token。已有手机需要重新配对(规格 §5.2); 服务不用重启 —— 端点每次请求
@@ -326,6 +350,7 @@ pub fn run() {
             // 用户显式开启后才监听(见 `server` 模块头与 `setup` 里的接线)。
             get_server_status,
             set_server_enabled,
+            get_server_network_hints,
             rotate_server_token,
             add_share,
             remove_share,

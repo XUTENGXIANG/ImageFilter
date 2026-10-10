@@ -423,7 +423,30 @@ export default {
     tipsTitle: "手机连不上时按顺序查这几条",
     sleepTip: "远程访问时电脑不能睡眠：设置 → 系统 → 电源 → 屏幕和睡眠 → 设为“从不”",
     firewallTip: "首次开启时 Windows 会弹出防火墙询问，必须允许“专用网络”",
-    appRunningTip: "手机连不上时先确认：① 电脑没睡眠 ② ImageFilter 正在运行 ③ 服务已开启 ④ 手机与电脑在同一网络（或都加入了同一个 EasyTier/Tailscale 网络）",
+    // M4′ Task 2：LAN-only 决策（2026-10-07）之后**不再有“隧道”这个选项** ——
+    // 原文案里的“或都加入了同一个 EasyTier/Tailscale 网络”已按决策删除。
+    appRunningTip: "手机连不上时先确认：① 电脑没睡眠 ② ImageFilter 正在运行 ③ 服务已开启 ④ 手机与电脑连在同一个 WiFi",
+
+    // ── M4′ Task 2 · 局域网地址 / 防火墙 / 公用网络防护（LAN-only） ──
+    // 面板长在 ServerPanel 里；数据来自 `get_server_network_hints`（NetHints, camelCase）。
+    // 纪律：面板里**不许**出现“隧道 / EasyTier / Tailscale / 端口转发 / 公网暴露”的入口 ——
+    // 本设计明确不做公网暴露，只警告（规格 §4.3）。
+    lanTitle: "局域网地址（手机配对时填这个）",
+    lanDesc: "手机和电脑要在同一个 WiFi。地址后面是网卡名——虚拟机 / WSL 那类虚拟网卡的地址多半连不上，优先选“WLAN”或“以太网”。",
+    lanEmpty: "没检测到局域网地址——手机现在连不上这台电脑。请先确认电脑已经连上 WiFi 或有线网。",
+    rescan: "重新检测",
+    firewallHintTitle: "防火墙（连不上的第一大原因）",
+    firewallHint: "Windows 安全中心 → 防火墙和网络保护 → 允许应用通过防火墙 → 找到 ImageFilter，勾上“专用”——只勾专用，别勾公用。",
+    firewallHintGeneric: "在 Windows 防火墙上允许 ImageFilter 通过“专用网络”——这是局域网模式下“连不上”的第一大原因。",
+    publicTitle: "当前网络被 Windows 标为“公用”",
+    publicWarn: "“公用”= 不可信网络（咖啡厅 / 办公室 / 酒店那类共享 WiFi）。在这种网络上配对码是明文传输的：同一网段的设备可能嗅探到它，然后读到你共享的目录。",
+    publicOffer: "更安全的做法是：回到可信的家庭 WiFi 再开服务。",
+    publicConfirm: "我了解风险，仍要开启",
+    publicAck: "已在 {time} 确认过公用网络的风险（仅本次运行有效；重启后还会再问一次）",
+    publicAckNoTime: "本次运行已确认过公用网络的风险（读不到系统时钟）",
+    publicIpTitle: "检测到不是局域网的地址",
+    publicIpWarn: "{list} —— 这些地址可能被局域网外的设备访问。服务只该在同一个 WiFi 下用，请确认你确实需要开着它。",
+    profileUnknown: "读不到当前网络的类别（Windows 网络列表服务不可用，或没有已连接的网络）。开启时后端会按“有没有不是局域网的地址”来判断，可能要求你先确认。",
   },
 
 };
