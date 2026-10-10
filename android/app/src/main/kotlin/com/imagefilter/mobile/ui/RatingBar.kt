@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -81,7 +82,8 @@ fun RatingBar(
                 StarRow(rating = rating, enabled = enabled, onRating = onRating)
             }
 
-            Spacer(Modifier.width(4.dp))
+            // 两行之间**用高度**隔开: 一个 width 的 Spacer 在 Column 里是零高的(等于没写)。
+            Spacer(Modifier.height(2.dp))
 
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text("色标", style = MaterialTheme.typography.bodySmall)
