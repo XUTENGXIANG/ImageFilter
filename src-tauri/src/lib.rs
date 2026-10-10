@@ -180,6 +180,53 @@ async fn rotate_server_token(
     server::rotate_token(&state, &server::app_data_dir(&app)?).await
 }
 
+/// **开/关只读模式**(M4′ Task 3)。开 = 手机那边所有写操作都被拒(403 `forbiddenPath`),
+/// 读操作照旧。
+///
+/// 实现体在 `server::set_read_only`: 它**不**碰服务生命周期 —— 拦截规则由路由中间件在每一次
+/// 请求上现读配置, 所以开关是立刻生效的, 不必(也不该)为了它重启监听。
+#[tauri::command]
+async fn set_server_read_only(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, server::ServerState>,
+    read_only: bool,
+) -> Result<server::ServerStatus, String> {
+    server::set_read_only(&state, &server::app_data_dir(&app)?, read_only).await
+}
+
+/// 配对二维码(M4′ Task 1)。**返回 `null` = 这次没有二维码**, 面板据此只说原因、不画图:
+/// 电脑此刻没有私有网段地址, 或者配对码还没生成好(见 `server::pairing_of`)。
+///
+/// 为什么 `Option` 而不是一个空串 SVG: "没有二维码"是一个**真实且需要被解释**的状态,
+/// 空串会把它伪装成"有, 但画不出来"。
+///
+/// 探测(网卡枚举 + 一次 NLM COM 查询)是**同步**的、约 19 ms, 所以走 `spawn_blocking`
+/// —— 与 `get_server_network_hints` 同一条理由: 不占着异步运行时的工作线程。
+#[tauri::command]
+async fn get_server_pairing_qr(
+    state: tauri::State<'_, server::ServerState>,
+) -> Result<Option<server::PairingQr>, String> {
+    // `ServerState` 是 `Clone`(里面全是 `Arc`), 所以搬一份进阻塞任务即可。
+    let st = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let hints = server::network::detect_hints();
+        server::pairing_qr(&st, &hints)
+    })
+    .await
+    .map_err(|e| e.to_string())
+}
+
+/// 最近的请求来源(M4′ Task 3 的"谁在连我")。**纯内存读**, 不碰磁盘、不碰网络。
+///
+/// 面板**手动刷新**即可(计划 §Task 3 Step 2: 不为它做实时刷新) —— 所以这条命令不进 4 秒轮询。
+#[tauri::command]
+async fn get_server_clients(
+    state: tauri::State<'_, server::ServerState>,
+) -> Result<server::routes::ClientsSnapshot, String> {
+    // 中毒也照用: 里面放的是"刚发生过的事实", 拿不到锁就整条丢掉会让这个列表莫名其妙空掉。
+    Ok(state.clients.lock().unwrap_or_else(|e| e.into_inner()).snapshot())
+}
+
 /// 加入一个共享根。**只接受已存在的目录**(空 = 谁都访问不了, 是安全默认值)。
 #[tauri::command]
 async fn add_share(
@@ -354,6 +401,10 @@ pub fn run() {
             rotate_server_token,
             add_share,
             remove_share,
+            // M4′ Task 1 / Task 3: 配对二维码、只读模式、"谁在连我"。
+            get_server_pairing_qr,
+            set_server_read_only,
+            get_server_clients,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -721,6 +721,7 @@ fn route_app(tag: &str) -> (axum::Router, String, std::path::PathBuf) {
     let root = route_root(tag);
     let token = "t".repeat(64); // 与真实 token 同形(64 字符)
     let cfg = image_filter_lib::server::ServerConfig {
+        read_only: false,
         enabled: true,
         port: 0,
         token: token.clone(),
@@ -3397,6 +3398,404 @@ async fn move_batch_reports_each_item_per_item_and_converges_on_retry() {
             && dst.join("clash_dir.xmp").is_file(),
         "被拒的重发不许动已经搬好的文件(照片与边车都在)"
     );
+
+    std::fs::remove_dir_all(&root).ok();
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// M4′ Task 3 · 只读模式 与 "谁在连我"
+//
+// 两件事都**必须打真请求**才证得了:
+//   · "只读时写端点全被拒"是一条**面**上的性质(将来新增写端点也要自动被覆盖), 逐条枚举
+//     路径的测试会用同样的方式失守 —— 所以这里除了枚举两条已知写端点, 还单独钉住判据本身
+//     (未挂载路径上的 POST 也拒, 见 `read_only_refuses_write_methods_even_on_unmounted_paths`);
+//   · "谁在连我"回答的是**这一层真的知道什么**, 所以断言落在形状与"不许有的字段"上。
+// ════════════════════════════════════════════════════════════════════════════
+
+/// 打真 `routes::router` 的 app, 但**配置里 read_only = true**。
+///
+/// 与 `route_app` 只差这一个字段 —— 刻意不复用它(那条会被几十个用例共用, 改签名等于动
+/// 一大片无关的测试): 只读是"同一台服务换一种配置", 夹具就该长得跟 `route_app` 一样。
+fn read_only_app(tag: &str) -> (axum::Router, String, std::path::PathBuf) {
+    let root = route_root(tag);
+    let token = "t".repeat(64);
+    let cfg = image_filter_lib::server::ServerConfig {
+        read_only: true,
+        enabled: true,
+        port: 0,
+        token: token.clone(),
+        shares: vec![root.clone()],
+    };
+    (image_filter_lib::server::routes::router(cfg.into_state()), token, root)
+}
+
+/// 给一条请求塞上**连接来源**(真机上是 `start()` 通过 `into_make_service_with_connect_info`
+/// 塞进去的; `oneshot` 直接打 Router 时没有那一层, 于是这里手工放一份)。
+///
+/// 客户端列表要断言的正是"来源地址被如实记下来了", 所以这一份必须是**真的**
+/// `ConnectInfo<SocketAddr>`, 而不是另造一个字段。
+fn with_peer(mut req: Request<Body>, ip_port: &str) -> Request<Body> {
+    let addr: std::net::SocketAddr = ip_port.parse().expect("测试用的来源地址必须合法");
+    req.extensions_mut().insert(axum::extract::ConnectInfo(addr));
+    req
+}
+
+/// 打一次 `GET /api/v1/clients`。
+async fn get_clients(
+    app: axum::Router,
+    token: Option<&str>,
+    peer: Option<&str>,
+) -> (StatusCode, serde_json::Value) {
+    let req = get_req("/api/v1/clients", token);
+    let req = match peer {
+        Some(p) => with_peer(req, p),
+        None => req,
+    };
+    let res = app.oneshot(req).await.unwrap();
+    let status = res.status();
+    (status, json_of(res).await)
+}
+
+/// **`GET /api/v1/clients` 必须挂在受保护清单里。**
+///
+/// 本文件里有一批测试是**按 `PROTECTED_PATHS` 逐条枚举**的(无 token 一律 401、正 token 必须
+/// 真的挂上)。漏掉一条不会报错, 只会少覆盖一条 —— 而"谁在连我"恰好是最该要 token 的那一个。
+#[test]
+fn clients_endpoint_is_in_the_protected_paths_list() {
+    assert!(
+        PROTECTED_PATHS.contains(&"/api/v1/clients"),
+        "clients 端点必须在 PROTECTED_PATHS 里, 否则按清单枚举的测试会静默漏掉它: {:?}",
+        PROTECTED_PATHS
+    );
+}
+
+/// **只读模式: 每一个写端点都必须被拒, 而读端点必须照常工作。**
+///
+/// 两半缺一不可 —— 只证明"写被拒"的话, 一个"把所有请求都拒掉"的实现也能过; 只证明"读还能用"
+/// 的话, 一个根本没实现只读的实现也能过。
+///
+/// 而且这里**不满足于 403**: 被拒之后**磁盘必须一个字节都没动**(没有生成边车、照片没被搬走)。
+/// 一个"先写再报 403"的实现会让手机的待重试队列与电脑上的实际状态永久脱钩 —— 那才是这条
+/// 功能真正的危险之处, 而它只靠状态码是看不出来的。
+///
+/// 变异靶子: 把 `router()` 里 `refuse_writes_in_read_only` 那一层去掉 → 第一段两条写请求
+/// 当场变 200 并真的写盘; 把 `is_write_method` 改成"永远 false" → 同样当场红。
+#[tokio::test]
+async fn read_only_refuses_every_write_endpoint_and_keeps_reads_working() {
+    let _cache = TempCacheRoot::new("readonly");
+    let (app, token, root) = read_only_app("ro");
+
+    // ── 写: PUT /decisions(一条**合法**请求: 路径在共享根内、真存在) ──────────
+    let photo = root.join("a.jpg");
+    assert!(photo.is_file(), "夹具前提: 共享根内的照片必须真的存在");
+    let sidecar = root.join("a.xmp");
+    assert!(!sidecar.exists(), "夹具前提: 一开始没有边车, 下面那句'没写盘'才有意义");
+    let body = decision_body(&photo, Some(5), Some("red"), false);
+    let (status, v) = put_decisions(app.clone(), Some(&token), &body).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "只读模式下写决策必须 403: {}", v);
+    assert_code_only(&v, "forbiddenPath");
+    assert!(!sidecar.exists(), "被拒的写不许在磁盘上留下任何东西(边车不许被创建)");
+
+    // ── 写: POST /move(同样合法) ─────────────────────────────────────────────
+    let dst = root.join("sub");
+    let (status, v) = post_move(
+        app.clone(),
+        Some(&token),
+        &move_body(&[photo.as_path()], &dst),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "只读模式下移动必须 403: {}", v);
+    assert_code_only(&v, "forbiddenPath");
+    assert!(photo.is_file(), "被拒的移动不许真的把照片搬走");
+    assert!(!dst.join("a.jpg").exists(), "目标目录里不许出现那张照片");
+
+    // ── 读: 全部照常(这是这条功能的另一半) ────────────────────────────────────
+    let res = app.clone().oneshot(get_req("/api/v1/shares", Some(&token))).await.unwrap();
+    assert_eq!(res.status(), StatusCode::OK, "只读模式下 /shares 必须照常");
+    let v = json_of(res).await;
+    assert!(
+        v["shares"].as_array().map(|a| !a.is_empty()).unwrap_or(false),
+        "读端点要回**真的**共享根, 不是一个空壳 200: {v}"
+    );
+
+    let res = app.clone().oneshot(get_req("/api/v1/drives", Some(&token))).await.unwrap();
+    assert_eq!(res.status(), StatusCode::OK, "只读模式下 /drives 必须照常");
+
+    for (base, target) in [("/api/v1/browse", &root), ("/api/v1/scan", &root)] {
+        let uri = format!("{}?path={}", base, urlencode(&target.to_string_lossy()));
+        let res = app.clone().oneshot(get_req(&uri, Some(&token))).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK, "只读模式下 {} 必须照常", base);
+    }
+
+    let uri = format!("/api/v1/decisions?paths={}", urlencode(&photo.to_string_lossy()));
+    let res = app.clone().oneshot(get_req(&uri, Some(&token))).await.unwrap();
+    assert_eq!(res.status(), StatusCode::OK, "只读模式下**读**决策必须照常");
+
+    let (status, v) = get_clients(app.clone(), Some(&token), Some("192.168.1.23:5000")).await;
+    assert_eq!(status, StatusCode::OK, "只读模式下 /clients 必须照常: {}", v);
+    assert!(
+        v["clients"].as_array().map(|a| !a.is_empty()).unwrap_or(false),
+        "开只读的时候恰恰最需要看'谁在连我': {}",
+        v
+    );
+
+    // ── 对照: 同样的两条写请求, 在一台**可写**的服务上必须成功 ────────────────
+    //
+    // 没有这一段, 上面那两个 403 可能只是因为"请求本身有问题"(路径白名单、缺字段…),
+    // 而不是因为只读 —— 那这条测试就是"因为错误的原因通过"。
+    let (writable, wtoken, wroot) = route_app("rw_control");
+    let wphoto = wroot.join("a.jpg");
+    let (status, v) = put_decisions(
+        writable.clone(),
+        Some(&wtoken),
+        &decision_body(&wphoto, Some(5), Some("red"), false),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "同样的写请求在可写配置上必须成功(否则只读那两条 403 什么也证明不了): {}",
+        v
+    );
+    assert_eq!(v["written"], 1, "对照必须真的写成一项: {}", v);
+    assert!(wroot.join("a.xmp").is_file(), "对照必须真的落出边车");
+
+    let (status, v) = post_move(
+        writable.clone(),
+        Some(&wtoken),
+        &move_body(&[wphoto.as_path()], &wroot.join("sub")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "同样的移动在可写配置上必须成功: {}", v);
+
+    std::fs::remove_dir_all(&root).ok();
+    std::fs::remove_dir_all(&wroot).ok();
+}
+
+/// 只读模式下的**判据**是"方法", 不是"一张写端点清单" —— 代价也一并钉在这里。
+///
+/// 为什么值得一条测试: 计划 §Task 3 的原话是"对 `PUT /decisions` 与 `POST /move` 两个路由加
+/// 一层检查", 而实现刻意做得更宽(任何非 GET/HEAD/OPTIONS)。宽出来的那部分**有代价**: 只读
+/// 模式下, 一条**未挂载**路径上的 POST 会得到 403 而不是 404, 而 `router()` 的注释里说过
+/// "未挂载路径仍是 404, 手机据此区分'服务没有这个功能'"。
+///
+/// 这条测试把那个代价写成**机器可查的事实**, 而不是留在注释里:
+///   · 若有人把它改成 404(想恢复那条区分), 这里会红 —— 那时请连同 `is_write_method` 上的
+///     注释一起改, 并确认"新增写端点会自动被只读覆盖"这个性质还在;
+///   · 若有人把判据改窄成一张路径清单, `read_only_refuses_every_write_endpoint_...` 那条
+///     仍会绿(清单里那两条还在), 但**将来**新加的写端点会静默漏掉 —— 所以这里另外钉一句
+///     "GET 仍然是 404"(证明我只读挡的是写方法, 不是整个不存在的路径)。
+#[tokio::test]
+async fn read_only_refuses_write_methods_even_on_unmounted_paths() {
+    let (app, token, root) = read_only_app("ro_unmounted");
+
+    let res = app
+        .clone()
+        .oneshot(post_raw(
+            "/api/v1/nope",
+            Some(&token),
+            Some("application/json"),
+            b"{}",
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        res.status(),
+        StatusCode::FORBIDDEN,
+        "只读模式按**方法**拦: 未挂载路径上的写方法同样被拒(代价已记在 is_write_method 上)"
+    );
+    assert_code_only(&json_of(res).await, "forbiddenPath");
+
+    // 同一条路径上的**读**: 仍是 404 —— 只读挡的是写方法, 不是"整个路径不存在"。
+    let res = app
+        .clone()
+        .oneshot(get_req("/api/v1/nope", Some(&token)))
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::NOT_FOUND, "读方法上的 404 语义没有被只读改掉");
+    assert_code_only(&json_of(res).await, "notFound");
+
+    std::fs::remove_dir_all(&root).ok();
+}
+
+/// **`GET /api/v1/clients` 的形状, 以及它诚不诚实。**
+///
+/// 诚实的判据是两条, 而且第二条比第一条重要:
+///   ① 记下来的确实是**真的来源地址**(不是编的) —— 所以夹具用 `ConnectInfo` 塞一个具体地址,
+///      再断言列表里就是它;
+///   ② **一行里只有 HTTP 这一层真的知道的东西**。逐个条目断言键集**恰好**是
+///      `{ip, method, path, at}` —— 于是"顺手加一个设备名/位置/User-Agent"会当场红。
+///      那不是洁癖: 那些字段要么读不到(设备名/位置), 要么是客户端自己写的(UA),
+///      放进一列看起来像"设备清单"的东西里, 用户会拿它当事实用。
+///
+/// 变异靶子: 把 `ClientRequest` 加一个 `name` 字段(哪怕值恒为 `None`)→ 键集断言红。
+#[tokio::test]
+async fn clients_endpoint_is_honest_about_what_it_can_know() {
+    let (app, token, root) = route_app("clientshape");
+    let peer = "192.168.1.23:54321";
+
+    // 先制造一次已知请求(带上来源), 再问列表。
+    let res = app
+        .clone()
+        .oneshot(with_peer(get_req("/api/v1/shares", Some(&token)), peer))
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK, "夹具前提: 被记录的那次请求必须成功");
+
+    let (status, v) = get_clients(app.clone(), Some(&token), Some(peer)).await;
+    assert_eq!(status, StatusCode::OK);
+
+    // 快照本身的键集: 就这三个 —— 不许多一个"我们猜的"字段。
+    let mut keys: Vec<&str> = v.as_object().expect("快照必须是对象").keys().map(|k| k.as_str()).collect();
+    keys.sort_unstable();
+    assert_eq!(keys, vec!["capacity", "clients", "recorded"], "快照形状: {v}");
+    assert_eq!(v["capacity"], 50, "容量是计划里写死的 50 条");
+    assert!(
+        v["recorded"].as_u64().unwrap_or(0) >= 2,
+        "两次请求(被记录的 /shares 与这次 /clients 自己)都该在缓冲里: {v}"
+    );
+
+    let list = v["clients"].as_array().expect("clients 必须是数组");
+    assert!(!list.is_empty(), "刚请求过就应该是空的吗? {v}");
+
+    // 每一条的键集**恰好**四项。
+    for c in list {
+        let mut k: Vec<&str> = c.as_object().expect("每条都必须是对象").keys().map(|s| s.as_str()).collect();
+        k.sort_unstable();
+        assert_eq!(
+            k,
+            vec!["at", "ip", "method", "path"],
+            "一条记录只许有 HTTP 这层真的知道的四项(设备名/位置/UA 都是编的): {c}"
+        );
+    }
+
+    // ① 来源地址是真的: 那次 /shares 必须带着我们塞进去的那个 IP。
+    let got = list
+        .iter()
+        .find(|c| c["path"] == "/api/v1/shares")
+        .unwrap_or_else(|| panic!("/shares 那次请求必须被记下来: {v}"));
+    assert_eq!(got["ip"], "192.168.1.23", "来源 IP 必须如实记录(不带端口): {got}");
+    assert_eq!(got["method"], "GET");
+    // 时刻必须真的是个时刻: 0 等于"没记时间", 而面板会把它显示成 1970 年。
+    assert!(
+        got["at"].as_u64().unwrap_or(0) > 1_600_000_000,
+        "时刻必须是 unix 秒(不是 0/占位): {got}"
+    );
+
+    std::fs::remove_dir_all(&root).ok();
+}
+
+/// 日志里**不许出现用户的文件路径**。
+///
+/// `/api/v1/thumb?path=D:\照片\IMG_1.jpg` 里的 `path` 是用户的真实文件路径。这份日志的归宿是
+/// 设置面板(可以被截屏、被贴出来), 而它要回答的问题("谁在连我、连哪条端点")根本不需要那个值。
+/// 所以只记 `request.uri().path()`。
+///
+/// 变异靶子: 把 `record_client` 里的 `uri().path()` 换成 `uri().to_string()` → 下面第一句红。
+#[tokio::test]
+async fn clients_never_record_the_query_string_or_a_file_path() {
+    let (app, token, root) = route_app("clientquery");
+    let enc = urlencode(&root.to_string_lossy());
+    let uri = format!("/api/v1/scan?path={}", enc);
+    let peer = "10.9.9.9:40000";
+
+    let res = app
+        .clone()
+        .oneshot(with_peer(get_req(&uri, Some(&token)), peer))
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK, "夹具前提: scan 必须真的成功");
+
+    let (_, v) = get_clients(app.clone(), Some(&token), Some(peer)).await;
+    let list = v["clients"].as_array().expect("clients 是数组");
+    let scan = list
+        .iter()
+        .find(|c| c["path"] == "/api/v1/scan")
+        .unwrap_or_else(|| panic!("那次 scan 必须被记下来(按端点路径): {v}"));
+    assert_eq!(scan["ip"], "10.9.9.9");
+
+    for c in list {
+        let p = c["path"].as_str().unwrap_or("");
+        assert!(!p.contains('?'), "日志里不许有查询串: {c}");
+        assert!(
+            !p.contains(&root.to_string_lossy().to_string()),
+            "日志里不许出现用户的目录: {c}"
+        );
+        assert!(p.starts_with("/api/v1/"), "记的必须是端点路径: {c}");
+    }
+
+    std::fs::remove_dir_all(&root).ok();
+}
+
+/// **未鉴权的请求一条都不许进日志。**
+///
+/// 这钉的是中间件链的**顺序**(鉴权在记录的外层, 见 `router()`): 反过来的话, 任何一个拿着错
+/// token 的探针都能凭着狂发请求把用户真正的历史挤出环形缓冲 —— 一个连不上的陌生人能远程清空
+/// "谁在连我"。这是**可观测**的: 只发两条请求(一条未鉴权、一条 /clients), 缓冲里就只该有一条。
+///
+/// 变异靶子: 把 `record_client` 那一层挪到 `require_bearer` **外面** → `recorded` 变成 2, 红。
+#[tokio::test]
+async fn an_unauthenticated_request_is_never_recorded() {
+    let (app, token, root) = route_app("clientnoauth");
+
+    let res = app
+        .clone()
+        .oneshot(get_req("/api/v1/shares", None))
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::UNAUTHORIZED, "夹具前提: 无 token 必须 401");
+
+    let (status, v) = get_clients(app.clone(), Some(&token), Some("192.168.1.9:1234")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        v["recorded"], 1,
+        "只有那条带 token 的 /clients 自己该被记下 —— 未鉴权的 401 不许进日志: {v}"
+    );
+    assert_eq!(v["clients"][0]["path"], "/api/v1/clients");
+
+    std::fs::remove_dir_all(&root).ok();
+}
+
+/// **被只读模式拦下的写请求, 同样要进日志。**
+///
+/// 这也是中间件链顺序的一半(记录在只读拦截的外层): "刚才有人在试着写、被我拦了"正是用户打开
+/// 这个列表想看的东西。少了它, 用户开了只读之后看到的列表会莫名其妙地安静, 反而以为没人连。
+///
+/// 变异靶子: 把两层换个次序(`refuse_writes_in_read_only` 在外、`record_client` 在内) →
+/// 那条 PUT 不会被记下, 下面"找得到 PUT /decisions"当场红。
+#[tokio::test]
+async fn a_read_only_refusal_is_still_recorded() {
+    let (app, token, root) = read_only_app("clientrefused");
+    let photo = root.join("a.jpg");
+    assert!(photo.is_file(), "夹具前提");
+    let peer = "192.168.7.7:9000";
+
+    // 这一次写要**带上来源**: 下面要断言"连被拒的那条也记下了来源地址" —— 不带来源的话
+    // 它记的就是 `ip: null`(那也是诚实的), 但那条断言就白写了。
+    let body = serde_json::to_vec(&decision_body(&photo, Some(4), None, false)).unwrap();
+    let res = app
+        .clone()
+        .oneshot(with_peer(
+            put_raw("/api/v1/decisions", Some(&token), Some("application/json"), &body),
+            peer,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::FORBIDDEN, "夹具前提: 只读下这次写必须被拒");
+    assert_code_only(&json_of(res).await, "forbiddenPath");
+
+    let (status, v) = get_clients(app.clone(), Some(&token), Some(peer)).await;
+    assert_eq!(status, StatusCode::OK);
+    // 两条: 被拒的那次 PUT, 以及这次 /clients 自己(记录发生在处理器之前, 所以它在里面)。
+    assert_eq!(v["recorded"], 2, "被拒的写也必须留下痕迹: {v}");
+    let refused = v["clients"]
+        .as_array()
+        .expect("clients 是数组")
+        .iter()
+        .find(|c| c["path"] == "/api/v1/decisions")
+        .unwrap_or_else(|| panic!("被只读拦下的那次 PUT 必须被记下来: {v}"));
+    assert_eq!(refused["method"], "PUT");
+    assert_eq!(refused["ip"], "192.168.7.7");
 
     std::fs::remove_dir_all(&root).ok();
 }

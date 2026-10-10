@@ -78,6 +78,43 @@ interface ServerStatus {
    * 在公用网络上还会再拦一次(确认是一次动作, 不是永久豁免)。
    */
   publicAckAt: number | null;
+  /**
+   * M4′ Task 3: **只读模式**。`true` = 手机那边所有写操作都被服务端拒掉(403 `forbiddenPath`),
+   * 读操作照旧。这一份是**盘上那一份**在内存里的镜像(`server::ServerStatus.read_only`),
+   * 面板的开关状态只由它说了算 —— 前端不自己猜"点了应该开了吧"。
+   */
+  readOnly: boolean;
+}
+
+/**
+ * 配对二维码(`server::PairingQr`, serde camelCase)—— M4′ Task 1。
+ *
+ * `svg` 是**后端自己生成**的 `<svg …>` 源码(`qrcode` crate), 不是任何外部输入,
+ * 所以直接 `dangerouslySetInnerHTML` 塞进 DOM 是安全的(也是选 SVG 的理由: 不必引 JS
+ * 二维码库, 也不必为一张 PNG 去放宽 asset scope)。
+ *
+ * `payload` 是二维码里装的那段 JSON —— 面板**不用**它(地址与配对码本来就都显示在下面),
+ * 它存在只是为了"二维码里到底装了什么"这件事在协议层可被断言。
+ */
+interface PairingQr {
+  svg: string;
+  url: string;
+  payload: string;
+}
+
+/**
+ * "谁在连我"(`server::routes::ClientsSnapshot`, serde camelCase)—— M4′ Task 3。
+ *
+ * ⚠️ **这不是在线设备清单**: `clients` 里每一行是**一次请求**。`ip` 是 `null` 时表示这一层
+ * 拿不到来源地址(诚实地说"不知道", 而不是填一个假地址); 这一层**没有**设备名与位置 ——
+ * 那两样 HTTP 读不到, 所以后端一个字段都不编(见 `server::routes::ClientRequest` 的注释)。
+ */
+interface ClientsSnapshot {
+  clients: { ip: string | null; method: string; path: string; at: number }[];
+  /** 缓冲容量(最多留多少条)。 */
+  capacity: number;
+  /** 此刻缓冲里真正有多少条。 */
+  recorded: number;
 }
 
 /**
@@ -146,6 +183,16 @@ function ServerPanel({ open }: { open: boolean }) {
   const [confirmRotate, setConfirmRotate] = useState(false);
   const [draftPath, setDraftPath] = useState("");
   const [showTips, setShowTips] = useState(false);
+  /** 配对二维码(M4′ Task 1)。`null` = 这次没有二维码; `qrKnown` 才区分"没有"与"还没问到"。 */
+  const [qr, setQr] = useState<PairingQr | null>(null);
+  /**
+   * 是否**问过**一次二维码(`get_server_pairing_qr` 回来了)。为什么需要一个单独的布尔:
+   * 后端在"没有私有地址"或"还没有配对码"时回的就是 `null` —— 与"这次 IPC 没成功"是两件事。
+   * 少了它, 一次失败的调用会被面板说成"还没有配对码", 那就成了一句假话。
+   */
+  const [qrKnown, setQrKnown] = useState(false);
+  /** 最近连接(M4′ Task 3)。**不进 4 秒轮询** —— 手动刷新即可(计划 §Task 3 Step 2)。 */
+  const [clients, setClients] = useState<ClientsSnapshot | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -175,13 +222,45 @@ function ServerPanel({ open }: { open: boolean }) {
     }
   }, []);
 
+  /**
+   * 读配对二维码。与 `loadHints` 同一档代价(要枚举网卡 + 问一次 Windows 的网络类别),
+   * 所以同样**不进 4 秒轮询**, 只在打开面板、每次动作之后与"重新检测"时读。
+   *
+   * 失败时把 `qrKnown` 置回 `false`: 拿不到就什么都不说, 绝不把一次 IPC 失败说成
+   * "还没有配对码"。
+   */
+  const loadQr = useCallback(async () => {
+    try {
+      setQr(await invoke<PairingQr | null>("get_server_pairing_qr"));
+      setQrKnown(true);
+    } catch {
+      setQr(null);
+      setQrKnown(false);
+    }
+  }, []);
+
+  /**
+   * 读最近连接。**纯内存读**(不碰磁盘、不碰网络), 所以它在打开面板与每次动作之后都读一次
+   * 是廉价的; 但它**不做定时刷新** —— 这个列表晚几秒对用户没有损失, 为它搭一条推送通道
+   * 不划算(计划 §Task 3 Step 2)。
+   */
+  const loadClients = useCallback(async () => {
+    try {
+      setClients(await invoke<ClientsSnapshot>("get_server_clients"));
+    } catch {
+      setClients(null);
+    }
+  }, []);
+
   useEffect(() => {
     if (!open) return; // 关着的时候不轮询: 一次 invoke 也不该白花
     void load();
     void loadHints();
+    void loadQr();
+    void loadClients();
     const id = window.setInterval(() => void load(), 4000);
     return () => window.clearInterval(id);
-  }, [open, load, loadHints]);
+  }, [open, load, loadHints, loadQr, loadClients]);
 
   /**
    * 所有动作共用同一条收尾: 忙 → 做 → 失败就显示后端那句人话 → **无论如何**重读一次权威状态。
@@ -201,6 +280,8 @@ function ServerPanel({ open }: { open: boolean }) {
       setBusy(false);
       void load();
       void loadHints();
+      // 一次动作之后"最近连接"里多半刚多了一行(例如刚被只读拦下的那次写), 顺带读一次。
+      void loadClients();
     }
   };
 
@@ -444,10 +525,35 @@ function ServerPanel({ open }: { open: boolean }) {
         </div>
       )}
 
+      {/* ── M4′ Task 3 · 只读模式 ──
+          它是一条**能力开关**, 与总开关并列但管的是不同的东西: 总开关决定"手机连不连得上",
+          这一条决定"连上之后能不能改"。开了之后所有写端点回 403 `forbiddenPath`(复用既有码,
+          规格 §5.3), 读端点照常 —— 所以"读图不受影响"这句必须写出来, 否则用户会以为手机废了。
+          状态永远以后端为准(`status.readOnly`), 前端不自己猜。 */}
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex-1 min-w-0">
+          <p className="text-xs text-muted-foreground">{t("server.readOnly")}</p>
+          <p className="text-xs text-muted-foreground break-words">{t("server.readOnlyDesc")}</p>
+        </div>
+        <Toggle
+          checked={status?.readOnly ?? false}
+          disabled={disabled}
+          onChange={() =>
+            void run(() =>
+              invoke("set_server_read_only", { readOnly: !(status?.readOnly ?? false) }),
+            )
+          }
+        />
+      </div>
+      {status?.readOnly && (
+        <p className="text-xs text-muted-foreground break-words">{t("server.readOnlyNote")}</p>
+      )}
+
       {/* ── M4′ Task 2 · 局域网地址: 手机配对时填的就是这里的地址(规格 §4.2 第 1 条) ──
           只列**私有网段**的地址(公网地址一个都不在这里, 只在上面的警告里); 每条后面是网卡名
           —— 虚拟网卡(VMware/WSL/虚拟机)的地址多半连不上, 所以后端**只排序不丢弃**, 让用户
-          照着网卡名自己判断。"重新检测"是给"刚换了 WiFi"那个现场用的(它不进 4 秒轮询)。 */}
+          照着网卡名自己判断。"重新检测"是给"刚换了 WiFi"那个现场用的(它不进 4 秒轮询);
+          二维码与它同源(同一份探测), 所以这个按钮把两样一起重读。 */}
       {hints && (
         <div className="space-y-1">
           <div className="flex items-center justify-between gap-2">
@@ -455,7 +561,10 @@ function ServerPanel({ open }: { open: boolean }) {
             <button
               type="button"
               disabled={busy}
-              onClick={() => void loadHints()}
+              onClick={() => {
+                void loadHints();
+                void loadQr();
+              }}
               className="px-2 py-1 rounded-md border border-border text-xs text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-50 disabled:cursor-not-allowed"
             >
               {t("server.rescan")}
@@ -510,6 +619,36 @@ function ServerPanel({ open }: { open: boolean }) {
           </p>
         </div>
       )}
+
+      {/* ── M4′ Task 1 · 配对二维码: 手机扫一下, 地址与配对码自动填好(规格 §4.2 第 3 条) ──
+          它与下面那两样是**同一份信息**的两种形态, 顺序也是刻意的: 先二维码(顺手的那条路),
+          紧接着就是文本形式的地址与配对码(扫码失败时的退路, 计划 Step 2 明确要求保留)。
+
+          三种状态各自说实话, 不合并:
+            · `qr` 有值 → 画图 + 一行"用手机扫这个码" + 一行"扫不出来就手输";
+            · `qrKnown` 且没有图、但**有**局域网地址 → 只可能是"还没有配对码"(新装/轮换中),
+              由 `qrNoToken` 说明;**绝不**画一个空框;
+            · 局域网地址本来就没有 → 上面那块 `lanEmpty` 已经说清了(后端也不会回落到公网地址
+              或 127.0.0.1 —— 理由见 `server::pairing_of`), 这里一个字都不加, 免得说两遍。
+
+          `dangerouslySetInnerHTML` 在这里是安全的: 这段 SVG 是**后端自己用 `qrcode` 编出来的**,
+          内容里只有地址与配对码, 不是任何外部输入。 */}
+      {qr ? (
+        <div className="space-y-1">
+          <p className="text-xs text-muted-foreground">{t("server.qrTitle")}</p>
+          <div
+            // 尺寸只在这里定: 后端给的是**矢量**, 放大不糊, 所以显示盒子可以放心放大到
+            // 面板宽度(最多 256px)。`h-auto` + `w-full` 靠 SVG 自带的 viewBox 保持正方形。
+            // 白底是给静区兜底: 后端已经开了 quiet_zone, 这里只是不让深色主题把边距染灰。
+            className="w-full max-w-64 rounded-md bg-white p-1 [&>svg]:block [&>svg]:h-auto [&>svg]:w-full"
+            dangerouslySetInnerHTML={{ __html: qr.svg }}
+          />
+          <p className="text-xs text-muted-foreground break-words">{t("server.qrScanHint")}</p>
+          <p className="text-xs text-muted-foreground break-words">{t("server.qrFallback")}</p>
+        </div>
+      ) : qrKnown && hints && hints.lan.length > 0 ? (
+        <p className="text-xs text-muted-foreground break-words">{t("server.qrNoToken")}</p>
+      ) : null}
 
       {/* 配对码: 单行等宽 + 可选中; 复制与轮换各一个按钮(轮换要按两下)。 */}
       <div className="space-y-1">
@@ -600,6 +739,65 @@ function ServerPanel({ open }: { open: boolean }) {
           </button>
         </div>
         <p className="text-xs text-muted-foreground">{t("server.sharesDesc")}</p>
+      </div>
+
+      {/* ── M4′ Task 3 · 最近连接("谁在连我") ──
+          **手动刷新, 不做实时刷新**(计划 §Task 3 Step 2): 为一条低频信息搭推送通道不划算,
+          而这个列表晚几秒对用户没有损失。打开面板与每次动作之后会各读一次。
+
+          这里**只有** HTTP 这一层真的知道的三样: 来源 IP、请求的端点、时间。后端一个字段都
+          没编(没有设备名、没有位置), 所以下面的说明文字必须把这件事讲清楚 —— 否则用户会拿
+          一行 IP 当"设备清单"来读, 那比不显示更糟。查询串(里面是用户的文件路径)刻意不记。 */}
+      <div className="space-y-1">
+        <div className="flex items-center justify-between gap-2">
+          <p className="text-xs text-muted-foreground">{t("server.clientsTitle")}</p>
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => void loadClients()}
+            className="px-2 py-1 rounded-md border border-border text-xs text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {t("server.clientsRefresh")}
+          </button>
+        </div>
+        {clients && clients.clients.length === 0 && (
+          <p className="text-xs text-muted-foreground">{t("server.clientsEmpty")}</p>
+        )}
+        {clients && clients.clients.length > 0 && (
+          <ul className="space-y-1 min-w-0">
+            {clients.clients.map((c, i) => (
+              // `at` 会撞(同一秒内好几条请求), 所以下标一起进 key —— 用得着"稳定且唯一"。
+              <li key={`${c.at}-${i}`} className="flex items-center gap-2 min-w-0">
+                <code className="shrink-0 rounded-md bg-muted/40 px-2 py-1 font-mono text-xs text-foreground">
+                  {/* `ip` 是 null = 这一层真的不知道来源(后端不编假值), 所以这里说"未知"。 */}
+                  {c.ip ?? t("server.clientsUnknownIp")}
+                </code>
+                <span
+                  className="flex-1 min-w-0 truncate text-xs text-muted-foreground"
+                  title={`${c.method} ${c.path}`}
+                >
+                  {c.method} {c.path}
+                </span>
+                <span className="shrink-0 text-xs text-muted-foreground">
+                  {/* 0 = 系统时钟读不出来(后端给 0), 显示成 1970 年会是句假话。 */}
+                  {c.at > 0
+                    ? new Date(c.at * 1000).toLocaleString()
+                    : t("server.clientsUnknownTime")}
+                </span>
+              </li>
+            ))}
+          </ul>
+        )}
+        {clients && clients.clients.length > 0 && (
+          <p className="text-xs text-muted-foreground">
+            {t("server.clientsCount", {
+              recorded: clients.recorded,
+              capacity: clients.capacity,
+              shown: clients.clients.length,
+            })}
+          </p>
+        )}
+        <p className="text-xs text-muted-foreground break-words">{t("server.clientsDesc")}</p>
       </div>
 
       {/* 排查清单默认收起: 它不是每天都看的东西, 但连不上的时候要在同一屏里能找到

@@ -17,17 +17,19 @@
 use super::{auth, media, paths, ApiError, ServerState};
 use crate::xmp::{DecisionWrite, WriteSummary};
 use axum::body::Body;
-use axum::extract::{FromRequest, FromRequestParts, Query, Request, State};
+use axum::extract::{ConnectInfo, FromRequest, FromRequestParts, Query, Request, State};
 use axum::http::request::Parts;
-use axum::http::{header, HeaderMap, StatusCode};
+use axum::http::{header, HeaderMap, Method, StatusCode};
 use axum::middleware::{self, map_response, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
 use serde::de::{DeserializeOwned, IgnoredAny, MapAccess, Visitor};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::hash_map::DefaultHasher;
+use std::collections::VecDeque;
 use std::hash::{Hash, Hasher};
+use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::OnceLock;
 use tokio::sync::{Mutex, MutexGuard};
@@ -218,6 +220,7 @@ pub const PROTECTED_PATHS: &[&str] = &[
     "/api/v1/preview",
     "/api/v1/decisions",
     "/api/v1/move",
+    "/api/v1/clients",
 ];
 
 /// Bearer 校验。规格 §5.2: token 长度固定且公开, 长度不同直接拒不算泄露。
@@ -307,6 +310,170 @@ fn shares_of(state: &ServerState) -> Result<Vec<PathBuf>, ApiError> {
     Ok(state.config.read().map_err(|_| ApiError::Internal)?.shares.clone())
 }
 
+// ════════════════════════════════════════════════════════════════════════════
+// M4′ Task 3 · 只读模式 与 "谁在连我"
+//
+// 两件事都长在**同一条中间件链**上, 但它们管的是不同的东西, 所以是**两个**中间件:
+//   · `refuse_writes_in_read_only` —— 拦(用户把能力收窄);
+//   · `record_client`            —— 记(用户想知道谁在连)。
+// 顺序(见 `router`)是刻意的: **记录在外层、拦截在内层一点**。于是被拦下的写请求先被记下来、
+// 再被拒 —— 用户在面板上看到"这台手机刚试着打分、被我拦了", 正是他打开这个列表想知道的。
+// ════════════════════════════════════════════════════════════════════════════
+
+/// 请求日志的容量。**内存环形缓冲, 有界**: 不随请求数增长(那会变成一个内存泄漏点)。
+pub const CLIENTS_CAPACITY: usize = 50;
+
+/// `GET /api/v1/clients` 一次返回多少条(最新在前)。规格/计划: 存 50 条, 回 20 条。
+pub const CLIENTS_RETURNED: usize = 20;
+
+/// 一条**被记下来的请求**。
+///
+/// ── 这里只有 HTTP 这一层真的知道的东西(规格 M4′ Task 3 的"必须诚实") ─────────────
+/// 一个 HTTP 客户端**没有**名字、没有型号、没有位置。它送来的每个头(含 `User-Agent`)都是
+/// **客户端自己写的**, 服务端唯一能自己核实的只有「这条 TCP 连接从哪个地址来」。所以这一行
+/// 只有四项, 一个字段都不编:
+///   · `ip`: 来源地址。**没有"设备名"、没有"位置"** —— 那两样在这一层读不到, 编一个出来
+///     只是骗人(而且用户会照着它判断"这是不是我自己的手机")。
+///   · `method` / `path`: 它请求的是哪条端点。
+///   · `at`: 请求到达的时刻(unix 秒, 与 `ServerStatus.public_ack_at` 同一口径)。
+///
+/// ⚠️ **`path` 刻意只有端点路径, 不带查询串**: `/api/v1/thumb?path=D:\照片\IMG_1.jpg`
+/// 里的 `path` 是用户的**真实文件路径** —— 把它抄进一份内存日志(以及一个面板列表)没有
+/// 任何必要, 而它一旦被截屏/贴出来就是泄露。所以这里记的是 `request.uri().path()`。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClientRequest {
+    /// 来源地址(只有 IP, 不带来源端口 —— 端口每次请求都换, 记下来只是噪音)。
+    ///
+    /// `None` = 这一层拿不到来源地址(测试直接打 Router 时就是这种现场; 真机上
+    /// `start()` 已经用 `into_make_service_with_connect_info` 把它塞进请求扩展)。
+    /// 这里**不填一个假值** —— "不知道"与"来自某个地址"是两件事。
+    pub ip: Option<String>,
+    pub method: String,
+    pub path: String,
+    /// 请求到达的 unix 秒。
+    pub at: u64,
+}
+
+/// `GET /api/v1/clients` 的响应体。
+///
+/// 名字里的 "clients" 跟着端点名(计划 §Task 3 定的), 但语义要说清: **每一行是一次请求,
+/// 不是一条长连接** —— HTTP 没有"连接身份"可言, 同一台手机可能按秒产生几十条, 而两台手机
+/// 也可能共用一个 NAT 后的地址。面板的文案据实说明这一点。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClientsSnapshot {
+    /// 最近若干条(最新在前), 最多 [`CLIENTS_RETURNED`] 条。
+    pub clients: Vec<ClientRequest>,
+    /// 缓冲容量(最多留多少条)。面板据此说清"这里最多能看到多少"。
+    pub capacity: usize,
+    /// 此刻缓冲里真正有多少条(<= `capacity`; 刚开机时可能是 0)。
+    pub recorded: usize,
+}
+
+/// 请求日志本体。**挂在 `ServerState` 上**(不是进程级静态量) —— 理由见 `ServerState::clients`:
+/// 静态量会让同一个测试进程里的用例共用一份, 断言就会因为别的用例恰好请求过而假绿。
+#[derive(Debug, Default)]
+pub struct ClientLog {
+    /// 最旧的在最前、最新的在最后; 满了从前面丢。
+    entries: VecDeque<ClientRequest>,
+}
+
+impl ClientLog {
+    /// 记一条。已满就丢**最旧**的那条 —— 这就是"环形缓冲"的全部含义。
+    pub fn record(&mut self, entry: ClientRequest) {
+        if self.entries.len() >= CLIENTS_CAPACITY {
+            self.entries.pop_front();
+        }
+        self.entries.push_back(entry);
+    }
+
+    /// 快照: 最新在前, 最多 [`CLIENTS_RETURNED`] 条。
+    pub fn snapshot(&self) -> ClientsSnapshot {
+        ClientsSnapshot {
+            clients: self.entries.iter().rev().take(CLIENTS_RETURNED).cloned().collect(),
+            capacity: CLIENTS_CAPACITY,
+            recorded: self.entries.len(),
+        }
+    }
+}
+
+/// unix 秒。系统时钟被设到 1970 之前时给 0 —— 不 panic, 也不假装知道时刻
+/// (与 `server::record_public_ack` 同一个处理)。
+fn unix_seconds() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// 记一条请求来源。**每一条走到这里的请求**(含被只读模式拦下的那些)都会被记下来。
+///
+/// 位置在鉴权层**内层**(见 `router`): 于是这里记的全是**已配对**的客户端。
+/// 反过来(记在鉴权之前)会让任何一个拿着错 token 的探针把真正的历史**挤掉** ——
+/// 一个连不上的陌生人能远程清空用户手上的那份"谁在连我"。方向选了保守的一侧。
+///
+/// 锁是短临界区、且**在 `await` 之前就放掉**: 记录本身不与请求处理重叠。
+async fn record_client(State(st): State<ServerState>, request: Request, next: Next) -> Response {
+    let entry = ClientRequest {
+        // 只有真的拿到连接信息才写 ip; 拿不到就是 None(见字段注释), 不编。
+        ip: request.extensions().get::<ConnectInfo<SocketAddr>>().map(|c| c.0.ip().to_string()),
+        method: request.method().to_string(),
+        // **只有端点路径**, 不含查询串(见 `ClientRequest::path` 的注释)。
+        path: request.uri().path().to_string(),
+        at: unix_seconds(),
+    };
+    // 中毒也照用(`server::lifecycle()` 同一条纪律): 里面放的是"刚发生过的事实", 不是
+    // 可能被写坏的不变量; 拿不到就整条丢掉会让"谁在连我"莫名其妙地空掉。
+    st.clients.lock().unwrap_or_else(|e| e.into_inner()).record(entry);
+    next.run(request).await
+}
+
+/// 这个方法算不算"写"。**判据是方法, 不是路径清单。**
+///
+/// 为什么不用"一张写端点清单": 清单会漂 —— 将来有人加一条写端点而忘了往清单里添一行,
+/// 只读模式就**静默地**不覆盖它, 而那是用户明确要求"把能力收窄"的那条开关。按方法判则
+/// 构造不出这个漏洞: 新加的写端点在只读模式下**自动**被拦。
+///
+/// 代价(明写在这里): 只读模式下, 一个**未挂载**路径上的 POST 也会回 `403 forbiddenPath`,
+/// 而不是 404 —— 而 `router()` 的注释里说过"未挂载路径仍是 404, 手机据此区分'服务没有这个
+/// 功能'"。两害相权: 前者是"用户的安全开关漏了一条", 后者是"手机对一条本来就不该发的请求
+/// 少了一句准确的话"(手机只会对**已存在的**端点发写请求)。所以选前者。
+///
+/// `HEAD`/`OPTIONS` 与 `GET` 同列: 它们不改变任何东西。
+fn is_write_method(m: &Method) -> bool {
+    !matches!(*m, Method::GET | Method::HEAD | Method::OPTIONS)
+}
+
+/// 只读模式下拦下**所有写方法**。读方法(含 HEAD/OPTIONS)原样放行 —— "读端点必须继续工作"
+/// 是这条功能的另一半, 少了它, 用户一开只读就等于把手机整体断开。
+///
+/// 错误码**复用 `forbiddenPath`**(规格 §5.3 的原话: 只读模式拦下的写操作复用这个码)。
+/// **不新造码**, 也不在响应体里加 `detail` 说明"这是只读模式": 文案由手机端按 code 本地化,
+/// 而 `ApiError::into_response` 只发 `{ code }` 一个字段(§5.3 的实测修正)。手机端那句
+/// "电脑上不允许这个操作(可能是只读模式, 或路径不在共享根)"一句覆盖两种场景, 靠的就是
+/// 这里**不**把场景差异塞进响应体。
+///
+/// 位置在鉴权层**内层**(见 `router`): 未配对 → 401, 已配对 → 403。方向是保守的:
+/// 只读模式不会把"你没有 token"这件事变成"电脑不允许这个操作"。
+async fn refuse_writes_in_read_only(
+    State(st): State<ServerState>,
+    request: Request,
+    next: Next,
+) -> Result<Response, ApiError> {
+    if is_write_method(request.method()) && read_only_of(&st) {
+        return Err(ApiError::ForbiddenPath);
+    }
+    Ok(next.run(request).await)
+}
+
+/// 配置里的只读标志。**读不出来(锁中毒)按"只读"处理** —— fail-closed 的方向在这里是
+/// "拒绝写": 一个坏掉的配置锁不该让用户的收窄开关静默失效(读端点不受影响, 所以手机不会
+/// 因此整体断掉)。与 `server::wants_start` 读不到就当"不启动"是同一个方向。
+fn read_only_of(state: &ServerState) -> bool {
+    state.config.read().map(|c| c.read_only).unwrap_or(true)
+}
+
 /// **路径白名单的唯一入口**: 读配置里的共享根 → `ensure_within` → 返回规范化后的路径。
 ///
 /// 调用方必须把返回值**用起来**(去调既有函数), 而不是继续用自己手里的字符串:
@@ -336,20 +503,35 @@ fn endpoint_routes() -> Router<ServerState> {
         // Task 7: 移动。**唯一会搬动用户文件的方法** —— 两侧(源/目标)都过白名单,
         // 白名单与鉴权的收口方式与上面每一条完全相同(见模块头)。
         .route("/api/v1/move", axum::routing::post(move_photos))
+        // M4′ Task 3: "谁在连我"。读端点 —— 只读模式下**照常工作**(用户开着只读时更需要看它)。
+        .route("/api/v1/clients", get(clients_get))
 }
 
-/// 完整路由: **整台路由器**外面套一层鉴权中间件, 再套一层响应规范化。
+/// 完整路由: **整台路由器**外面套三层中间件 + 一层响应规范化(M4′ Task 3 从两层变四层)。
 ///
-/// 免鉴权的只有 `PUBLIC_PATHS` 里那几个(即 `ping`)。未挂载的路径也走这一层
+/// 免鉴权的只有 `PUBLIC_PATHS` 里那几个(即 `ping`)。未挂载的路径也走这几层
 /// (axum 的 `layer` 会罩住兜底路由), 所以不存在的路径在未鉴权时同样是 401 ——
 /// 失败方向是"更严", 顺带也不向未配对的调用方泄露端点清单。带上正 token 时
 /// 未挂载路径仍然是 404, 手机据此区分"服务没有这个功能"。
 ///
-/// 两层各管一件事, 顺序是刻意的(`map_response` 在**最外层**, 所以它也能看见鉴权层自己
-/// 生成的响应):
+/// 四层各管一件事, 顺序是刻意的(**后 `layer` 的在更外层**, 所以执行顺序是
+/// `normalize` → `bearer` → `record` → `readonly` → 处理器):
 ///   · `require_bearer`: 谁能进来(白名单在 `PUBLIC_PATHS`);
-///   · `normalize_residual_errors`: 出去的东西必须长成 `{ code }`
+///   · `record_client`: 谁在连(M4′ Task 3 的请求日志);
+///   · `refuse_writes_in_read_only`: 只读模式下拒掉所有写方法(M4′ Task 3);
+///   · `normalize_residual_errors`(最外层): 出去的东西必须长成 `{ code }`
 ///     (只碰 405/404 这类没走到处理器的残余, 见上方长注释)。
+///
+/// 三处顺序都不可交换, 每条的理由:
+///   · `bearer` 必须在 `record` **外面** —— 日志里只该有**已配对**的客户端, 否则一个拿着
+///     错 token 的探针能把用户真正的历史挤掉(见 `record_client`);
+///   · `record` 必须在 `readonly` **外面** —— 被只读模式拦下的写请求**同样要被记下来**:
+///     "刚才有人在试着写、被我拦了"正是用户打开这个列表想看的东西;
+///   · `normalize` 在最外层 —— 它要能看见内层生成的错误响应(见它自己的注释)。
+///
+/// **(上述顺序有测试钉住)**: `tests/server_contract.rs` 的
+/// `a_read_only_refusal_is_still_recorded` 与 `an_unauthenticated_request_is_never_recorded`
+/// 两条各自证明一段 —— 把任一层挪错位置, 对应的那条会红。
 ///
 /// **未实现(明写在代码里, 不留悬念)**: 规格 §11 风险 4 要求"同一客户端的并发限制"。
 /// 它**属于这一层**, 因为只有路由层看得到客户端身份 —— `media.rs` 的两条闸门
@@ -357,14 +539,17 @@ fn endpoint_routes() -> Router<ServerState> {
 /// M0′ Task 8 的验收清单里没有这一条(brief 只要求启停/配置/命令接线), 所以这里**故意
 /// 没有实现**, 但把落点写清楚:
 ///   ① 客户端身份只能来自 `ConnectInfo<SocketAddr>`(本进程直连, 没有反代, 不该信
-///      `X-Forwarded-For`); 这要求 `start()` 把 `axum::serve(listener, app)` 换成
-///      `axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>())` ——
-///      那是对 Task 1 已验证过的起服务路径的改动, 必须单独评估;
+///      `X-Forwarded-For`); **M4′ Task 3 已经把 `start()` 换成了
+///      `axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>())`**
+///      —— 那个 `ConnectInfo` 现在真的在请求里了(见 `record_client`), 所以这一条已经落地;
 ///   ② 计数表要按客户端键控且有回收(否则等于一个内存泄漏点), 超限回 `423 busy`
 ///      (`ApiError::Busy`)而不是 429 —— 429 会被 `code_for_status` 归成 `badRequest`,
 ///      手机会显示成"请求不合法", 而真实语义是"等一下再试"。
 pub fn router(state: ServerState) -> Router {
     endpoint_routes()
+        // 内 → 外: 只读拦截 → 记录来源 → 鉴权 → 响应规范化。见上面那段顺序说明。
+        .layer(middleware::from_fn_with_state(state.clone(), refuse_writes_in_read_only))
+        .layer(middleware::from_fn_with_state(state.clone(), record_client))
         .layer(middleware::from_fn_with_state(state.clone(), require_bearer))
         .layer(map_response(normalize_residual_errors))
         .with_state(state)
@@ -386,6 +571,18 @@ async fn shares(State(st): State<ServerState>) -> Result<Response, ApiError> {
 /// 为它单开 `spawn_blocking` 只会多一次线程往返。
 async fn drives() -> Result<Response, ApiError> {
     Ok(Json(crate::scanner::drives::detect_drives()).into_response())
+}
+
+/// 最近的请求来源(M4′ Task 3)。**只读模式下照常可用**(它是读端点) —— 恰恰是开着只读的时候,
+/// "刚才谁在试着写"才是用户想看的。
+///
+/// 返回的是 [`ClientLog::snapshot`]: 最新在前、最多 [`CLIENTS_RETURNED`] 条。**没有实时推送**
+/// (面板手动刷新): 为一条低频信息搭一条推送通道不划算, 而"这个列表晚几秒"对用户没有损失。
+///
+/// 锁只活在这一条语句里(取完快照就放), 不跨 `await`。
+async fn clients_get(State(st): State<ServerState>) -> Result<Response, ApiError> {
+    let snap = st.clients.lock().unwrap_or_else(|e| e.into_inner()).snapshot();
+    Ok(Json(snap).into_response())
 }
 
 #[derive(Deserialize)]
@@ -909,6 +1106,7 @@ mod tests {
     fn check_auth_rejects_an_empty_configured_token_and_an_empty_credential() {
         fn state(token: &str) -> ServerState {
             crate::server::ServerConfig {
+                read_only: false,
                 enabled: true,
                 port: 0,
                 token: token.to_string(),
@@ -1024,6 +1222,7 @@ mod tests {
     async fn empty_configured_token_never_authenticates() {
         let app = router(
             crate::server::ServerConfig {
+                read_only: false,
                 enabled: true,
                 port: 0,
                 token: String::new(), // ← 默认配置的真实形态
@@ -1084,6 +1283,7 @@ mod tests {
         let token = "t".repeat(64);
         let app = routes_without_the_safety_net(
             crate::server::ServerConfig {
+                read_only: false,
                 enabled: true,
                 port: 0,
                 token: token.clone(),
@@ -1161,6 +1361,7 @@ mod tests {
         let root = decision_root(tag);
         let token = "t".repeat(64);
         let cfg = crate::server::ServerConfig {
+            read_only: false,
             enabled: true,
             port: 0,
             token: token.clone(),
@@ -1217,6 +1418,7 @@ mod tests {
         let token = "t".repeat(64);
         let app = routes_without_the_safety_net(
             crate::server::ServerConfig {
+                read_only: false,
                 enabled: true,
                 port: 0,
                 token: token.clone(),
@@ -1367,5 +1569,73 @@ mod tests {
         );
 
         std::fs::remove_dir_all(&root).ok();
+    }
+
+    // ── M4′ Task 3 · 请求日志(环形缓冲) ──────────────────────────────────────
+
+    fn entry(n: usize) -> ClientRequest {
+        ClientRequest {
+            ip: Some("192.168.1.23".into()),
+            method: "GET".into(),
+            path: format!("/api/v1/scan?i={n}"),
+            at: 1_700_000_000 + n as u64,
+        }
+    }
+
+    /// **超过容量就丢最旧的** —— 这是"环形缓冲"这个词的全部内容, 也是它不会变成内存泄漏点的
+    /// 唯一理由(内存不随请求数增长)。
+    ///
+    /// 变异靶子: 把 `record` 里那次 `pop_front` 删掉 → 下面第一句 `capacity` 断言当场红。
+    #[test]
+    fn client_log_drops_the_oldest_when_it_is_full() {
+        let mut log = ClientLog::default();
+        // 先塞满, 再多塞 5 条。
+        for i in 0..(CLIENTS_CAPACITY + 5) {
+            log.record(entry(i));
+        }
+        let snap = log.snapshot();
+        assert_eq!(snap.recorded, CLIENTS_CAPACITY, "容量有界: {CLIENTS_CAPACITY} 条");
+        assert_eq!(snap.capacity, CLIENTS_CAPACITY);
+
+        // **最旧的那 5 条必须已经不在了** —— 而且这个断言按内容查, 不看长度:
+        // 只按长度断的话, "丢最新的"这种同样有界的实现也能过。
+        let paths: Vec<&str> = snap.clients.iter().map(|c| c.path.as_str()).collect();
+        for i in 0..5 {
+            assert!(
+                !paths.contains(&format!("/api/v1/scan?i={i}").as_str()),
+                "第 {i} 条(最旧)必须已经被丢掉: {paths:?}"
+            );
+        }
+        // 最新的一条在、而且排在最前面(面板显示的是"最近")。
+        assert_eq!(snap.clients[0].path, format!("/api/v1/scan?i={}", CLIENTS_CAPACITY + 4));
+        assert_eq!(snap.clients[0].ip.as_deref(), Some("192.168.1.23"));
+    }
+
+    /// 返回条数另有上限(存 50 条, 一次只回 20 条), 而且**最新在前**。
+    #[test]
+    fn client_log_returns_at_most_the_documented_window_newest_first() {
+        let mut log = ClientLog::default();
+        for i in 0..CLIENTS_CAPACITY {
+            log.record(entry(i));
+        }
+        let snap = log.snapshot();
+        assert_eq!(snap.clients.len(), CLIENTS_RETURNED, "一次最多回 {CLIENTS_RETURNED} 条");
+        assert_eq!(snap.recorded, CLIENTS_CAPACITY, "但缓冲里留着全部 {CLIENTS_CAPACITY} 条");
+        let at: Vec<u64> = snap.clients.iter().map(|c| c.at).collect();
+        let mut desc = at.clone();
+        desc.sort_unstable_by(|a, b| b.cmp(a));
+        assert_eq!(at, desc, "必须最新在前(面板从上往下看就是'刚才发生了什么')");
+    }
+
+    /// 写方法的判据。**这一条钉的是"哪些请求会被只读模式拦"** —— 判据一旦放宽到某几个路径,
+    /// 将来新增的写端点就会静默不受保护(见 `is_write_method` 的注释)。
+    #[test]
+    fn write_methods_are_everything_but_get_head_options() {
+        for m in ["GET", "HEAD", "OPTIONS"] {
+            assert!(!is_write_method(&Method::from_bytes(m.as_bytes()).unwrap()), "{m} 是读");
+        }
+        for m in ["PUT", "POST", "PATCH", "DELETE"] {
+            assert!(is_write_method(&Method::from_bytes(m.as_bytes()).unwrap()), "{m} 是写");
+        }
     }
 }

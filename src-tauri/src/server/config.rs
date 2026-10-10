@@ -35,6 +35,17 @@ pub struct ServerConfig {
     /// 共享根白名单。**空 = 谁都访问不了**（这是安全的默认值, 不是 bug）。
     #[serde(default)]
     pub shares: Vec<PathBuf>,
+    /// **只读模式**(M4′ Task 3)。`true` = 服务照常提供读接口, 但**所有写端点**
+    /// (`PUT /api/v1/decisions`、`POST /api/v1/move`)一律回 `403 forbiddenPath`。
+    ///
+    /// **默认 false**: 它是一条"把能力收窄"的开关, 默认必须是"没被收窄"——否则一次配置缺失
+    /// (`load()` 回落 `default()`)会静默把用户的手机变成只读, 而用户看到的只是"打分没反应"。
+    /// 与其它字段一样带 `#[serde(default)]`: 手改配置漏了这一行不该把 `shares` 一起丢掉。
+    ///
+    /// 为什么落盘(而不是像 `public_ack_at` 那样只活一次运行): 它表达的是**用户对这台机器的
+    /// 长期决定**(例如"我在外面, 先把写关掉"), 重启后自己变回可写才是那个谎。
+    #[serde(default)]
+    pub read_only: bool,
 }
 
 /// `ServerConfig::port` 的 serde 默认值。单独写成函数是因为 `#[serde(default)]` 用的是
@@ -55,7 +66,13 @@ impl Default for ServerConfig {
     /// 空 token 是 **fail-closed**：`start()` 拒绝空 token，鉴权层也显式拒绝（见
     /// `routes::check_auth`），所以"还没生成 token"绝不等于"关掉鉴权"。
     fn default() -> Self {
-        Self { enabled: false, port: DEFAULT_PORT, token: String::new(), shares: Vec::new() }
+        Self {
+            enabled: false,
+            port: DEFAULT_PORT,
+            token: String::new(),
+            shares: Vec::new(),
+            read_only: false,
+        }
     }
 }
 
@@ -117,6 +134,10 @@ mod tests {
         assert!(cfg.token.is_empty(), "默认配置不许生成 token —— 启动路径不许碰随机数");
         assert!(!token_is_valid(&cfg.token), "空 token 必须被判定为不可用(fail-closed)");
         assert!(cfg.shares.is_empty(), "共享根默认空 = 谁都访问不了(安全默认值)");
+        assert!(
+            !cfg.read_only,
+            "只读模式默认关闭 —— 一次配置缺失不该静默把用户的手机变成只读"
+        );
     }
 
     /// 全新安装(配置文件不存在)走的就是 `default()`：不 panic、不开服务、token 为空。
@@ -209,6 +230,7 @@ mod tests {
         assert_eq!(cfg.port, DEFAULT_PORT);
         assert!(cfg.token.is_empty());
         assert!(cfg.shares.is_empty());
+        assert!(!cfg.read_only, "缺 read_only 必须默认**可写**(不静默收窄能力)");
     }
 
     /// `token_is_valid` 的边界。长度对但不是十六进制 → 不可用
@@ -224,10 +246,14 @@ mod tests {
     }
 
     /// 落盘/读回是同一条 `CONFIG_FILE`（`server::persist` 与 `load` 必须对上）。
+    ///
+    /// `read_only` 特意取 `true`: 取 `false` 的话,"这个字段根本没被序列化/反序列化"与
+    /// "它被正确读写"会给出同一个结果 —— 那条断言就白写了。
     #[test]
     fn save_then_load_round_trips() {
         let dir = tmp_dir("roundtrip");
         let cfg = ServerConfig {
+            read_only: true,
             enabled: true,
             port: 9001,
             token: "b".repeat(64),
@@ -239,5 +265,6 @@ mod tests {
         assert_eq!(back.port, 9001);
         assert_eq!(back.token, "b".repeat(64));
         assert_eq!(back.shares, vec![PathBuf::from("C:\\pics")]);
+        assert!(back.read_only, "只读模式必须原样读回(否则重启后它自己变回可写)");
     }
 }

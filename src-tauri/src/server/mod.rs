@@ -51,6 +51,17 @@ pub struct ServerState {
     /// 为什么是 `Option`: 集成/单测只需要路由与配置, 不该被迫造一个 Tauri app;
     /// 而且"没有通知端就跳过发事件"是一条**真实可达**的分支, 必须被测试覆盖到。
     pub notify: Option<Notify>,
+    /// 最近的请求来源(M4′ Task 3 的"谁在连我")。**内存环形缓冲, 容量有界**(见
+    /// `routes::CLIENTS_CAPACITY`), 不落盘 —— 它是"此刻与刚才", 不是历史。
+    ///
+    /// 为什么是状态里的一个字段、而不是又一个进程级 `static`(与 `LAST_ERROR`/`PUBLIC_ACK`
+    /// 不同): 它**每一条请求**都要写。做成静态量的话, 同一个测试进程里所有用例会共用一份日志
+    /// —— "这条请求被记下来了吗"会因为**别的用例恰好也请求过**而变绿, 也就是测试因为错误的
+    /// 原因通过。挂在状态上之后, 每台 `into_state()` 出来的路由各有自己的一份, 断言是确定的。
+    ///
+    /// 类型纪律与 `notify` 完全一样: 里面只有 `std` 的东西(`Arc<StdMutex<…>>`), 绝不带
+    /// Tauri 类型(见 `Notify` 上那段 —— 测试 exe 是**加载时**死, 不是变红)。
+    pub clients: Arc<StdMutex<routes::ClientLog>>,
 }
 
 impl config::ServerConfig {
@@ -59,6 +70,7 @@ impl config::ServerConfig {
         ServerState {
             config: Arc::new(RwLock::new(self)),
             notify: None,
+            clients: Arc::new(StdMutex::new(routes::ClientLog::default())),
         }
     }
 
@@ -67,6 +79,7 @@ impl config::ServerConfig {
         ServerState {
             config: Arc::new(RwLock::new(self)),
             notify: Some(notify),
+            clients: Arc::new(StdMutex::new(routes::ClientLog::default())),
         }
     }
 }
@@ -107,6 +120,11 @@ pub struct ServerStatus {
     ///   · **只活在本次运行里**: 进程重启后必然回到 `None`, 于是下次开机在公用网络上**还会
     ///     再拦一次**。确认是一次动作, 不是一份永久豁免(把它落盘就会变成后者)。
     pub public_ack_at: Option<u64>,
+    /// **只读模式**(M4′ Task 3): `true` 时所有**写端点**都回 `403 forbiddenPath`, 读端点照常。
+    ///
+    /// 这一份就是配置里的那一份(`config::ServerConfig::read_only`), 不做任何推断 —— 面板的
+    /// 开关状态由它说了算, 前端不自己猜"点了应该开了吧"。
+    pub read_only: bool,
 }
 
 /// 闭集错误码（规格 §5.3）。**每条都必须落到"用户下一步做什么"**。
@@ -538,6 +556,18 @@ pub async fn start(state: ServerState) -> Result<u16, String> {
                 let app = routes::router(state.clone());
                 let gen = ticket;
                 tauri::async_runtime::spawn(async move {
+                    // M4′ Task 3: `GET /api/v1/clients` 要回答"谁在连我", 而客户端身份在 HTTP
+                    // 这一层**只有来源地址**这一项 —— 它只能由 `ConnectInfo` 提供。
+                    // `axum::serve(listener, app)` 不会往请求里塞它, 于是路由层拿到的永远是
+                    // `None`(客户端列表从此只剩路径与时间)。所以这里换成"带连接信息"的那一版。
+                    //
+                    // **不用 `X-Forwarded-For`**: 本进程直连、没有反代, 那个头可以由任何客户端
+                    // 随便写。信它等于让日志里出现**伪造**的来源 IP —— 那比"不知道 IP"更糟,
+                    // 因为它会骗人(而 §5.3 那条"存在性预言机"式的取舍在这里不成立: 前者不骗人)。
+                    //
+                    // 这一步只是把 `SocketAddr` 塞进 request extensions, 不改变任何路由/鉴权
+                    // 行为, 也不引入 panic 点。
+                    let app = app.into_make_service_with_connect_info::<std::net::SocketAddr>();
                     let served = axum::serve(listener, app)
                         .with_graceful_shutdown(async move {
                             // `watch` 是**有状态**的: 即使 stop 发生在服务还没开始等之前,
@@ -639,6 +669,135 @@ fn local_ipv4() -> Option<String> {
     Some(s.local_addr().ok()?.ip().to_string())
 }
 
+// ── M4′ Task 1 · 配对二维码(桌面端生成) ──────────────────────────────────────
+//
+// 为什么要有它: 配对码是 64 位十六进制, 手输不现实, 而"手机 × 电脑"之间没有复制粘贴。
+// 二维码是唯一顺手的通道(规格 §4.2 第 3 条)。
+//
+// ── 为什么是 SVG 而不是 PNG(这是与"随便挑一种"不同的一处决定) ───────────────
+// 前端把它直接塞进 DOM 即可, 不必引 JS 二维码库、也不必把 PNG 放进 asset scope ——
+// 那条路径在本项目是**收紧为空**的(交接文档 §4.6), 为一张配对图去放宽它等于为了省几行
+// 前端代码去动一条安全边界。
+//
+// ── 没有私有地址时怎么办(**这是一个明确决定, 不是遗漏**) ─────────────────────
+// [`pairing_of`] 返回 `None` —— **不生成二维码**。既不回落到公网地址, 也不回落到
+// `127.0.0.1`(那是 `primary_url` 的兜底, 只用于在桌面上显示一个"能自测"的地址):
+//   · 二维码里装一个公网地址 = 把手机的请求指向门外, 而本设计明确不做公网暴露(§4.3);
+//   · 装 `127.0.0.1` 更糟 —— 手机扫到之后连的是**手机自己**, 用户得到的是一句莫名其妙的
+//     "连接被拒绝", 而真正的原因是电脑此刻没有局域网地址。这类"看起来能用、其实指向别处"
+//     的配对信息正是本项目一直在消灭的东西。
+// 于是: 面板上**没有二维码**, 同时把原因说出来(局域网列表本来就空 → `server.lanEmpty`;
+// 有地址但还没有配对码 → `server.qrNoToken`)。文本形式的地址与配对码**照旧全部保留**
+// (M4′ Task 1 Step 2: 扫码是增强, 手输是退路)。
+
+/// 二维码里装的那段 JSON。**手机扫到的就是这一个字符串** —— 桌面端与手机端共用它,
+/// 所以它只有这一处构造(`pairing_of` 连 SVG 带 JSON 一起交出去, 不各写一份)。
+///
+/// 形状是 M4′ Task 1 定的 `{"url":"http://…","token":"…"}`(手机端 `PairingPayload` 两个字段
+/// 都是必填)。键序无所谓: 手机用 kotlinx.serialization 按字段名读, 不依赖顺序。
+pub fn pairing_payload(url: &str, token: &str) -> String {
+    json!({ "url": url, "token": token }).to_string()
+}
+
+/// 把任意一段文本编成二维码 SVG。**失败只回 `Err`**(不 panic) —— 这条函数在"打开设置面板"
+/// 那条路上可达, 而那条路不许把桌面端弄出任何异常。
+///
+/// `min_dimensions` 给一个下限(而不是固定尺寸): 短内容不会被放大成一堆马赛克, 长内容也能
+/// 保证扫码距离。颜色写死黑白 —— 二维码的对比度是它的**功能**, 不该跟着主题走。
+///
+/// 出来的字符串**以 `<svg` 开头**(见 [`strip_xml_prolog`])。
+fn qr_svg_of(text: &str) -> Result<String, String> {
+    let code = qrcode::QrCode::new(text.as_bytes()).map_err(|e| e.to_string())?;
+    let svg = code
+        .render::<qrcode::render::svg::Color>()
+        .min_dimensions(220, 220)
+        // 静区(quiet zone): 二维码规范要求四周留白, 少一圈白边扫码率会明显下降 —— 而这
+        // 张图是给**另一台设备的摄像头**看的, 不是给人看的。默认是关的, 必须显式打开。
+        .quiet_zone(true)
+        .dark_color(qrcode::render::svg::Color("#000000"))
+        .light_color(qrcode::render::svg::Color("#ffffff"))
+        .build();
+    Ok(strip_xml_prolog(&svg))
+}
+
+/// 去掉开头那句 `<?xml version="1.0" standalone="yes"?>`。
+///
+/// 为什么值得单独一步(qrcode 0.14 的 SVG 渲染器确实会带上它): 这段字符串的归宿是
+/// `dangerouslySetInnerHTML`(**M4′ Task 1 选 SVG 就是为了这个**), 而 HTML 解析器把
+/// `<?xml …?>` 当成一个 **bogus comment**, 于是面板那格子里会多出一个注释节点。更要紧的是
+/// 这条功能的契约本来就是"返回 `<svg …</svg>`"(见 `pairing_qr_svg`), 带着一段 XML 声明
+/// 出去会让每个调用方都得自己再剥一次。
+///
+/// 找不到 `?>` 时**原样返回**: 宁可多一句声明, 也不许把图切坏(这条函数在"打开设置面板"
+/// 那条路上可达, 不许 panic —— 所以这里没有 `unwrap`/切片越界)。
+fn strip_xml_prolog(svg: &str) -> String {
+    if let Some(rest) = svg.strip_prefix("<?xml") {
+        if let Some(end) = rest.find("?>") {
+            return rest[end + 2..].trim_start().to_string();
+        }
+    }
+    svg.to_string()
+}
+
+/// 把"地址 + 配对码"编成二维码 SVG。**M4′ Task 1 Step 1 点名的那条接口, 逐字保留。**
+pub fn pairing_qr_svg(url: &str, token: &str) -> Result<String, String> {
+    qr_svg_of(&pairing_payload(url, token))
+}
+
+/// 设置面板要的那一份。三个字段都是**同一段内容**的三种呈现, 一起交出去是为了让
+/// "二维码里到底装了什么"可被测试直接断言(`payload` 就是喂给编码器的那个字节串)。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PairingQr {
+    /// `<svg …></svg>` 源码, 前端直接塞进 DOM。
+    pub svg: String,
+    /// 二维码里装的地址(`http://<私有地址>:<端口>`)。
+    pub url: String,
+    /// 二维码里装的那段 JSON —— 与 `svg` 逐字同源, 面板不用它, 但协议测试用它。
+    pub payload: String,
+}
+
+/// 从一份网络探测快照挑一个地址, 生成二维码。**没有可用的私有地址、或 token 不可用 = `None`**
+/// (见上面"没有私有地址时怎么办")。
+///
+/// 抽成纯函数(不碰 OS、不碰配置)是刻意的: "该给哪个地址"与"什么时候不该给二维码"是这条功能里
+/// **唯二**值得争论的规则, 而纯函数才能用假数据把两种现场都真的跑一遍。
+pub fn pairing_of(hints: &network::NetHints, port: u16, token: &str) -> Option<PairingQr> {
+    // ① token 不可用就没有二维码。编出来的一定配不上对(鉴权层面对空/坏 token 一律 401) ——
+    //    那正是"看起来能用、实际用不了"的假。真实可达: 配置里 token 为空(默认配置), 或
+    //    手改配置把它改坏了。
+    if !config::token_is_valid(token) {
+        return None;
+    }
+    // ② 地址必须**真的是私有网段**。这里用 `network::is_private_v4` 再判一次, 而不是"相信
+    //    `hints.lan` 的构造": 二维码是用户唯一会照着扫的东西, 它装进一个公网地址就等于把手机
+    //    指向门外(规格 §4.2: 候选里绝不出现公网地址)。判一次的成本是几个字节比较。
+    let address = hints.lan.iter().find_map(|l| {
+        let a = l.address.trim();
+        match a.parse::<std::net::Ipv4Addr>() {
+            Ok(ip) if network::is_private_v4(ip) => Some(a.to_string()),
+            _ => None,
+        }
+    })?;
+    let url = format!("http://{}:{}", address, port);
+    let payload = pairing_payload(&url, token);
+    // 编码失败(理论上到不了)也只当"这次没有二维码", 绝不让面板打开这件事失败。
+    let svg = qr_svg_of(&payload).ok()?;
+    Some(PairingQr { svg, url, payload })
+}
+
+/// Tauri 命令用的那一版: 端口取与 [`ServerStatus::port`] **同一个口径**(在跑的端口优先,
+/// 没在跑时用配置里那个), token 取配置里那一枚。
+///
+/// **先拿端口、再读配置**是刻意的: `start` 那条路上有一段是"持 `LIFECYCLE` 时读配置"
+/// (`wants_start`), 这里反过来"持配置读锁时拿 `LIFECYCLE`"就会凑成一对 ABBA 死锁。
+/// 锁序与 `start` 保持一致。
+pub fn pairing_qr(st: &ServerState, hints: &network::NetHints) -> Option<PairingQr> {
+    let port = running_port();
+    let cfg = st.config.read().ok()?;
+    pairing_of(hints, port.unwrap_or(cfg.port), &cfg.token)
+}
+
 /// 桌面端的 app 数据目录(`server-config.json` 就落在这儿)。
 pub fn app_data_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     use tauri::Manager as _;
@@ -669,20 +828,28 @@ pub struct ChangedFields {
     pub enabled: bool,
     pub token: bool,
     pub shares: bool,
+    /// M4′ Task 3: `set_server_read_only` 改过的字段。
+    pub read_only: bool,
 }
 
 impl ChangedFields {
     /// 开关命令改过的字段: `enabled` 一定算; token 只在这次**真的**换了一枚时才算
     /// (没换却撤 token, 会把并发换上的那枚抹掉)。
     pub fn switch(token_replaced: bool) -> Self {
-        Self { enabled: true, token: token_replaced, shares: false }
+        Self { enabled: true, token: token_replaced, shares: false, read_only: false }
     }
 
     /// `rotate_server_token` 改过的字段。
-    pub const TOKEN: Self = Self { enabled: false, token: true, shares: false };
+    pub const TOKEN: Self =
+        Self { enabled: false, token: true, shares: false, read_only: false };
 
     /// `add_share` / `remove_share` 改过的字段。
-    pub const SHARES: Self = Self { enabled: false, token: false, shares: true };
+    pub const SHARES: Self =
+        Self { enabled: false, token: false, shares: true, read_only: false };
+
+    /// `set_server_read_only` 改过的字段(M4′ Task 3)。
+    pub const READ_ONLY: Self =
+        Self { enabled: false, token: false, shares: false, read_only: true };
 }
 
 /// 落盘; **失败就按盘对齐**(`changed` 里的字段)并回一句给用户看的理由。
@@ -757,6 +924,7 @@ pub fn status_of_state(st: &ServerState) -> Result<ServerStatus, String> {
         enabled: cfg.enabled,
         last_error: last_start_error(),
         public_ack_at: public_ack_at(),
+        read_only: cfg.read_only,
     })
 }
 
@@ -978,6 +1146,28 @@ pub async fn remove_share(
     share_strings(st)
 }
 
+/// **开/关只读模式**(M4′ Task 3)。只改配置里的 `read_only` 并落盘 —— **不**碰服务生命周期:
+/// 只读是一条"这条路此刻怎么走"的规则, 由路由中间件在**每一次请求**上现读配置(`routes.rs`
+/// 的 `refuse_writes_in_read_only`), 所以开与关都是**立刻生效、不用重启服务**的。这也是它
+/// 不在这里 `stop()`/`start()` 的理由: 为了一个拦截规则去重启监听, 会让正在下载缩略图的手机
+/// 无谓地断一次线。
+///
+/// 落盘失败时按盘对齐(`persist_or_realign`): 与另外四条会写配置的命令同一条纪律 ——
+/// 否则面板显示"已开只读"、重启后却是可写, 用户会以为那条开关是坏的。
+pub async fn set_read_only(
+    st: &ServerState,
+    app_data_dir: &Path,
+    read_only: bool,
+) -> Result<ServerStatus, String> {
+    // 整条命令串行(见 `CONFIG_WRITE_LOCK`): "读盘对齐"必须与其它写者互斥。
+    // 临界区里**没有 `await`** —— 这条函数只做一次内存写与一次文件写。
+    let _serialized = CONFIG_WRITE_LOCK.lock().await;
+
+    st.config.write().map_err(|e| e.to_string())?.read_only = read_only;
+    persist_or_realign(st, app_data_dir, ChangedFields::READ_ONLY, "只读模式")?;
+    status_of_state(st)
+}
+
 /// 读内存里的开关。**读不到(锁中毒)或 false**。
 ///
 /// 现在的用途只有一个: 落盘失败之后**给界面拼那句理由**(`persist_failure_reason`) —— 那时
@@ -1024,6 +1214,9 @@ fn realign_from_disk(st: &ServerState, app_data_dir: &Path, changed: ChangedFiel
     }
     if changed.shares {
         cfg.shares = disk.shares;
+    }
+    if changed.read_only {
+        cfg.read_only = disk.read_only;
     }
 }
 
@@ -1249,6 +1442,7 @@ mod tests {
     async fn ping_returns_product_and_version_without_token() {
         let app = routes::router(
             config::ServerConfig {
+                read_only: false,
                 enabled: true,
                 port: 0,
                 token: "t".repeat(64),
@@ -1356,6 +1550,7 @@ mod tests {
         let _serialized = GLOBAL_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let dir = tmp_dir("rng_fail");
         let st = config::ServerConfig {
+            read_only: false,
             enabled: true,
             port: config::DEFAULT_PORT,
             token: String::new(), // Default 不再生成 token, 所以这是真实可达的状态
@@ -1386,6 +1581,7 @@ mod tests {
         reset_server_state();
         for bad in ["", "abc", &"z".repeat(64)] {
             let st = config::ServerConfig {
+                read_only: false,
                 enabled: true,
                 // 0 会让绑定走到系统分配的临时端口上 —— 也就是说: 如果 fail-closed 那一行
                 // 被删掉, 这台服务**真的会起起来**(于是这条测试红得有意义), 而不是
@@ -1436,6 +1632,7 @@ mod tests {
         let base = base.expect("找不到 20 个连续空闲端口 —— 测试机器太挤了");
 
         let st = config::ServerConfig {
+            read_only: false,
             enabled: true,
             port: base,
             token: "d".repeat(64),
@@ -1486,6 +1683,7 @@ mod tests {
         reset_server_state();
         let token = "e".repeat(64);
         let st = config::ServerConfig {
+            read_only: false,
             enabled: true,
             // 挑一个不常见的基端口; 真被占了 start 会自己 +1, 测试用的仍是返回值。
             port: 28_876,
@@ -1637,6 +1835,7 @@ mod tests {
         std::fs::create_dir_all(&dir).expect("建临时目录");
 
         let st = config::ServerConfig {
+            read_only: false,
             enabled: true,
             port: 29_876,
             token: "c".repeat(64),
@@ -1701,6 +1900,7 @@ mod tests {
         std::fs::create_dir(dir.join(config::CONFIG_FILE)).expect("把配置文件名占成目录");
 
         let st = config::ServerConfig {
+            read_only: false,
             enabled: false,
             port: config::DEFAULT_PORT,
             token: "b".repeat(64), // token 已可用 → `token_ready_in_memory` 不换 token
@@ -1752,6 +1952,7 @@ mod tests {
 
         // "首次开启"的真实起点: 开关关着, token 还没有(空 token 是 fail-closed 的状态)。
         let st = config::ServerConfig {
+            read_only: false,
             enabled: false,
             port: 0,
             token: String::new(),
@@ -1811,6 +2012,7 @@ mod tests {
 
         // 盘上先落一份 enabled=false 的配置, 内存也一致(用户此刻关着服务)。
         let st = config::ServerConfig {
+            read_only: false,
             enabled: false,
             port: 0,
             token: "9".repeat(64),
@@ -1887,6 +2089,7 @@ mod tests {
             std::fs::create_dir_all(&dir).expect("建临时目录");
             let old = "d".repeat(64);
             let st = config::ServerConfig {
+                read_only: false,
                 enabled: true,
                 port: 0,
                 token: old.clone(),
@@ -1917,6 +2120,7 @@ mod tests {
             std::fs::create_dir_all(&old_share).expect("建旧共享根");
             std::fs::create_dir_all(&new_share).expect("建新共享根");
             let st = config::ServerConfig {
+                read_only: false,
                 enabled: true,
                 port: 0,
                 token: "5".repeat(64),
@@ -1950,6 +2154,7 @@ mod tests {
             std::fs::create_dir_all(&a).expect("建共享根 a");
             std::fs::create_dir_all(&b).expect("建共享根 b");
             let st = config::ServerConfig {
+                read_only: false,
                 enabled: true,
                 port: 0,
                 token: "6".repeat(64),
@@ -1999,6 +2204,7 @@ mod tests {
         let share_dir = dir.join("photos");
         std::fs::create_dir_all(&share_dir).expect("建共享根");
         let st = config::ServerConfig {
+            read_only: false,
             enabled: false,
             port: 0,
             token: "3".repeat(64),
@@ -2071,6 +2277,7 @@ mod tests {
         std::fs::create_dir_all(&dir).expect("建临时目录");
 
         let st = config::ServerConfig {
+            read_only: false,
             enabled: false,
             port: 0,
             token: "4".repeat(64),
@@ -2148,6 +2355,7 @@ mod tests {
             .expect("找不到 20 个连续空闲端口 —— 测试机器太挤了");
 
         let st = config::ServerConfig {
+            read_only: false,
             enabled: true, // 这一条只打 start/stop 的交错: 开关始终"要着", 别让其它机制替它兜底
             port: base,
             token: "7".repeat(64),
@@ -2242,6 +2450,7 @@ mod tests {
         std::fs::create_dir_all(&dir).expect("建临时目录");
 
         let st = config::ServerConfig {
+            read_only: false,
             enabled: false,
             // 挑一个不常见的基端口: 被占了 start 会自己 +1, 断言用的始终是返回值。
             port: 31_876,
@@ -2349,6 +2558,7 @@ mod tests {
         let mut open_at_return = 0u32; // `stop()` 刚返回时探针仍连得上的轮次 = 窗口的**证据**
         for round in 0..ROUNDS {
             let st = config::ServerConfig {
+                read_only: false,
                 enabled: true,
                 // **固定端口**: 不能让系统从动态端口段里挑 —— 那个端口被关掉之后又空了出来,
                 // 而探针自己的出向连接**也可能**被系统分配到同一个端口上(自己连上自己),
@@ -2396,6 +2606,7 @@ mod tests {
         let _serialized = GLOBAL_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         reset_server_state();
         let st = config::ServerConfig {
+            read_only: false,
             enabled: true,
             port: 0,
             token: String::new(), // token 不可用 → start 拒绝并记下理由
@@ -2425,6 +2636,7 @@ mod tests {
         let _serialized = GLOBAL_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         reset_server_state();
         let st = config::ServerConfig {
+            read_only: false,
             enabled: true,
             port: 0,
             token: "6".repeat(64),
@@ -2451,6 +2663,7 @@ mod tests {
             enabled: false,
             last_error: None,
             public_ack_at: None,
+            read_only: false,
         })
         .unwrap();
         assert_eq!(v["running"], false);
@@ -2461,6 +2674,7 @@ mod tests {
         assert_eq!(v["enabled"], false);
         assert!(v["lastError"].is_null());
         assert!(v["publicAckAt"].is_null(), "确认记录也要用 camelCase 出去");
+        assert_eq!(v["readOnly"], false, "只读模式也要用 camelCase 出去");
         assert!(v.get("last_error").is_none(), "字段名必须是 camelCase");
     }
 
@@ -2510,6 +2724,7 @@ mod tests {
         seams::set_hints_override(public_hints());
         let dir = tmp_dir("guard_boot");
         let st = config::ServerConfig {
+            read_only: false,
             enabled: true,
             port: 0,
             token: "7".repeat(64), // token 是好的 → 唯一的拦路者只能是那道防护
@@ -2542,6 +2757,7 @@ mod tests {
         seams::set_hints_override(private_hints());
         let dir = tmp_dir("guard_boot_private");
         let st = config::ServerConfig {
+            read_only: false,
             enabled: true,
             port: 0,
             token: "8".repeat(64),
@@ -2574,6 +2790,7 @@ mod tests {
         seams::set_hints_override(public_hints());
         let dir = tmp_dir("guard_switch");
         let st = config::ServerConfig {
+            read_only: false,
             enabled: false,
             port: 0,
             token: "9".repeat(64),
@@ -2618,6 +2835,7 @@ mod tests {
         seams::set_hints_override(private_hints());
         let dir = tmp_dir("guard_switch_private");
         let st = config::ServerConfig {
+            read_only: false,
             enabled: false,
             port: 0,
             token: "a".repeat(64),
@@ -2646,6 +2864,7 @@ mod tests {
         });
         let dir = tmp_dir("guard_degraded");
         let st = config::ServerConfig {
+            read_only: false,
             enabled: false,
             port: 0,
             token: "b".repeat(64),
@@ -2680,6 +2899,7 @@ mod tests {
         });
         let dir = tmp_dir("guard_unknown_no_public");
         let st = config::ServerConfig {
+            read_only: false,
             enabled: false,
             port: 0,
             token: "c".repeat(64),
@@ -2719,6 +2939,7 @@ mod tests {
         });
         let dir = tmp_dir("guard_unknown_boot");
         let st = config::ServerConfig {
+            read_only: false,
             enabled: true,
             port: 0,
             token: "d".repeat(64), // token 是好的 → 唯一的拦路者只能是那道防护
@@ -2756,6 +2977,7 @@ mod tests {
         let dir = tmp_dir("guard_switch_between");
         std::fs::create_dir_all(&dir).expect("建临时目录");
         let st = config::ServerConfig {
+            read_only: false,
             enabled: false,
             port: 0,
             token: "e".repeat(64),
@@ -2791,5 +3013,202 @@ mod tests {
         assert!(primary_url(8765).ends_with(":8765"));
         assert!(primary_url(8765).starts_with("http://"));
         assert!(local_ipv4().map(|ip| !ip.is_empty()).unwrap_or(true));
+    }
+
+    // ════════════════════════════════════════════════════════════════════════
+    // M4′ Task 1 · 配对二维码
+    //
+    // 这一批只钉一件事: **二维码里到底装了什么**。它是用户唯一会照着扫的东西, 装错地址的
+    // 后果是"手机连到门外"或"连到手机自己" —— 两者都比"没有二维码"难查得多。
+    // ════════════════════════════════════════════════════════════════════════
+
+    /// M4′ Task 1 Step 1 的原话: 以 `<svg` 开头、含 `</svg>`; **同一输入两次结果相同**。
+    ///
+    /// 最后那句 `assert_ne!` 不是装饰: 少了它, 一个"永远返回同一张固定图"的实现也能让前三条
+    /// 全绿 —— 也就是说"确定"这条断言会因为**内容根本没被编进去**而通过。
+    #[test]
+    fn pairing_qr_svg_is_deterministic_and_is_an_svg() {
+        let token = "a".repeat(64);
+        let a = pairing_qr_svg("http://192.168.1.7:8765", &token).expect("编码");
+        let b = pairing_qr_svg("http://192.168.1.7:8765", &token).expect("编码");
+        assert!(a.starts_with("<svg"), "必须是 SVG 源码: {}", &a[..a.len().min(60)]);
+        assert!(a.contains("</svg>"), "必须是一个完整的 svg 元素");
+        // XML 声明必须已经剥掉: 留在开头会让 `dangerouslySetInnerHTML` 多出一个注释节点,
+        // 而且这条接口的契约就是"以 `<svg` 开头"(见 `strip_xml_prolog`)。
+        assert!(!a.contains("<?xml"), "开头的 XML 声明应当已被剥掉");
+        assert_eq!(a, b, "同一输入必须给出同一张图(二维码是确定的)");
+
+        // ── 它必须真的**画了东西**, 不是一具空壳 ──────────────────────────────
+        // 这一组挡的是"SVG 被切坏了却仍然以 `<svg` 开头/以 `</svg>` 结尾"这类残缺:
+        //   · `viewBox` 是前端那个 `w-full h-auto` 等比缩放所依赖的东西;
+        //   · 黑/白两色都在 —— 二维码的对比度是它的**功能**, 丢了色就扫不出来;
+        //   · `M…h…v…H…V` 是 `qrcode` 画**每一个黑模块**用的子路径, 所以 `M` 的个数
+        //     = 黑模块数(一个真二维码有几百个)。少于 100 个说明图是空的或被截断了。
+        assert!(a.contains("viewBox="), "SVG 必须带 viewBox(前端按它等比缩放)");
+        assert!(
+            a.contains("#ffffff") && a.contains("#000000"),
+            "必须同时有白底与黑模块(对比度就是这张图的功能)"
+        );
+        let modules = a.matches('M').count();
+        assert!(modules > 100, "只数到 {modules} 个黑模块 —— 这张图是空的或残缺的");
+
+        let c = pairing_qr_svg("http://192.168.1.7:8766", &token).expect("编码");
+        assert_ne!(a, c, "端口变了图就必须跟着变 —— 否则上面那条'确定'是假的");
+        let d = pairing_qr_svg("http://192.168.1.7:8765", &"b".repeat(64)).expect("编码");
+        assert_ne!(a, d, "配对码变了图也必须跟着变");
+    }
+
+    /// 二维码里装的那段 JSON 的形状(M4′ Task 1 定的 `{"url":…,"token":…}`, 两个字段都必填)。
+    #[test]
+    fn pairing_payload_is_the_documented_json_shape() {
+        let token = "b".repeat(64);
+        let payload = pairing_payload("http://192.168.1.7:8765", &token);
+        let v: serde_json::Value = serde_json::from_str(&payload).expect("必须是 JSON");
+        assert_eq!(v["url"], "http://192.168.1.7:8765");
+        assert_eq!(v["token"], token);
+        assert_eq!(v.as_object().map(|o| o.len()), Some(2), "只有这两个字段: {payload}");
+    }
+
+    /// **面板要的那一份**: 地址必须是私有网段、配对码一并带上, 而且三段内容同源。
+    ///
+    /// `assert_eq!(qr.payload, pairing_payload(&qr.url, &token))` 是关键的一条 —— 它把
+    /// "我们报出来的 payload"与"喂给编码器的那段内容"钉成同一个值, 所以下面那些对
+    /// `payload` 的断言才真的是在说**二维码里的内容**, 而不是"我们打算装什么"。
+    #[test]
+    fn pairing_qr_carries_a_private_address_and_the_token() {
+        let token = "c".repeat(64);
+        let qr = pairing_of(&public_hints(), 8765, &token).expect("有私有地址就该有二维码");
+
+        assert_eq!(qr.payload, pairing_payload(&qr.url, &token), "报出来的就是编进去的那段");
+        assert!(qr.svg.starts_with("<svg") && qr.svg.contains("</svg>"));
+
+        let v: serde_json::Value = serde_json::from_str(&qr.payload).expect("payload 是 JSON");
+        let url = v["url"].as_str().expect("url 是字符串");
+        assert_eq!(url, "http://192.168.3.10:8765", "地址 + **端口**都要在里面");
+        assert_eq!(v["token"], token, "配对码必须在二维码里(否则扫了也配不上对)");
+
+        // 地址那一节必须是**私有网段**(规格 §4.2: 候选里绝不出现公网地址)。
+        let host = url.trim_start_matches("http://");
+        let host = host.split(':').next().unwrap_or("");
+        let ip: std::net::Ipv4Addr = host.parse().expect("主机必须是点分十进制 IPv4");
+        assert!(network::is_private_v4(ip), "二维码里只许装私有网段地址: {url}");
+
+        // 端口用的是**调用方给的那个**, 不是写死的默认值(`ServerStatus.port` 会跟着走)。
+        let other = pairing_of(&public_hints(), 9999, &token).expect("同一条地址换端口");
+        assert!(other.url.ends_with(":9999"), "端口必须来自状态: {}", other.url);
+        assert_ne!(other.svg, qr.svg, "端口不同 → 图也不同");
+    }
+
+    /// **没有私有地址就不生成二维码**, 而且**绝不**回落到公网地址或 `127.0.0.1`
+    /// (决定与理由见 `pairing_of` 上方那段"没有私有地址时怎么办")。
+    ///
+    /// 四个现场: ①一个候选都没有; ②候选里**先**出现一条公网地址(守"别处放松了 `lan` 的
+    /// 构造"这一整类情况 —— 一个只看 `lan[0]` 的实现会在这里把公网地址编进去); ③整份都没有
+    /// 私有地址; ④token 不可用(编出来也一定配不上对)。
+    #[test]
+    fn pairing_qr_is_not_produced_without_a_private_address() {
+        let token = "d".repeat(64);
+
+        // ① 没有候选地址(电脑没连 WiFi/有线): 没有二维码, 也就没有'手机连到手机自己'这种事。
+        let mut no_lan = public_hints();
+        no_lan.lan.clear();
+        assert_eq!(pairing_of(&no_lan, 8765, &token), None, "没有候选地址就不该有二维码");
+
+        // ② 第一条是公网地址: 必须**跳过**它去取后面那条私有的。
+        let mut mixed = public_hints();
+        mixed.lan = vec![
+            network::LanAddress { address: "203.0.113.9".into(), interface: "以太网".into() },
+            network::LanAddress { address: "10.1.2.3".into(), interface: "WLAN".into() },
+        ];
+        let picked = pairing_of(&mixed, 8765, &token).expect("后面那条是私有的, 应当被选中");
+        assert!(picked.url.contains("10.1.2.3"), "应当取私有的那条: {}", picked.url);
+        assert!(!picked.url.contains("203.0.113.9"), "公网地址不许进二维码: {}", picked.url);
+
+        // ③ 整份都没有私有地址(公网 + 回环): 一张图都不给。回环尤其不许兜底 ——
+        //    手机扫到 127.0.0.1 连的是**它自己**, 用户只会得到一句莫名其妙的"连接被拒绝"。
+        let mut only_public = public_hints();
+        only_public.lan = vec![
+            network::LanAddress { address: "203.0.113.9".into(), interface: "以太网".into() },
+            network::LanAddress { address: "127.0.0.1".into(), interface: "回环".into() },
+        ];
+        assert_eq!(
+            pairing_of(&only_public, 8765, &token),
+            None,
+            "公网/回环地址绝不许进二维码(会把手机指向门外或指向它自己)"
+        );
+
+        // ④ token 不可用: 空串 与 长度对但非十六进制, 两种都一定 401, 所以宁可不给图。
+        assert_eq!(pairing_of(&public_hints(), 8765, ""), None, "空 token 不该出二维码");
+        assert_eq!(
+            pairing_of(&public_hints(), 8765, &"z".repeat(64)),
+            None,
+            "非十六进制 token 不该出二维码"
+        );
+
+        // 对照: 同一份 hints 换一个**可用**的 token 就有图 —— 证明上面四条不是"一律 None"。
+        assert!(pairing_of(&public_hints(), 8765, &token).is_some());
+    }
+
+    /// `pairing_qr`(命令用那一版)取的是**状态里那个端口与 token**, 不是别的。
+    ///
+    /// 端口这一条特意用一个**非默认**端口: 配置里写 8123, 状态与二维码都必须是 8123 ——
+    /// 一个写死 `DEFAULT_PORT` 的实现会在这里红。
+    #[test]
+    fn pairing_qr_reads_the_port_and_token_from_the_state() {
+        let token = "e".repeat(64);
+        let st = config::ServerConfig {
+            read_only: false,
+            enabled: false,
+            port: 8123,
+            token: token.clone(),
+            shares: Vec::new(),
+        }
+        .into_state();
+
+        let qr = pairing_qr(&st, &public_hints()).expect("配置里有可用的 token 与私有地址");
+        assert!(qr.url.ends_with(":8123"), "端口必须来自配置: {}", qr.url);
+        assert!(qr.payload.contains(&token));
+
+        // 配置里 token 不可用(空 = 全新的默认配置, 是**真实可达**的状态) → 没有二维码。
+        let empty = config::ServerConfig { token: String::new(), ..Default::default() }.into_state();
+        assert_eq!(pairing_qr(&empty, &public_hints()), None);
+    }
+
+    // ════════════════════════════════════════════════════════════════════════
+    // M4′ Task 3 · 只读模式(配置侧)
+    //
+    // 拦截行为本身是**路由层**的事, 用例在 `routes.rs` 与 `tests/server_contract.rs`
+    // (要打真请求才证得了)。这里只钉配置这一半: 开关真的落盘、状态如实报出来。
+    // ════════════════════════════════════════════════════════════════════════
+
+    /// 开/关只读 → 内存与**盘上**都变, 而且状态里报出来(面板那个开关看的就是它)。
+    ///
+    /// 变异靶子: 把 `set_read_only` 里那次 `persist_or_realign` 删掉(只改内存) →
+    /// "重启后仍是盘上那一份"那条断言当场红。
+    #[tokio::test]
+    async fn set_read_only_persists_and_is_reported_in_the_status() {
+        let _serialized = GLOBAL_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        reset_server_state();
+        let dir = tmp_dir("readonly_cfg");
+        std::fs::create_dir_all(&dir).expect("建临时目录");
+        let st = config::ServerConfig {
+            read_only: false,
+            enabled: false,
+            port: config::DEFAULT_PORT,
+            token: "f".repeat(64),
+            shares: Vec::new(),
+        }
+        .into_state();
+
+        let on = set_read_only(&st, &dir, true).await.expect("开启只读");
+        assert!(on.read_only, "状态必须如实报出只读已开");
+        assert!(
+            config::ServerConfig::load(&dir).read_only,
+            "必须落盘 —— 否则重启就悄悄变回可写, 而那正是'设置没保存'那类谎"
+        );
+
+        let off = set_read_only(&st, &dir, false).await.expect("关闭只读");
+        assert!(!off.read_only);
+        assert!(!config::ServerConfig::load(&dir).read_only, "关闭同样要落盘");
     }
 }

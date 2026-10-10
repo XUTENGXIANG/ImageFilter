@@ -434,6 +434,35 @@ export default {
     publicIpTitle: "Addresses outside your LAN detected",
     publicIpWarn: "{list} — these may be reachable from outside your LAN. This service is meant for the same WiFi only; make sure you really need it running.",
     profileUnknown: "The current network category cannot be read (Windows network list service unavailable, or no connected network). This is handled as untrusted: the service will not start until you confirm — not being able to read the category does not make the network trusted.",
+
+    // ── M4′ Task 1 · pairing QR code (generated on the desktop) ──
+    // Data comes from `get_server_pairing_qr` (PairingQr, camelCase); null = no QR code this time.
+    // The backend never falls back to a public address or 127.0.0.1 when there is no private
+    // address, so the reason must be spelled out here: an empty LAN list is explained by
+    // lanEmpty above, and only "address present, pairing code missing" lands on qrNoToken.
+    qrTitle: "Pairing QR code",
+    qrScanHint: "Scan this with ImageFilter on your phone — the address and pairing code fill themselves in.",
+    qrNoToken: "No pairing code yet — one is generated when you enable the service, and the QR code appears here right after.",
+    // Scanning is an enhancement, not the only path (M4′ Task 1 Step 4, item 3: refusing the
+    // camera permission must still allow pairing by hand).
+    qrFallback: "If scanning does not work, that is fine: type the LAN address and pairing code below by hand — it works exactly the same.",
+
+    // ── M4′ Task 3 · read-only mode ──
+    // On = every write endpoint answers 403 forbiddenPath (the existing code, not a new one);
+    // read endpoints keep working.
+    readOnly: "Read-only mode (phone can look, not change)",
+    readOnlyDesc: "When on, rating, changing labels and moving photos from the phone are refused by the PC; browsing and viewing full images are unaffected.",
+    readOnlyNote: "The phone shows “the PC does not allow this action”. After you turn this off, reconnect the phone and writing works again.",
+
+    // ── M4′ Task 3 · who is connecting ──
+    // Discipline: only what the HTTP layer really knows. Never invent a device name or location.
+    clientsTitle: "Recent connections (who is connecting)",
+    clientsRefresh: "Refresh",
+    clientsEmpty: "Nothing recorded yet — once the service is on, every phone request leaves a line here.",
+    clientsUnknownIp: "Source unknown",
+    clientsUnknownTime: "system clock unavailable",
+    clientsCount: "{recorded} in the buffer (keeps at most {capacity}); showing the latest {shown}",
+    clientsDesc: "This is a list of recent requests, not a list of online devices. An HTTP client never reports its own name or location, so all you get here is the source IP, the endpoint it requested and the time — a device name or a location simply cannot be read at this layer, and inventing one would only mislead. One phone may fill several lines, two devices may share one IP, and a phone's IP can change when it reconnects. To avoid leaking anything, the file paths carried in the query string are not recorded.",
   },
 
 };

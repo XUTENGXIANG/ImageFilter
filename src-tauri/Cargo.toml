@@ -25,6 +25,11 @@ serde_json = "1"
 axum = "0.8"
 getrandom = "0.2"
 
+# 配对二维码(M4′ Task 1): 只用来把"局域网地址 + 配对码"编成能被手机扫的图形, 不参与其它逻辑。
+# 默认 feature 里的 `image ^0.25` 与本仓库既有的 `image = "0.25"` 是同一个 semver 要求,
+# cargo 会合并到同一份 —— 所以它**没有**带进第二个 image 版本。
+qrcode = "0.14"
+
 # Image / photo processing
 rawler = "0.7"
 kamadak-exif = "0.5"
