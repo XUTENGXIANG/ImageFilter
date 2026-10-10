@@ -83,6 +83,22 @@ class ApiClient(
     private val root: HttpUrl =
         requireNotNull(baseUrl.trimEnd('/').toHttpUrlOrNull()) { "非法 baseUrl: $baseUrl" }
 
+    /**
+     * [ApiClient] **真正**用来发请求的那个 client。**测试可见**(`internal`)。
+     *
+     * 为什么必须能被断言, 而不是靠上面那句 KDoc: "Coil 与 ApiClient 共用同一个
+     * `OkHttpClient`"这条不变量原先只钉住了**两头** ——
+     *   ① 供给端: [SharedHttpClient.forToken] 会记忆(见 `SharedHttpClientTest`);
+     *   ② 请求端: 默认构造出来的请求**带** Bearer 头(见 `ApiClientTest`)。
+     * 中间那一步("默认的这个 client **就是**那一枚记忆实例")没有任何测试看得见 —— 实测把默认值
+     * 从 `SharedHttpClient.forToken(token)` 换成 [buildHttpClient]`(token)` (同样是"带 Bearer 的
+     * 新实例"), **169 条 Android 测试全绿**, 而生产上从此有两个连接池/线程池, 且 Coil 与 JSON
+     * 接口拿着两个不同的客户端 —— 正是 Task 2 要消灭的那种分裂。所以把它变成机器可查的:
+     * `SharedHttpClientTest.the_default_api_client_is_the_memoised_shared_client` 用 `assertSame`
+     * 钉住身份(同一个对象, 不是"配置相同")。
+     */
+    internal val httpClient: OkHttpClient get() = client
+
     private val jsonMediaType = "application/json".toMediaType()
 
     /** 端点路径常量: 拼错端点在编译期看不出来, 所以每条只写一次。 */

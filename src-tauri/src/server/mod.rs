@@ -414,8 +414,16 @@ fn current_hints() -> network::NetHints {
 
 /// **开启路径上的那道防护**。`Some(理由)` = 这一次不许开; `None` = 可以开。
 ///
+/// 判定本身在 `network::should_refuse_to_start`, 两条规则都是 fail-closed: `Public` 要确认,
+/// **读不出类别(`Unknown`)同样要确认** —— 只有**读到** `Private`/域才允许静默开启(见那里的
+/// Fix 1 说明: 共享 WiFi 发的通常就是私有租约, 所以"没有非局域网地址"证明不了可信)。
+///
 /// `confirm_public` 是**这一次**调用带来的用户确认(不是历史记录 —— 见 `public_ack_at`)。
 /// 它在用户确认后记一次 `PUBLIC_ACK`, 于是"这次开启有人确认过"进得了状态。
+///
+/// ⚠️ 会被调用**两次**(拿配置写锁之前一次, 落盘之后、`start` 之前再一次 —— minor ③):
+/// 第二次是为了让"落盘期间网络变了"漏不过去。两次都带同一个 `confirm_public`, 所以重复调用
+/// 只是把确认时刻更新到最近一次, 判定结果与记录语义都不变。
 ///
 /// 关闭路径**绝不**经过这里: 用户必须永远关得掉服务(与本模块其它纪律同源)。
 fn guard_refusal(confirm_public: bool) -> Option<String> {
@@ -786,10 +794,14 @@ pub fn status_of(app: &tauri::AppHandle, st: &ServerState) -> Result<ServerStatu
 ///     监听都没起 —— 顺序是"先落盘、后 start", 见下。
 ///
 /// ── M4′ Task 2: `confirm_public`(公用网络防护) ─────────────────────────────
-/// 开启之前先过 `guard_refusal`: 当前网络被 Windows 标为**公用**(`network::should_refuse_to_start`)
-/// 时, **没有 `confirm_public = true` 就直接 `Err` 返回, 一个字节都不动**(不写内存、不落盘、
-/// 不绑端口、不记 `enabled`)。理由同时被记进 `LAST_ERROR`, 于是界面看得见"为什么这次没开",
+/// 开启之前先过 `guard_refusal`: 当前网络被 Windows 标为**公用**, **或者类别根本读不出来**
+/// (`network::should_refuse_to_start` 的两条规则, 都是 fail-closed)时, **没有
+/// `confirm_public = true` 就直接 `Err` 返回, 一个字节都不动**(不写内存、不落盘、不绑端口、
+/// 不记 `enabled`)。理由同时被记进 `LAST_ERROR`, 于是界面看得见"为什么这次没开",
 /// 并给出一个二次确认入口。
+///
+/// 这道判定会被做**两次**(minor ③): 拿配置写锁之前一次(上面这段), 以及**落盘之后、`start`
+/// 之前**再一次 —— 后者是给"落盘期间用户换了 WiFi"那个窗口用的(见下面那一段的注释)。
 ///
 /// `confirm_public` 是**这一次调用**带来的用户确认(面板上那一下点击), 不是历史记录:
 /// `ServerStatus::public_ack_at` 只是**记录**(供界面显示"这次是有人确认过的"),
@@ -836,6 +848,24 @@ pub async fn set_enabled(
             let msg = persist_failure_reason(st, "服务未启动", e);
             record_start_error(msg.clone());
             return Err(msg);
+        }
+        // ── M4′ Task 2 · minor ③: **起监听之前再问一次网络** ─────────────────────
+        // 上面那一次判定发生在拿 `CONFIG_WRITE_LOCK` **之前**, 而落盘(dirs 创建 + 写文件 +
+        // 可能的杀软扫描)可能不是零耗时 —— 用户完全可能在这段时间里换到咖啡厅的 WiFi
+        // (或者 netprofm 在这段时间里被停掉)。类别是一次**快照**, 拿旧快照去开端口, 正是
+        // "WiFi 切换从缝里漏过去"。所以这里就地把判定重做一遍, 而且位置**紧贴** `start()`。
+        //
+        // 成本: `current_hints()` 会真的做一次网卡枚举 + 一次 NLM COM 查询(探针实测约 19 ms),
+        // 而且是**同步**的 —— 这一段没有 `await`, 所以它不会把锁交出去(CONFIG_WRITE_LOCK 不横跨
+        // await 是本模块的硬纪律); 代价是这条命令多花约 19 ms, 以及并发的 stop 最多被推迟同样
+        // 的时间。这个代价换的是"落盘期间换了网络也绝不会静默开起来", 值。
+        //
+        // 被拒时**不回滚盘上那一次写入**: 用户的"我要开服务"这个选择是真的(与下面 start 失败
+        // 那条路同一条纪律 —— ④ 失败时不回滚开关), 而"它会不会真的起来"由下一次判定说了算;
+        // 自动启动那条路自己也会过同一道闸(`boot_with`), 所以盘上写着"开"**不等于**会静默监听。
+        if let Some(reason) = guard_refusal(confirm_public) {
+            record_start_error(reason.clone());
+            return Err(reason);
         }
         match start(st.clone()).await {
             Ok(_) => status_of_state(st),
@@ -2437,7 +2467,8 @@ mod tests {
     // ── M4′ Task 2 · 公用网络防护 ───────────────────────────────────────────
     //
     // 这一批用例守的是规格 §4.3 的两条硬约束:
-    //   ① 当前网络被 Windows 标为**公用**时, 服务**不许自动启动**(`boot`);
+    //   ① 当前网络被 Windows 标为**公用**(或者类别**根本读不出来** —— Fix 1 之后这两档同级)
+    //      时, 服务**不许自动启动**(`boot`);
     //   ② 用户显式确认之后才允许开, 而且**这次确认要进状态**(不能静默放行)。
     //
     // 「公用网络」这个现场只能靠**注入探测结果**造出来: 本机的真实类别没法在测试里改
@@ -2601,8 +2632,8 @@ mod tests {
         set_enabled_on_tauri_runtime(&st, &dir, false, false).expect("关闭");
     }
 
-    /// **读不出类别时的退化判定**要走同一条闸: 有非局域网地址 → 拒绝(这是
-    /// `network::should_refuse_to_start` 的第二条规则, 这里钉住它真的接到了开关上)。
+    /// **读不出类别也要走同一道闸**(`network::should_refuse_to_start` 的第二条规则, 这里钉住它
+    /// 真的接到了开关上): 有非局域网地址 → 拒绝。
     #[tokio::test]
     async fn unknown_profile_with_a_public_address_also_refuses_the_switch() {
         let _serialized = GLOBAL_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -2627,6 +2658,131 @@ mod tests {
         assert!(err.contains("203.0.113.9"), "理由里要带上那个地址: {err}");
         assert_eq!(running_port(), None);
         assert!(!status_of_state(&st).unwrap().enabled);
+    }
+
+    /// **Fix 1 · 新规则: `Unknown` + 没有任何非局域网地址 —— 开关这条路也必须拒绝。**
+    ///
+    /// 这就是本轮要堵的 fail-open: 咖啡厅/办公室/酒店那类共享 WiFi 发的**通常就是私有租约**,
+    /// 所以 `public_ipv4` 为空根本不能证明这条网络可信; 而 netprofm 停掉/COM 不可用时, 类别
+    /// **恰恰**读不出来。旧规则下这个组合会被静默放行。
+    ///
+    /// 变异靶子: 把 `network::should_refuse_to_start` 的 `Unknown` 分支改回"只看有没有非局域网
+    /// 地址"(`Unknown if !h.public_ipv4.is_empty()`)→ 这里 `expect_err` 当场红(它会把服务开起来)。
+    #[tokio::test]
+    async fn unknown_profile_without_any_public_address_still_refuses_the_switch() {
+        let _serialized = GLOBAL_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        reset_server_state();
+        seams::set_hints_override(network::NetHints {
+            // **空的**: 面板上一条"不是局域网的地址"都没有 —— 旧规则就是在这里放行的。
+            public_ipv4: Vec::new(),
+            profile: network::NetworkProfile::Unknown,
+            ..private_hints()
+        });
+        let dir = tmp_dir("guard_unknown_no_public");
+        let st = config::ServerConfig {
+            enabled: false,
+            port: 0,
+            token: "c".repeat(64),
+            shares: Vec::new(),
+        }
+        .into_state();
+
+        let err = set_enabled_on_tauri_runtime(&st, &dir, true, false)
+            .expect_err("读不出类别时不许静默开启(即使没有任何非局域网地址)");
+        assert!(err.contains("读不到"), "理由要说清是「读不出来」: {err}");
+        assert_eq!(running_port(), None, "被拒的开启不许留下监听");
+        let refused = status_of_state(&st).unwrap();
+        assert!(!refused.enabled, "被拒的开启不许把开关留在'开'");
+        assert!(!dir.exists(), "被拒的开启不许落盘");
+        assert_eq!(refused.last_error.as_deref(), Some(err.as_str()));
+
+        // 用户显式确认之后**仍然能开**(fail-closed ≠ 永久锁死): 与 Public 那条同一条出路。
+        let started = set_enabled_on_tauri_runtime(&st, &dir, true, true)
+            .expect("显式确认之后应当能开");
+        assert!(started.enabled && started.running);
+        assert!(started.public_ack_at.is_some(), "这次确认必须进状态");
+        set_enabled_on_tauri_runtime(&st, &dir, false, false).expect("关闭");
+    }
+
+    /// **自动启动这条路也一样**: `Unknown` + 没有非局域网地址 → 不许自己起来。
+    ///
+    /// 这条比开关那条更贴近本轮的成因: 自动启动时**没有人**在场, "静默开在共享 WiFi 上"正是
+    /// 这道防护存在的全部理由。变异靶子同上。
+    #[tokio::test]
+    async fn unknown_profile_without_any_public_address_does_not_auto_start() {
+        let _serialized = GLOBAL_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        reset_server_state();
+        seams::set_hints_override(network::NetHints {
+            public_ipv4: Vec::new(),
+            profile: network::NetworkProfile::Unknown,
+            ..private_hints()
+        });
+        let dir = tmp_dir("guard_unknown_boot");
+        let st = config::ServerConfig {
+            enabled: true,
+            port: 0,
+            token: "d".repeat(64), // token 是好的 → 唯一的拦路者只能是那道防护
+            shares: Vec::new(),
+        }
+        .into_state();
+
+        let err = boot_with(st.clone(), &dir, || panic!("token 已经可用, 不该走生成这条路"))
+            .await
+            .expect_err("读不出类别时不许自动启动");
+        assert!(err.contains("读不到"), "理由要能读、且说清是哪一档: {err}");
+        assert_eq!(running_port(), None, "被拒的服务不许留下'在跑'的痕迹");
+        assert_eq!(
+            status_of_state(&st).unwrap().public_ack_at,
+            None,
+            "自动启动这条路没有人可以确认, 因此也不该有确认记录"
+        );
+    }
+
+    /// **minor ③: 落盘期间换了网络, 不许再凭旧快照把端口开起来。**
+    ///
+    /// 夹具用测试专用的"窗口"钩子 —— 它跑在 `write_enabled` 与 `persist_config` **之间**,
+    /// 也就是那道判定(**拿配置写锁之前**做的)与 `start()` 之间。钩子里把注入的快照从
+    /// `Private` 换成 `Public`, 模拟"用户在这段时间里走进了咖啡厅"。没有落盘之后那次复查的话,
+    /// 这一次开启会**绑定端口并开始监听** —— 而它凭的是一份已经过期的"专用网络"读数。
+    ///
+    /// 变异靶子: 删掉 `set_enabled` 里 `start` 之前那次 `guard_refusal` → `expect_err` 当场红,
+    /// 而且 `running_port()` 会留下 Some(真的监听起来了)。
+    #[tokio::test]
+    async fn a_network_switch_during_the_persist_step_cannot_slip_through() {
+        let _serialized = GLOBAL_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        reset_server_state();
+        // 进入时是"专用网络": 第一次判定放行, 于是才会走到落盘那一步。
+        seams::set_hints_override(private_hints());
+        let dir = tmp_dir("guard_switch_between");
+        std::fs::create_dir_all(&dir).expect("建临时目录");
+        let st = config::ServerConfig {
+            enabled: false,
+            port: 0,
+            token: "e".repeat(64),
+            shares: Vec::new(),
+        }
+        .into_state();
+
+        // 窗口 = "落盘这一步里, 机器换到了公用网络"(netprofm 也可以是在这里被停掉的)。
+        seams::set_window(Box::new(|_st: &ServerState, _dir: &Path| {
+            seams::set_hints_override(public_hints());
+        }));
+
+        let err = set_enabled_on_tauri_runtime(&st, &dir, true, false)
+            .expect_err("落盘期间换成公用网络之后不许再开起来");
+        assert!(err.contains("公用"), "理由要能读、且说清新的事实: {err}");
+        assert_eq!(
+            running_port(),
+            None,
+            "旧快照不许把端口开起来 —— 这条就是那次复查存在的理由"
+        );
+        assert!(
+            status_of_state(&st).unwrap().last_error.as_deref() == Some(err.as_str()),
+            "界面必须能拿到这句理由"
+        );
+        // 开关留在"开"是**有意的**(与 start 失败那条路同一条纪律: 用户的选择不回滚),
+        // 但盘上写着"开"并不等于会静默监听 —— 自动启动那条路自己也要过同一道闸。
+        assert!(status_of_state(&st).unwrap().enabled, "这次不滚回开关(用户确实点了开)");
     }
 
     /// `local_ipv4` 不许 panic(取不到就是 `None`, 由 `primary_url` 回落到 127.0.0.1)。

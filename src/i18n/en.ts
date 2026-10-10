@@ -429,11 +429,11 @@ export default {
     publicWarn: "“Public” means an untrusted network (a shared WiFi such as a café, office or hotel). Your pairing code travels as plain text there: any device on the same segment could sniff it and then read the folders you share.",
     publicOffer: "The safer move is to enable the service again from a trusted home WiFi.",
     publicConfirm: "I understand the risk — turn it on anyway",
-    publicAck: "You accepted the Public-network risk at {time} (this run only; you will be asked again after a restart)",
-    publicAckNoTime: "You accepted the Public-network risk for this run (system clock unavailable)",
+    publicAck: "You accepted the network-guard risk at {time} (this run only; you will be asked again after a restart)",
+    publicAckNoTime: "You accepted the network-guard risk for this run (system clock unavailable)",
     publicIpTitle: "Addresses outside your LAN detected",
     publicIpWarn: "{list} — these may be reachable from outside your LAN. This service is meant for the same WiFi only; make sure you really need it running.",
-    profileUnknown: "The current network category cannot be read (Windows network list service unavailable, or no connected network). When you enable the service the backend falls back to “is there an address outside your LAN?”, and may ask you to confirm first.",
+    profileUnknown: "The current network category cannot be read (Windows network list service unavailable, or no connected network). This is handled as untrusted: the service will not start until you confirm — not being able to read the category does not make the network trusted.",
   },
 
 };

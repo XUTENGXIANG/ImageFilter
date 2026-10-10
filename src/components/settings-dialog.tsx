@@ -102,6 +102,18 @@ interface NetHints {
 const FIREWALL_HINT_ALLOW_PRIVATE = "allowInboundPrivateProfile";
 
 /**
+ * 后端**网络防护的拒绝理由**里必定出现的一句(`network.rs::GUARD_REFUSAL_MARKER`)。
+ *
+ * 面板只有在探测快照拿不到(`hints === null`)时才用它: 那时 `profile` 无从得知, 但
+ * `lastError` 里装着后端那句拒绝 —— 认出来就必须把二次确认入口摆出来(minor ④), 否则后端会拒、
+ * 面板却没有按钮, 用户手上那个开关变成"点了就弹一句拒绝、怎么都开不起来"。
+ *
+ * 耦合方向是**单向可查的**: Rust 侧有一条测试钉住"两句拒绝理由都含这个标记"(改文案会红),
+ * 所以这里不会因为后端改了句子而悄悄失效。
+ */
+const GUARD_REFUSAL_MARKER = "确认要在";
+
+/**
  * 设置里的「图库服务」面板(Phase 8)。**全部长在设置对话框里** —— 不新增窗口、不动布局。
  *
  * 它只做四件事, 每件都对着一个用户真的会问的问题:
@@ -277,14 +289,28 @@ function ServerPanel({ open }: { open: boolean }) {
   /**
    * 什么时候显示"警告 + 二次确认入口": 当前网络**不是"专用"**那一档的时候。
    *   · `public` —— 后端一定会拒(网络被 Windows 标为公用);
-   *   · `unknown` —— 后端**可能**拒(退化判定: 读不出类别但本机有不是局域网的地址)。
+   *   · `unknown` —— 后端**也**一定会拒(Fix 1 之后: 读不出类别同样要求确认, fail-closed)。
    *
    * ⚠️ 这一条**不是**判定本身: 能不能开只由后端的 `network::should_refuse_to_start` 说了算。
    * 前端这一份最多让入口早显示或晚显示一会儿, **绝不会**让一次公用网络上的开启静默发生 ——
    * 那才是规格 §4.3 要的那条保证。反过来也成立: 这里少显示了一次, 用户点开关时后端仍会拒并
    * 把理由放进 `lastError`(下一块就会显示出来)。
+   *
+   * ── minor ④ · 快照拿不到时的兜底 ──────────────────────────────────────────
+   * `hints === null`(探测那一次 IPC 失败)时上面这条推出 `null` → 整块(含那个确认按钮)消失,
+   * 而后端照样会拒 —— 用户被卡在"开关点不动、也没有确认入口"。所以快照拿不到时改看**理由**:
+   * `lastError` 里装着那道防护的拒绝, 就按 `unknown` 渲染(标题那句"读不到当前网络的类别"
+   * 对"快照拿不到"这个现场也是实话; 究竟是公用还是读不出来, 上面那块 `lastError` 已经写明)。
+   * 快照**读到了**就以它为准 —— 那时理由可能是上一次动作留下的旧话, 不该拿它盖住新事实。
    */
-  const guardProfile = hints && hints.profile !== "private" ? hints.profile : null;
+  const guardRefusedByBackend = (status?.lastError ?? "").includes(GUARD_REFUSAL_MARKER);
+  const guardProfile: "public" | "unknown" | null = hints
+    ? hints.profile !== "private"
+      ? hints.profile
+      : null
+    : guardRefusedByBackend
+      ? "unknown"
+      : null;
 
   const firewallHintText =
     hints?.firewallHint === FIREWALL_HINT_ALLOW_PRIVATE
@@ -349,8 +375,10 @@ function ServerPanel({ open }: { open: boolean }) {
         />
       </div>
 
-      {/* ── M4′ Task 2 · 公用网络防护: 警告 + 二次确认 ──
+      {/* ── M4′ Task 2 · 网络防护: 警告 + 二次确认 ──
           「公用」正是"不可信局域网"那一档: 明文 HTTP 下配对码可能被同网段设备嗅探(规格 §4.3)。
+          「读不到类别」(unknown)在后端是**同一档严格程度**(Fix 1: 只有读到"专用"才允许静默
+          启动), 所以这里也只给标题 + 同一个确认入口 —— 两档都靠 `guardProfile` 驱动, 见上。
           确认**只对这一次开启有效** —— 它由后端记进状态(`publicAckAt`), 重启后重新问一次。 */}
       {guardProfile !== null && (
         <div className="rounded-md border border-amber-500/50 bg-amber-500/10 px-2 py-1.5 text-xs text-muted-foreground space-y-1">

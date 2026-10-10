@@ -31,10 +31,15 @@
 //! `Win32_NetworkManagement_Ndis` + `Win32_Networking_WinSock`) —— 同一个 crate 的 feature,
 //! 不是新依赖。所以**没有退化**: 类别是真的读出来的。
 //!
-//! 只有"读不出来"这一种情况才退化, 而且退化的定义写在 `should_refuse_to_start` 上:
-//! 类别是 `Unknown` 时, 拿"本机是否有非局域网的 IPv4"这**一个**信号来兜(fail-closed)。
-//! 退化发生在 COM 不可用/查询失败/机器一张网卡都没连 —— 那几种情况下我们确实没有"类别"这个
-//! 事实, 而"有没有一条不是局域网的路径"仍然问得出来。
+//! 只有"读不出来"这一种情况才**没有"类别"这个事实** —— 而它的处理与"读到 Public"一样严:
+//! `Unknown`(COM 不可用 / 查询失败 / netprofm 被停 / 一张网卡都没连)时, `should_refuse_to_start`
+//! **同样要求用户显式确认**, 理由里说清是"读不到类别"。
+//!
+//! ⚠️ **这里曾经是 fail-open 的**(Fix 1, 本轮修复): 旧规则是"`Unknown` **且**本机有非局域网的
+//! IPv4 才拒绝"。但咖啡馆/办公室/酒店那类共享 WiFi 发的**通常就是私有租约**(10.x / 192.168.x),
+//! 所以"没有非局域网地址"根本不能证明这条网络可信 —— 于是"类别读不出来"这个组合(恰恰是
+//! netprofm 停掉/COM 不可用时会出现的那个组合)会被静默放行, 而在**自动启动**那条路上没有人
+//! 在场能看到警告。现在唯一的放行条件是**读到** `Private`(含域): 只有正面读数才算可信。
 //!
 //! ── 类别是"哪张网卡"的? (一个必须说清的语义) ────────────────────────────────
 //! NLM 的类别是**每个网络**的, 而一台机器可以同时连着好几个网络(有线+无线+虚拟网卡)。
@@ -53,16 +58,36 @@
 //!   但它同样意味着"这台机器上有一条不是局域网的访问路径", 值得让用户看见 —— 所以界面文案
 //!   说的是"不是局域网的地址", 而不是"公网 IP"(不把话说得比实际强)。
 //!
-//! ── 候选列表**不做**过滤, 只排序 ────────────────────────────────────────────
-//! 虚拟网卡(VMware / VirtualBox / WSL / Hyper-V)的私有地址也会被列出来 —— 那多半不是用户
-//! 该填的那个。这里**不猜**: 网卡名一并给出("WLAN"/"以太网"/"vEthernet (WSL)"), 无线与有线
-//! 排在前面, 让用户自己判断。模块头的第一句就是这件事: 只做推荐, 不做保证。
+//! ── 候选列表的**四条丢弃规则**(不是"只排序") ────────────────────────────────
+//! 模块头的第一句是"只做推荐, 不做保证", 但那说的是**推荐**这一层: 界面不替用户挑那一条。
+//! `build_hints` 自己**是有丢弃的**, 四条逐条列在这里(每条都有测试钉住), 因为"这条地址此刻
+//! 不构成一条手机能用的访问路径":
+//!   ① 网卡没 Up(`OperStatus != IfOperStatusUp`)—— 那个地址此刻连不上;
+//!   ② 回环(`127/8`)—— 只有本机能用, 手机用不了;
+//!   ③ 链路本地(169.254/16) / 组播 / 未指定 / 广播 / `240/4` 保留段 / `198.18-19` 基准段 ——
+//!      两个列表都不进(见上面"候选地址的边界");
+//!   ④ 同一个地址被重复报告 —— 只列一行(去重)。
+//!
+//! 虚拟网卡(VMware / VirtualBox / WSL / Hyper-V)的私有地址**不**在这四条里: 那多半不是用户该填
+//! 的那个, 但这里**不猜** —— 网卡名一并给出("WLAN"/"以太网"/"vEthernet (WSL)"), 无线与有线排在
+//! 前面, 让用户自己判断。规则④还有一条细则: 同一地址被两张网卡同时报告时, 留**更像真网卡**的
+//! 那张的名字(无线 → 有线 → 其它), 地址仍然只出现一次、一行都不丢 —— 见 `if_type_rank`。
 
 use serde::Serialize;
 use std::net::Ipv4Addr;
 
 /// `NetHints::firewall_hint` 今天唯一可能的取值(见下面的字段说明)。
 pub const FIREWALL_HINT_ALLOW_INBOUND_PRIVATE: &str = "allowInboundPrivateProfile";
+
+/// **两道拒绝理由里都必定出现的一句** —— 面板据此认出"这一次启动失败是网络防护拦的"
+/// (而不是端口被占、token 坏了之类别的失败), 从而在**探测快照整个拿不到**时仍然摆出二次确认
+/// 入口。没有它, 用户手上的开关会变成"点了就被拒、却找不到那个确认按钮"(见 minor ④)。
+///
+/// 为什么用"理由里的一句人话"当标记, 而不是给 `ServerStatus` 另加一个只给前端看的布尔字段:
+/// 理由是用户唯一能据以行动的东西, 而它**已经**送到面板了。再加一个字段等于同一件事有两份真相
+/// (而且两份会各自漂移)。代价是这句话改字时必须同步面板 —— 所以下面有一条测试把
+/// "两句拒绝理由都含这个标记"钉住(改文案就会红, 而不是悄悄让那个开关点不动)。
+pub const GUARD_REFUSAL_MARKER: &str = "确认要在";
 
 /// 本机"手机可能能用的地址"与网络类别的一次快照。
 ///
@@ -102,17 +127,19 @@ pub struct LanAddress {
 }
 
 /// 当前网络类别。三档里 `Unknown` 是"读不出来", **不是**"中性" —— 见
-/// `should_refuse_to_start` 的退化规则。
+/// `should_refuse_to_start`: 它和 `Public` 一样要求用户显式确认(fail-closed)。
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum NetworkProfile {
     /// 专用(家庭/可信局域网) —— Windows 的 `NLM_NETWORK_CATEGORY_PRIVATE`, **也包含**
     /// `NLM_NETWORK_CATEGORY_DOMAIN_AUTHENTICATED`(域): 域的可信级别不低于专用, 而面板只有
     /// 三档可显示, 所以域归到这一档(见 `Category::profile`)。
+    ///
+    /// 这是**唯一**允许静默启动的读数(见 `should_refuse_to_start`)。
     Private,
     /// 公用 —— 咖啡厅/办公室/酒店那类共享网络, 也正是"不可信局域网"那一档。
     Public,
-    /// 读不出来(COM 不可用 / 查询失败 / 一张网卡都没连)。
+    /// 读不出来(COM 不可用 / 查询失败 / 网络列表服务被停 / 一张网卡都没连)。
     #[default]
     Unknown,
 }
@@ -194,7 +221,9 @@ pub fn detect_hints() -> NetHints {
 pub fn build_hints(adapters: &[AdapterSnapshot], categories: &[Category]) -> NetHints {
     let mut lan: Vec<(LanAddress, u32)> = Vec::new();
     let mut public_ipv4: Vec<String> = Vec::new();
-    let mut seen_lan: Vec<Ipv4Addr> = Vec::new();
+    // 地址 → 它在 `lan` 里的下标。用下标而不是"见过没有", 是为了在**同一个地址被两张网卡同时
+    // 报告**时还能改掉那一行的网卡名(见下面步骤 ④ 的细则): 只换标签, 不换行数。
+    let mut seen_lan: Vec<(Ipv4Addr, usize)> = Vec::new();
     let mut seen_public: Vec<Ipv4Addr> = Vec::new();
 
     for ad in adapters {
@@ -203,15 +232,33 @@ pub fn build_hints(adapters: &[AdapterSnapshot], categories: &[Category]) -> Net
             continue;
         }
         if is_private_v4(ad.address) {
-            if !seen_lan.contains(&ad.address) {
-                seen_lan.push(ad.address);
-                lan.push((
-                    LanAddress {
-                        address: ad.address.to_string(),
-                        interface: ad.interface.clone(),
-                    },
-                    ad.if_type,
-                ));
+            match seen_lan.iter().find(|(a, _)| *a == ad.address).map(|(_, i)| *i) {
+                // 第一次见到这个地址: 新起一行。
+                None => {
+                    seen_lan.push((ad.address, lan.len()));
+                    lan.push((
+                        LanAddress {
+                            address: ad.address.to_string(),
+                            interface: ad.interface.clone(),
+                        },
+                        ad.if_type,
+                    ));
+                }
+                // 这个地址又来了一次(同一地址挂在两张网卡上, 例如真无线 + `vEthernet (WSL)`):
+                // **地址只占一行**, 但标签要与"更像真网卡"的那张对齐 —— 否则用户会看到
+                // `http://192.168.1.7:8765` 旁边写着 `vEthernet (WSL)`, 而真正能用的是 WLAN。
+                // 网卡名与排序档一起换, 二者不许互相矛盾。
+                //
+                // "名字不能越换越差"也是条件的一半: 三级兜底(见 `adapter_name`)理论上可能全空,
+                // 那就不许拿一个空名字顶掉一个有名有姓的行(那会让用户连猜都没得猜)。
+                Some(i) => {
+                    let more_physical = if_type_rank(ad.if_type) < if_type_rank(lan[i].1);
+                    let has_usable_name = !ad.interface.is_empty() || lan[i].0.interface.is_empty();
+                    if more_physical && has_usable_name {
+                        lan[i].0.interface = ad.interface.clone();
+                        lan[i].1 = ad.if_type;
+                    }
+                }
             }
         } else if !is_neither_private_nor_public(ad.address) {
             if !seen_public.contains(&ad.address) {
@@ -222,12 +269,8 @@ pub fn build_hints(adapters: &[AdapterSnapshot], categories: &[Category]) -> Net
     }
 
     // 排序(稳定): 手机最可能用到的排前面 —— 无线(71) → 有线(6) → 其它网卡。
-    // **只排序, 不丢弃**: 虚拟网卡的私有地址也会列出来, 靠网卡名让用户自己判断(模块头)。
-    lan.sort_by_key(|(_, if_type)| match *if_type {
-        71 => 0u8, // IF_TYPE_IEEE80211
-        6 => 1u8,  // IF_TYPE_ETHERNET_CSMACD
-        _ => 2u8,
-    });
+    // **只改顺序, 不丢行**: 虚拟网卡的私有地址照样列出来, 靠网卡名让用户自己判断(模块头)。
+    lan.sort_by_key(|(_, if_type)| if_type_rank(*if_type));
 
     // 多网络取最危险的那一个(见模块头"类别是哪张网卡的")。
     let worst = categories.iter().copied().reduce(Category::worst);
@@ -245,15 +288,24 @@ pub fn build_hints(adapters: &[AdapterSnapshot], categories: &[Category]) -> Net
 ///
 /// 规则只有两条, 都是 fail-closed:
 ///   1. `profile == Public` → 拒绝。这正是"不可信局域网"那一档。
-///   2. `profile == Unknown` **且**本机有非局域网的 IPv4 → 拒绝。这是**退化信号**: 类别读不出来
-///      (COM 不可用/查询失败)时, 我们手上只剩"这台机器上有一条不是局域网的路径"这一个事实,
-///      那就按最坏情况办。
+///   2. `profile == Unknown` → 拒绝。类别读不出来(COM 不可用/查询失败/netprofm 被停/没有已连接
+///      的网络)时, 我们**没有"这条网络可信"这个事实** —— 那就按最坏情况办, 要求用户显式确认。
 ///
-/// 明确**不**拒绝的两种组合(各有一条测试钉住, 免得以后有人"顺手"改严):
+/// ── Fix 1(本轮修复)· 规则 2 为什么不再看"有没有非局域网地址" ─────────────────
+/// 旧规则 2 是 `Unknown && !public_ipv4.is_empty()`, 而它**恰好在最需要它的场景里 fail-open**:
+/// 共享 WiFi(咖啡厅/办公室/酒店)发的通常就是**私有**租约(10.x / 192.168.x), 于是类别读不出来时
+/// `public_ipv4` 是空的、判定放行。而"类别读不出来"与"这条网络是共享 WiFi"是**独立**的两件事:
+/// netprofm 被停掉/COM 不可用时, 类别恰恰读不出来。自动启动那条路上没有人在场, 所以那个组合
+/// 就是"在不可信网络上静默开着一个明文端口"。现在唯一的静默放行条件是**读到** `Private`
+/// (含域) —— 一个**正面**读数。
+///
+/// 明确**不**拒绝的只有一种组合(有测试钉住, 免得以后有人"顺手"改严):
 ///   · `Private` + 有非局域网地址 → 只警告, 不拒绝。地址层面的暴露不一定来自当前网络类别
 ///     (例如一根直连的网线), 规格 §4.3 对这种情形的要求是"警告", 不是"不许开"。
-///   · `Unknown` + 没有非局域网地址 → 放行。机器可能只是没连网/没有网卡, 这时绑上 0.0.0.0
-///     也没人能连; 而"读不出类别就一律不许开"会把家庭用户的服务永久锁死。
+///
+/// 理由必须让用户看出**是哪一种**, 因为下一步动作不同: "网络是公用"→ 回可信 WiFi 再开, 或者
+/// 确认一次; "读不到类别"→ 先看 Windows 的网络列表服务是不是被停了 / 是不是根本没连网。
+/// 两句都含 [`GUARD_REFUSAL_MARKER`](面板据此在探测快照拿不到时仍摆出确认入口)。
 pub fn should_refuse_to_start(h: &NetHints) -> Option<String> {
     match h.profile {
         NetworkProfile::Public => Some(format!(
@@ -262,12 +314,34 @@ pub fn should_refuse_to_start(h: &NetHints) -> Option<String> {
              确认要在这种网络上开启服务吗？{}",
             public_suffix(&h.public_ipv4)
         )),
-        NetworkProfile::Unknown if !h.public_ipv4.is_empty() => Some(format!(
-            "读不到 Windows 的网络类别（退化判定）：本机有不是局域网的地址（{}）—— \
-             它可能被局域网外的设备访问。确认要在这种网络上开启服务吗？",
-            h.public_ipv4.join("、")
+        // 读不出来 = **没有"可信"这个事实** → 按不可信办。注意这里**不看** `public_ipv4`:
+        // 它空不空与"当前网络可不可信"是两件事(见上面 Fix 1 那一段)。
+        NetworkProfile::Unknown => Some(format!(
+            "读不到 Windows 的网络类别（网络列表服务不可用 / 查询失败 / 没有已连接的网络）—— \
+             无法确认当前网络是否可信, 因此按不可信处理。在这种状态下开启服务, 配对码与共享目录\
+             可能被同一网段的设备嗅探到, 而这条判定此刻**替你把不了关**。\
+             确认要在无法确认网络可信性的情况下开启服务吗？{}",
+            public_suffix(&h.public_ipv4)
         )),
-        _ => None,
+        // 唯一允许静默启动的读数。
+        NetworkProfile::Private => None,
+    }
+}
+
+/// 网卡"像不像真网卡"的档位: 无线(71) → 有线(6) → 其它(虚拟/隧道/回环等)。数字越小越优先。
+///
+/// 两处用到, 而且是**同一个**判据(不许两处各写一份):
+///   · `build_hints` 的排序 —— 手机最可能用到的排前面;
+///   · 同一地址被多张网卡报告时留哪张网卡的**名字** —— 真无线压过 `vEthernet (WSL)`。
+///
+/// 为什么不能分得更细: 虚拟网卡(Hyper-V/WSL 的 `vEthernet`)报的 `IfType` **就是 6(以太网)**,
+/// 与真网卡同档 —— 所以这里只能做到"无线压过以太网", 做不到"以太网压过 vEthernet"。方向是
+/// 保守的: 分不出高下时保留系统先给的那一条(稳定), 绝不因此丢掉任何地址。
+fn if_type_rank(if_type: u32) -> u8 {
+    match if_type {
+        71 => 0, // IF_TYPE_IEEE80211
+        6 => 1,  // IF_TYPE_ETHERNET_CSMACD
+        _ => 2,
     }
 }
 
@@ -618,6 +692,55 @@ mod tests {
         assert_eq!(build_hints(&adapters, &[]).lan.len(), 1);
     }
 
+    /// minor ①: **同一地址挂在两张网卡上**时, 留下来的那一行要带"更像真网卡"的那张的名字。
+    ///
+    /// 现场: 真无线拿到 `192.168.1.7`, 而 `vEthernet (WSL)` 报告了同一个地址 —— 旧的"按地址去重"
+    /// 会看谁先来, 于是面板可能显示 `http://192.168.1.7:8765` 旁边写着 `vEthernet (WSL)`。
+    /// 地址仍然**只占一行**(一个地址都不许因此被丢掉), 只换标签与排序档。
+    ///
+    /// 变异靶子: 把 `build_hints` 里那次 `if_type_rank` 比较删掉(退回"先到先得")→ 下面第一段
+    /// 断言当场红。
+    #[test]
+    fn a_shared_address_keeps_the_more_physical_interface_label() {
+        let virtual_first = vec![
+            ad("192.168.1.7", "vEthernet (WSL)", 6, true),
+            ad("192.168.1.7", "WLAN", 71, true),
+        ];
+        let h = build_hints(&virtual_first, &[Category::Private]);
+        assert_eq!(h.lan.len(), 1, "同一个地址只占一行(一行都不许丢): {:?}", h.lan);
+        assert_eq!(h.lan[0].address, "192.168.1.7");
+        assert_eq!(h.lan[0].interface, "WLAN", "冲突时要留真无线的名字, 不是虚拟网卡的");
+
+        // 顺序反过来(真无线先来)必须得到**同一个**结果 —— 判定与系统给出的顺序无关。
+        let physical_first = vec![
+            ad("192.168.1.7", "WLAN", 71, true),
+            ad("192.168.1.7", "vEthernet (WSL)", 6, true),
+        ];
+        let h2 = build_hints(&physical_first, &[Category::Private]);
+        assert_eq!(h2.lan.len(), 1);
+        assert_eq!(h2.lan[0].interface, "WLAN", "先来的真无线不许被后来的虚拟网卡顶掉");
+
+        // 同一档(两张都报 6, 例如真以太网 + vEthernet)分不出高下: 保留先到的那一条(稳定),
+        // 而且**绝不**因此丢掉地址。
+        let same_rank = vec![
+            ad("10.0.0.5", "以太网", 6, true),
+            ad("10.0.0.5", "vEthernet (Default Switch)", 6, true),
+        ];
+        assert_eq!(build_hints(&same_rank, &[Category::Private]).lan[0].interface, "以太网");
+
+        // 名字也不能越换越差: 真无线那条的网卡名(三级兜底)**全**取不到时, 不许拿一个空串顶掉
+        // 一个有名有姓的行 —— 用户至少还有名字可看。
+        let nameless_wifi = vec![
+            ad("192.168.1.7", "vEthernet (WSL)", 6, true),
+            ad("192.168.1.7", "", 71, true),
+        ];
+        assert_eq!(
+            build_hints(&nameless_wifi, &[Category::Private]).lan[0].interface,
+            "vEthernet (WSL)",
+            "空名字不许顶掉有名有姓的那一行"
+        );
+    }
+
     // ── 类别 → 三档 ─────────────────────────────────────────────────────────
 
     /// 多网络取**最危险**的那一个; 域归到 `Private`; 一个都没有 = `Unknown`。
@@ -670,6 +793,7 @@ mod tests {
     }
 
     /// **Private 不许拒绝** —— 与上一条成对: 少了它, 一个"永远返回 Some"的实现也能过测试。
+    /// 这也是**唯一**允许静默启动的读数。
     #[test]
     fn private_profile_must_not_refuse() {
         assert_eq!(should_refuse_to_start(&hints(NetworkProfile::Private, &[])), None);
@@ -685,13 +809,59 @@ mod tests {
         );
     }
 
-    /// 读不出类别时的**退化规则**: 有非局域网地址 → 拒绝; 没有 → 放行。
+    /// **Fix 1 · 读不出类别一律要求确认**(`Unknown` 与 `Public` 同级 fail-closed)。
+    ///
+    /// 变异靶子: 把 `Unknown` 分支改回旧规则(`Unknown if !h.public_ipv4.is_empty()` ——
+    /// 也就是"没有非局域网地址就放行")→ 下面第二段断言当场红。
+    ///
+    /// 为什么第二段才是关键: 咖啡厅/办公室/酒店那类共享 WiFi 发的**通常就是私有租约**,
+    /// 所以 `public_ipv4` 为空根本不能证明这条网络可信; 而 netprofm 停掉/COM 不可用时
+    /// 类别**恰恰**读不出来。旧的 fail-open 组合正好落在这里, 而且自动启动那条路上没人看到警告。
     #[test]
-    fn unknown_profile_degrades_to_the_public_address_signal() {
-        let refused = should_refuse_to_start(&hints(NetworkProfile::Unknown, &["203.0.113.9"]))
-            .expect("读不出类别但有非局域网地址时必须拒绝");
-        assert!(refused.contains("203.0.113.9"), "理由里要带上那个地址: {refused}");
-        assert_eq!(should_refuse_to_start(&hints(NetworkProfile::Unknown, &[])), None);
+    fn unknown_profile_always_requires_confirmation() {
+        // ① 有非局域网地址: 照旧拒绝, 而且理由里要带上那个地址(原来的行为一个字都不许丢)。
+        let with_addr = should_refuse_to_start(&hints(NetworkProfile::Unknown, &["203.0.113.9"]))
+            .expect("读不出类别且有非局域网地址时必须要求确认");
+        assert!(with_addr.contains("203.0.113.9"), "理由里要带上那个地址: {with_addr}");
+        assert!(with_addr.contains("读不到"), "理由要说清是「读不出来」: {with_addr}");
+
+        // ② **本条就是 Fix 1**: 没有任何非局域网地址也照拒。
+        let bare = should_refuse_to_start(&hints(NetworkProfile::Unknown, &[]))
+            .expect("读不出类别时, 没有非局域网地址也必须要求确认(fail-closed)");
+        assert!(bare.contains("读不到"), "理由要说清为什么: {bare}");
+        assert!(
+            !bare.contains("公用"),
+            "两种拒绝的理由必须能区分开(用户的下一步动作不同): {bare}"
+        );
+        assert!(
+            bare.contains("确认"),
+            "拒绝之后要给出「确认」这条出路(否则用户的服务被永久锁死): {bare}"
+        );
+    }
+
+    /// 面板靠 [`GUARD_REFUSAL_MARKER`] 在**探测快照拿不到**时仍然摆出二次确认入口 ——
+    /// 所以"两句拒绝理由都含这个标记"必须机器可查: 改文案时会红, 而不是让用户手上那个开关
+    /// 变成"点了就被拒、却找不到确认按钮"。
+    #[test]
+    fn both_refusal_reasons_carry_the_panel_marker() {
+        for h in [
+            hints(NetworkProfile::Public, &[]),
+            hints(NetworkProfile::Unknown, &[]),
+            hints(NetworkProfile::Unknown, &["203.0.113.9"]),
+        ] {
+            let reason = should_refuse_to_start(&h).expect("这两种都该拒绝");
+            assert!(
+                reason.contains(GUARD_REFUSAL_MARKER),
+                "拒绝理由必须含面板用的标记 {GUARD_REFUSAL_MARKER:?}: {reason}"
+            );
+        }
+        // 放行的那两种组合一个都不许含它(否则面板会凭空摆出一个"仍要开启"的入口)。
+        for h in [
+            hints(NetworkProfile::Private, &[]),
+            hints(NetworkProfile::Private, &["203.0.113.9"]),
+        ] {
+            assert_eq!(should_refuse_to_start(&h), None);
+        }
     }
 
     /// 拒绝理由里出现的地址, 必须来自那个**只用于警告**的列表(不是候选列表)。

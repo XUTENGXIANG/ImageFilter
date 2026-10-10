@@ -5,6 +5,7 @@ package com.imagefilter.mobile
 import com.imagefilter.mobile.data.ApiClient
 import com.imagefilter.mobile.data.SharedHttpClient
 import com.imagefilter.mobile.data.ThumbnailSize
+import com.imagefilter.mobile.data.buildHttpClient
 import okhttp3.Request
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
@@ -92,5 +93,41 @@ class SharedHttpClientTest {
         SharedHttpClient.forToken(otherToken)
             .newCall(Request.Builder().url(url).build()).execute().use { }
         assertEquals("Bearer $otherToken", server.takeRequest().getHeader("Authorization"))
+    }
+
+    /**
+     * **Task 2 的核心不变量, 机器可查**: `ApiClient` **默认**用的 client **就是**
+     * [SharedHttpClient.forToken] 记忆的那一枚 —— 也就是 Coil(缩略图网格)拿到的同一枚。
+     *
+     * 为什么单独立一条: 上面两条只钉住两头 —— 供给端(同一枚 token 同一个实例)与请求端
+     * (默认构造出来的请求带 Bearer)。中间那一步原先只是一句 KDoc, 于是把 `ApiClient` 的默认值
+     * 从 `SharedHttpClient.forToken(token)` 换成 [buildHttpClient]`(token)` 时, **169 条 Android
+     * 测试全绿** —— 而生产上 Coil 与 JSON 接口从此各拿一个客户端(连接池/线程池翻倍), 正是
+     * Task 2 要消灭的"JSON 通、图片 401"那类分裂的温床。
+     *
+     * `assertSame` 而不是 `assertEquals`: `OkHttpClient` 没有值相等语义, 这条要的就**是**同一个
+     * 对象(共享连接池/线程池/拦截器的前提)。
+     *
+     * 变异靶子: 把 `ApiClient` 的默认值换成 `buildHttpClient(token)` → 这条当场红。
+     */
+    @Test
+    fun the_default_api_client_is_the_memoised_shared_client() {
+        val api = ApiClient(baseUrl = baseUrl(), token = token)
+
+        assertSame(
+            "ApiClient 默认用的必须是 SharedHttpClient 记忆的那一枚(Coil 也是它)",
+            SharedHttpClient.forToken(token),
+            api.httpClient,
+        )
+
+        // 反向也钉住: 注入点必须仍然能换掉 client(测试要关 retryOnConnectionFailure 就得能换),
+        // 而且**换掉之后就不算共用** —— 这条防的是把访问器写成"永远返回那枚 memo"的常量,
+        // 那会让上面那句 assertSame 变成一句空转。
+        val injected = buildHttpClient(token)
+        assertNotSame(
+            "注入了自己的 client 之后就不该再是共用那一枚",
+            SharedHttpClient.forToken(token),
+            ApiClient(baseUrl(), token, injected).httpClient,
+        )
     }
 }
