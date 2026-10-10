@@ -35,7 +35,8 @@ class PairingInputTest {
         assertEquals("http://192.168.1.5:8765", PairingInputFormat.normalizeUrl("  http://192.168.1.5:8765/  "))
         // 只补缺省 scheme, **端口一个字都不猜** —— 不写端口就是 http 的默认端口
         assertEquals("http://nas", PairingInputFormat.normalizeUrl("nas"))
-        // 前面套一层 TLS 反代(CF Tunnel 这类)也允许: §4.3 说的是服务端不做 TLS, 不是禁止前面有
+        // https 形式的地址本身不被本地拒绝(URL 形状不归这一层管): §4.3 说服务端不做 TLS,
+        // 而 LAN-only 之后配对填的就是 http://局域网地址:端口 —— 这条钉的只是"不误拒"。
         assertEquals("https://gallery.example.com", PairingInputFormat.normalizeUrl("https://gallery.example.com/"))
     }
 

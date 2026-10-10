@@ -51,8 +51,8 @@ import kotlinx.coroutines.launch
  *   · **张数不在这一层装** —— `browse` 给的 `photoCount` 一律是 0(只有 `scan` 才有真数),
  *     所以 0 显示成"张数未统计", 绝不写成"0 张"。
  *
- * 主区在 M1′ Task 5 会被缩略图网格替换(同一个 `selected` 目录), 现在先把"选目录"
- * 这条链路走通。
+ * 主区只管**选目录**: 看这个目录的照片是 [GridScreen](M1′ Task 5)的事 —— 所以这一页
+ * 不画网格(一个目录能不能点开是一回事, 它里面有什么照片是另一回事)。
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable

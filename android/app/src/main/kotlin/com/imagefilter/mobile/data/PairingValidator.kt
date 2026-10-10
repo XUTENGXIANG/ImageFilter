@@ -36,8 +36,8 @@ sealed interface PairingCheck {
      *
      * [unauthorizedCause] 只在 [ApiException.isUnauthorized] 时非空 —— 那是 Task 2 的
      * [ApiClient.classifyUnauthorized] 的结论。**绝不允许**在第一次 401 上就把它当成
-     * `TOKEN_ROTATED`: 隧道断了也会 401 得莫名其妙, 而"去重新配对"这个动作对网络问题
-     * 毫无用处(规格 §5.3 的纪律: 每条码必须落到"用户下一步做什么")。
+     * `TOKEN_ROTATED`: 不在同一局域网/网络断了也会 401 得莫名其妙, 而"去重新配对"这个动作
+     * 对网络问题毫无用处(规格 §5.3 的纪律: 每条码必须落到"用户下一步做什么")。
      */
     data class Failed(val code: String, val unauthorizedCause: UnauthorizedCause? = null) : PairingCheck
 }
@@ -109,9 +109,9 @@ class PairingValidator(
  * "根本没有 HTTP 响应"的 IOException → 手机合成的码(规格 §5.3 第二张表)。
  *
  * 三档分开的理由是**用户动作不同**, 不是分类癖:
- *   · `timeout` —— 电脑没回应(睡眠/隧道半死) → 检查电脑与网络;
+ *   · `timeout` —— 电脑没回应(睡眠/不在同一局域网) → 检查电脑与网络;
  *   · `serviceOff` —— 连都连不上(没进程在听/域名解析不了/没有路由) → 去电脑上开服务;
- *   · `network` —— 连上了但中途断(隧道抖动) → 重试。
+ *   · `network` —— 连上了但中途断(网络抖动) → 重试。
  *
  * 未知的 IOException 一律落到 `network`(最保守的一档), 绝不落到 `unauthorized` ——
  * 把一个说不出所以然的 IO 错误说成"配对码不对"会让用户白换一遍 token。

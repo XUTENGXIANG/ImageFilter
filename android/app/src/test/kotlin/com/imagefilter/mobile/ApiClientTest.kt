@@ -253,8 +253,8 @@ class ApiClientTest {
 
     @Test
     fun an_unreachable_probe_leaves_the_cause_undetermined() = runTest {
-        // 隧道断/电脑睡了: 复探根本没打通 —— 什么都不许断言。把网络故障说成"去重新配对"
-        // 会让用户为一个隧道问题去扫码。
+        // 网络不通/电脑睡了: 复探根本没打通 —— 什么都不许断言。把网络故障说成"去重新配对"
+        // 会让用户为一个网络问题去扫码。
         server.enqueue(MockResponse().setSocketPolicy(SocketPolicy.DISCONNECT_AT_START))
         val noRetry = buildHttpClient(token).newBuilder().retryOnConnectionFailure(false).build()
         val c = ApiClient(baseUrl = baseUrl(), token = token, client = noRetry)

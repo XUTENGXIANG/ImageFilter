@@ -14,7 +14,11 @@
         android:usesCleartextTraffic="true"
         android:theme="@style/Theme.ImageFilterMobile">
         <!-- usesCleartextTraffic=true 的理由: 服务端故意不做 TLS(规格 §4.3),
-             加密由 EasyTier/Tailscale 隧道或局域网边界提供。这是有意为之, 不是疏忽。
+             而加密边界**只有局域网这一种** —— 2026-10-07 的 LAN-only 决策: 只做同一局域网,
+             不做对外暴露。所以这是一个**明文 HTTP** 服务, 必须在同一 WiFi 下使用:
+             这是有意为之, 不是疏忽。
+             也正因为边界只剩局域网这一种: 电脑端在 Public(不可信)网络类别下**不启动服务**
+             (§4.3 的硬约束, 见 M4′ Task 2), 手机端在咖啡厅/酒店这类共享 WiFi 上也不该连。
              注: 刻意不声明 android:icon —— 还没有图标资源, 声明一个不存在的 @mipmap
              会直接让构建失败; 发版前再补(见 M4′ 发布任务)。 -->
         <activity

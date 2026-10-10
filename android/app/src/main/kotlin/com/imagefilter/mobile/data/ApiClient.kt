@@ -56,7 +56,7 @@ enum class UnauthorizedCause {
     /** 复探打通了(且没被判 401) → token 没问题, 是这个构建不暴露那个路径。 */
     ENDPOINT_NOT_EXPOSED,
 
-    /** 复探根本没打通(隧道断/电脑睡了) → 什么都断言不了, 别把网络故障说成 token 问题。 */
+    /** 复探根本没打通(不在同一局域网/电脑睡了) → 什么都断言不了, 别把网络故障说成 token 问题。 */
     UNDETERMINED,
 }
 
@@ -75,9 +75,10 @@ class ApiClient(
     token: String,
     /**
      * ⚠️ 注入时**必须**用 [buildHttpClient] `(token)` —— 鉴权头装在那里面, 见它的 KDoc。
-     * 默认值就是它, 所以正常用法不用传。
+     * 默认值走 [SharedHttpClient.forToken]: 与 Coil(缩略图网格)拿到的是**同一个实例**,
+     * 所以"JSON 通、图片 401"那种分裂在结构上就不成立。
      */
-    private val client: OkHttpClient = buildHttpClient(token),
+    private val client: OkHttpClient = SharedHttpClient.forToken(token),
 ) {
     private val root: HttpUrl =
         requireNotNull(baseUrl.trimEnd('/').toHttpUrlOrNull()) { "非法 baseUrl: $baseUrl" }
@@ -255,7 +256,7 @@ class ApiClient(
      *     ([UnauthorizedCause.ENDPOINT_NOT_EXPOSED])。鉴权层罩住整张路由表, 所以
      *     "打到了处理器"本身就证明请求带着一枚被接受的 token;
      *   · 复探**根本没打通** → [UnauthorizedCause.UNDETERMINED]。把网络故障说成
-     *     "去重新配对"会让用户为一个隧道问题去扫码轮换。
+     *     "去重新配对"会让用户为一个网络问题去扫码轮换。
      *
      * 结果里带三个值而不是两个, 是因为"探不动"和"探通了"是两个不同的事实:
      * 只有前者不允许下任何结论。

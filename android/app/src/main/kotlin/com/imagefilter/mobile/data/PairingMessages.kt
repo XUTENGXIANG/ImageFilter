@@ -27,7 +27,7 @@ object PairingMessages {
         "电脑没有睡眠（睡眠后服务就断了）",
         "电脑上 ImageFilter 正在运行",
         "设置里的「图库服务」已开启",
-        "手机与电脑在同一网络（或都加入了同一个 EasyTier / Tailscale 网络）",
+        "手机与电脑连在同一个 WiFi",
     )
 
     /** 本地输入问题的文案。 */
@@ -47,7 +47,7 @@ object PairingMessages {
      *
      * [cause] 只有 [ApiErrorCodes.UNAUTHORIZED] 时才该非空; 三种 401 成因给**三句不同的话**,
      * 这正是 Task 2 那条消歧存在的意义 —— 三句都写成"配对码不对"的话, 消歧就白做了,
-     * 而隧道断了的用户会照着它去白换一遍配对码。
+     * 而网络断了的用户会照着它去白换一遍配对码。
      */
     fun forFailure(code: String, cause: UnauthorizedCause? = null): String = when (code) {
         ApiErrorCodes.UNAUTHORIZED -> when (cause) {
