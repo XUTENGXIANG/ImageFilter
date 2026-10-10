@@ -13,6 +13,7 @@ import com.imagefilter.mobile.data.UnauthorizedCause
 import com.imagefilter.mobile.data.ViewerAction
 import com.imagefilter.mobile.data.ViewerMessages
 import com.imagefilter.mobile.data.buildHttpClient
+import com.imagefilter.mobile.ui.DecisionStore
 import com.imagefilter.mobile.ui.GridItem
 import com.imagefilter.mobile.ui.ViewerQuality
 import com.imagefilter.mobile.ui.ViewerViewModel
@@ -90,22 +91,18 @@ class ViewerViewModelTest {
         thresholdPx: Float = 160f,
         prefetch: (List<String>) -> Unit = {},
         clientFactory: ((String, String) -> ApiClient)? = null,
-    ) = if (clientFactory == null) {
-        ViewerViewModel(
+    ): ViewerViewModel {
+        // 决策 store 与 ViewModel 走**同一套**注入(clientFactory), 所以这里造的那份
+        // ApiClient 与状态机内部那份打的是同一个 MockWebServer, token 也一样。
+        val factory: (String, String) -> ApiClient = clientFactory ?: { url, t -> ApiClient(url, t) }
+        return ViewerViewModel(
             pairing = Pairing(baseUrl(), token, note = "家里的台式机"),
             items = items,
             startIndex = startIndex,
             dragThresholdPx = thresholdPx,
             prefetch = prefetch,
-        )
-    } else {
-        ViewerViewModel(
-            pairing = Pairing(baseUrl(), token, note = "家里的台式机"),
-            items = items,
-            startIndex = startIndex,
-            dragThresholdPx = thresholdPx,
-            prefetch = prefetch,
-            clientFactory = clientFactory,
+            decisions = DecisionStore(factory(baseUrl(), token)),
+            clientFactory = factory,
         )
     }
 
@@ -580,6 +577,9 @@ class ViewerViewModelTest {
             items = items(2),
             startIndex = 0,
             prefetch = {},
+            // 决策 store 在这条用例里用不上(它测的是预览失败时的 401 复探), 但必须给:
+            // 构造函数刻意不给它默认值 —— 那会让"生产忘了注入共享的那一份"变成一个静默缺陷。
+            decisions = DecisionStore(ApiClient(baseUrl(), prodToken)),
         )
         server.enqueue(MockResponse().setResponseCode(401).setBody("""{"code":"unauthorized"}"""))
 

@@ -11,6 +11,9 @@ import com.imagefilter.mobile.data.Pairing
 import com.imagefilter.mobile.data.UnauthorizedCause
 import com.imagefilter.mobile.data.ViewerAction
 import com.imagefilter.mobile.data.ViewerMessages
+import com.imagefilter.mobile.data.WriteAction
+import com.imagefilter.mobile.data.WriteFailure
+import com.imagefilter.mobile.data.WriteMessages
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -217,6 +220,38 @@ data class ViewerState(
     val highResLoading: Boolean = false,
     val error: ViewerError? = null,
     val highResError: ViewerError? = null,
+    // ── 决策(星级/色标)与它们的**同步状态** ────────────────────────────────
+    //
+    // 这一组字段全部来自 [DecisionStore](**唯一**的真相来源), 而不是界面各自缓存一份:
+    // 一旦这页自己存一份"我以为的星级", 乐观更新、失败保留、未同步标记就会各自漂移。
+    /** 当前这张在这台手机上的星级; `null` = 还没定过(`0` = 明确废弃)。 */
+    val rating: Int? = null,
+    /** 当前这张的色标(五色闭集, 见 [LABELS])。 */
+    val label: String? = null,
+    /** 当前这张的意图有没有被电脑确认过([SyncState])。 */
+    val sync: SyncState = SyncState.UNTOUCHED,
+    /**
+     * 当前这张**没能写进电脑**的那一条失败(逐项、带码、带来源表)。
+     *
+     * 非 null 时界面必须画出来并给一个动作 —— 这是规格 §11 纪律③在查看器里的落点。
+     */
+    val writeFailure: WriteFailure? = null,
+    /**
+     * 这次打开文件夹以来, 一共几张"改了但电脑还没确认"。
+     *
+     * 跨张可见是刻意的: 只标当前这张的话, 用户切走以后就再也想不起哪张还没写成
+     * (纪律③: "未同步 ≠ 已同步"必须**看得见**, 而不是只在失败的那一秒看得见)。
+     */
+    val unsyncedCount: Int = 0,
+    /** 正在把改动写给电脑(界面据此禁掉连点, 避免自己制造乱序)。 */
+    val writing: Boolean = false,
+    /**
+     * 「重试全部未同步」那一次批量写入的**批次级**结论(N 张里错了几张)。
+     *
+     * 半成功态必须显式(纪律②): 一批 3 张成了 2 张时, 当前这张可能恰好是成的那张 ——
+     * 只靠 per-item 的失败卡, 用户会以为"全成了"。没有话说时为 null。
+     */
+    val lastBatchNote: String? = null,
     /**
      * 「重试」用来把同一个 URL **重新发一次**。URL 不变时 Coil 的 painter 不会重发,
      * 所以界面用 [reloadNonce] 当 `key{}` 重建那个 AsyncImage(见 ViewerScreen)。
@@ -246,6 +281,22 @@ data class ViewerState(
         get() = quality == ViewerQuality.DEFAULT && !highResLoading && highResUrl == null
 
     val hint: String? get() = rawQualityHint(quality, current)
+
+    /** 当前这张有"手机上改了但电脑还没确认"的改动 —— 界面必须标出来(纪律③)。 */
+    val hasUnsyncedChange: Boolean get() = sync == SyncState.UNSYNCED
+
+    // 失败卡的标题/正文/动作**全部查 WriteMessages** —— 界面里一个字都不拼(与错误卡同一条纪律)。
+    val writeHead: String? get() = writeFailure?.let { WriteMessages.headFor(it) }
+    val writeText: String? get() = writeFailure?.let { WriteMessages.forFailure(it) }
+    val writeAction: WriteAction? get() = writeFailure?.let { WriteMessages.actionFor(it) }
+    val writeActionLabel: String? get() = writeAction?.let { WriteMessages.actionLabel(it) }
+
+    /** 跨张的未同步角标(没有未同步项时为 null, 界面据此决定画不画)。 */
+    val unsyncedLabel: String?
+        get() = if (unsyncedCount > 0) WriteMessages.unsyncedLabel(unsyncedCount) else null
+
+    /** 当前这张有未同步改动时的短提示(没用失败卡占屏, 但**必须**让人看见)。 */
+    val unsyncedNote: String? get() = if (hasUnsyncedChange) WriteMessages.UNSYNCED_THIS_PHOTO else null
 }
 
 /**
@@ -254,7 +305,7 @@ data class ViewerState(
  * 与 [GridViewModel] 同样是"持有 StateFlow 的普通类"(理由相同: 不继承 `androidx.lifecycle.
  * ViewModel`, 免得 JVM 单测要先摆一个主线程调度器)。
  *
- * 五条纪律(每一条都有一个测试盯着):
+ * 六条纪律(每一条都有一个测试盯着):
  *   1. **URL 全部由 [ApiClient.previewUrl] 拼** —— 界面里没有一处字符串拼接(verbatim 前缀里
  *      那个字面问号会在这里被弄丢);
  *   2. **默认档是 `max=2048` + 不带 `full`**; 高清是同一个 `max` + `full=true`
@@ -263,7 +314,10 @@ data class ViewerState(
  *   3. **高清只由用户显式触发, 且预取永远是默认档** —— 高清意味着电脑做全解码
  *      (实测样本里有一个 50.6MB 的线性 DNG, 秒级到十几秒级), 预取它就等于每滑一张都卡一次;
  *   4. **高清失败退回默认档 + 一句可执行的话**, 绝不留白屏;
- *   5. **切图一定回到默认档** —— 把高清态带到下一张, 每张都要等一次全解码。
+ *   5. **切图一定回到默认档** —— 把高清态带到下一张, 每张都要等一次全解码;
+ *   6. **打完分/标完色: 乐观更新 + 失败可见 + 可重试**([setRating] / [setLabel]) ——
+ *      星级色标**只由服务端确认**(客户端不许自己判成功), 失败**不回滚**本地值,
+ *      并把失败与"未同步 N 张"摆到界面上(规格 §11 纪律③)。
  */
 class ViewerViewModel(
     private val pairing: Pairing,
@@ -279,6 +333,21 @@ class ViewerViewModel(
      * 少掉整个预取(而且没有任何测试会红)。生产实现见 [ViewerScreen](走 Coil 的 enqueue)。
      */
     private val prefetch: (List<String>) -> Unit,
+    /**
+     * 决策(星级/色标)的本地镜像与推送。**刻意没有默认值, 也刻意不从 [api] 现造一个**:
+     * 它必须活得比查看器久(见 [ViewerScreen] 的 KDoc)—— 关掉查看器就丢掉"哪张还没写成",
+     * 正是纪律③最怕的那种静默。生产路径由 `GridScreen` 建一份、传给查看器。
+     */
+    private val decisions: DecisionStore,
+    /**
+     * 写下一次决策成功后要不要自动前进到下一张(规格 §8.2: "写成功才自动前进、失败不前进")。
+     *
+     * M2′ 默认 **false**: 这一页是"看大图 + 手动切图", 打完分把人从正在看的图上踢走是坏事。
+     * M3′ 的滑卡决策页会传 `true` —— 那时"打完一张自动到下一张"才是预期动作。
+     * **无论它是什么, 失败一律不前进**: 那正是本字段存在的意义(它让"失败不前进"这条
+     * 不变量有一个**非空**的对照 —— 成功会前进, 失败不会)。
+     */
+    private val advanceOnWriteSuccess: Boolean = false,
     /**
      * 注入点: 生产路径就是默认值 —— [ApiClient] 内部的 client 走
      * [com.imagefilter.mobile.data.SharedHttpClient.forToken], 与 Coil 是**同一个实例**。
@@ -300,10 +369,14 @@ class ViewerViewModel(
     private val start: Int = if (photos.isEmpty()) 0 else startIndex.coerceIn(0, photos.lastIndex)
 
     private val _state = MutableStateFlow(
-        ViewerState(
-            photos = photos,
-            index = start,
-            defaultUrl = urlFor(start, full = false).orEmpty(),
+        // 决策字段一开始就要从 [decisions] 读进来: 关掉查看器再打开(同一份 store)时,
+        // 刚才那张的星级与"未同步"必须还在(纪律③)。
+        refresh(
+            ViewerState(
+                photos = photos,
+                index = start,
+                defaultUrl = urlFor(start, full = false).orEmpty(),
+            ),
         ),
     )
     val state: StateFlow<ViewerState> = _state.asStateFlow()
@@ -422,16 +495,19 @@ class ViewerViewModel(
         if (next == st.index) return
         val url = urlFor(next, full = false).orEmpty()
         _state.update {
-            it.copy(
-                index = next,
-                mode = resetView(),
-                quality = ViewerQuality.DEFAULT,
-                defaultUrl = url,
-                highResUrl = null,
-                highResLoading = false,
-                highResError = null,
-                error = null,
-                loading = true,
+            // refresh: 换了一张就把那一张自己的星级/色标/未同步状态读进来(真相在 store 里)
+            refresh(
+                it.copy(
+                    index = next,
+                    mode = resetView(),
+                    quality = ViewerQuality.DEFAULT,
+                    defaultUrl = url,
+                    highResUrl = null,
+                    highResLoading = false,
+                    highResError = null,
+                    error = null,
+                    loading = true,
+                ),
             )
         }
         prefetchNeighbours()
@@ -456,6 +532,107 @@ class ViewerViewModel(
                 error = null,
             )
         }
+    }
+
+    // ── 决策: 打星 / 标色 / 重试(乐观更新 + 失败可见) ──────────────────────
+
+    /**
+     * 打星(0 = 废弃)。**乐观更新**: 先本地生效(界面立刻变), 再写给电脑。
+     *
+     * 失败时**不回滚、不前进**: 本地值留着、标记成未同步、把服务端给的那条失败摆出来
+     * (带 [WriteMessages] 的文案与动作), 用户能点「重试写入」。
+     * 静默回滚会让人以为"白打了一次分"; 静默吞掉更糟 —— 那正是本项目最贵的一种失败。
+     */
+    suspend fun setRating(stars: Int): PushResult = commit { it.withRating(stars) }
+
+    /**
+     * 标色(`null` = 清掉)。清掉走的是显式的 `clearLabel = true`, **不是** `label = null`
+     * (`null` 的语义是"不动这个属性", 混起来用户的撤销会在下次读盘时复活)。
+     *
+     * 界面上的"再点一次当前颜色 = 清掉"由 [labelAfterTap] 决定, 这里只收结论。
+     */
+    suspend fun setLabel(label: String?): PushResult = commit { it.withLabel(label) }
+
+    /**
+     * 「重试写入」: 把**当前这张**的本地意图再推一次。
+     *
+     * 重试不产生新决策, 所以**不会**触发自动前进(那是"用户刚打了一张"才该发生的事)。
+     */
+    suspend fun retryCurrent(): PushResult {
+        val path = currentPath() ?: return PushResult.NothingToPush(0)
+        return push(listOf(path))
+    }
+
+    /**
+     * 「N 张未同步·重试」: 把这次会话里所有改了但没写成的推一遍。
+     *
+     * 一批里可能只成一部分 —— [PushResult.Failed] 会如实带上成了几张、坏了几张以及
+     * 每一项自己的码(纪律②: 半成功态必须显式)。
+     */
+    suspend fun retryAllUnsynced(): PushResult {
+        val paths = decisions.unsynced().map { it.path }
+        if (paths.isEmpty()) return PushResult.NothingToPush(0)
+        val result = push(paths)
+        // 一批里的半成功必须说出来(纪律②): 当前这张可能是成的那张, 光看它的失败卡会误以为全成了。
+        _state.update {
+            it.copy(
+                lastBatchNote = (result as? PushResult.Failed)
+                    ?.let { f -> WriteMessages.batchHead(f.requested, f.failures.size) },
+            )
+        }
+        return result
+    }
+
+    /** 用户看过了那条失败提示(本地改动与"未同步"标记都留着, 只是不再重复唠叨)。 */
+    fun dismissWriteFailure() {
+        val path = currentPath() ?: return
+        decisions.clearError(path)
+        _state.update { refresh(it) }
+    }
+
+    private fun currentPath(): String? = _state.value.current?.path
+
+    /**
+     * 一次决策: 本地立刻生效(乐观更新) → 写给电脑 → **成功了才**按 [advanceOnWriteSuccess] 前进。
+     *
+     * `applyLocal` 在第一个挂起点之前执行, 所以"界面立刻变"不依赖网络。
+     */
+    private suspend fun commit(mutate: (Decision) -> Decision): PushResult {
+        val path = currentPath() ?: return PushResult.NothingToPush(0)
+        decisions.applyLocal(mutate(decisions.get(path)))
+        _state.update { refresh(it) }
+        val result = push(listOf(path))
+        // 规格 §8.2: 写成功才自动前进。失败**绝不**前进 —— 那会让用户以为打过了,
+        // 而实际上那张在电脑上还是旧的(本任务最不能出的一种错)。
+        if (result is PushResult.Ok && advanceOnWriteSuccess) go(+1)
+        return result
+    }
+
+    private suspend fun push(paths: List<String>): PushResult {
+        // 上一次批量重试的结论不再适用(用户又动了手) —— 先清掉, 免得界面上留着一句过期的话。
+        _state.update { it.copy(writing = true, lastBatchNote = null) }
+        val result = decisions.push(paths)
+        _state.update { refresh(it).copy(writing = false) }
+        return result
+    }
+
+    /**
+     * 把 [DecisionStore] 里那一份**唯一**的真相抄进界面状态(星级、色标、同步状态、
+     * 这条失败、跨张的未同步计数)。
+     *
+     * 每次换张/每次写完都过一遍这里, 是为了让"界面看到的"与"store 里的"不可能漂移 ——
+     * [writing] 由调用方决定, 所以这里原样保留。
+     */
+    private fun refresh(st: ViewerState): ViewerState {
+        val path = st.current?.path
+        val decision = path?.let { decisions.get(it) }
+        return st.copy(
+            rating = decision?.rating,
+            label = decision?.label,
+            sync = decision?.sync ?: SyncState.UNTOUCHED,
+            writeFailure = decision?.lastError,
+            unsyncedCount = decisions.unsynced().size,
+        )
     }
 
     // ── 加载结果(界面把 Coil 的结果回报进来) ────────────────────────────────

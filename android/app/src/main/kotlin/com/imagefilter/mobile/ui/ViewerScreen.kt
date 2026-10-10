@@ -45,6 +45,7 @@ import coil3.compose.AsyncImage
 import coil3.request.ImageRequest
 import com.imagefilter.mobile.data.Pairing
 import com.imagefilter.mobile.data.ViewerAction
+import com.imagefilter.mobile.data.WriteAction
 import kotlinx.coroutines.launch
 
 /** 单指水平拖动多少 dp 算"切一张"。像素换算只在这里做一次(状态机只认像素)。 */
@@ -62,10 +63,12 @@ private val VIEWER_DRAG_THRESHOLD = 56.dp
  *   · **双指捏合** → 进入查看态;
  *   · **查看态(>1x)**: 单指 = 平移(**不切图**); 缩回 1x 自动贴边归位。
  *
- * 三个"绝不"都对应一次真实的坏结果:
+ * 四个"绝不"都对应一次真实的坏结果:
  *   · **绝不在这里拼 URL** —— 全部来自 [ViewerState.displayUrl](由 `ApiClient.previewUrl` 拼);
  *   · **绝不预取高清** —— 预取只发默认档(高清是电脑全解码, 预取它等于每滑一张卡一次);
- *   · **绝不给白屏** —— 默认档失败画错误卡(有话+有动作), 高清失败退回默认档 + 一句提示。
+ *   · **绝不给白屏** —— 默认档失败画错误卡(有话+有动作), 高清失败退回默认档 + 一句提示;
+ *   · **绝不自己判"写成了"** —— 星级/色标的成败只由服务端的逐项回报决定(见 [DecisionStore]);
+ *     写失败时**不回滚、不前进**, 而是把那句话与重试摆到用户眼前(规格 §11 纪律③)。
  *
  * ⚠️ **本文件的手势部分没有真机验证**(本轮没有设备): 三个检测器(`detectTransformGestures`
  * / `detectTapGestures` / Coil 的加载)都是 Compose/Coil 的标准用法, 但"双指捏合与单指拖动
@@ -77,6 +80,11 @@ fun ViewerScreen(
     /** 网格里的照片(`GridItem`), 顺序逐字保留。 */
     items: List<GridItem>,
     startIndex: Int,
+    /**
+     * 星级/色标的本地镜像与推送。**由网格建、由网格持有**(见 [GridScreen]) —— 它必须活得比
+     * 查看器久: 关掉查看器就丢掉"哪张改了还没写成", 正是规格 §11 纪律③最怕的静默。
+     */
+    decisions: DecisionStore,
     onClose: () -> Unit,
     /**
      * 「回网格刷新」这个动作 —— 由网格提供(它有 `GridViewModel`)。查看器自己刷新不了目录。
@@ -94,7 +102,7 @@ fun ViewerScreen(
 
     // key 里有 items: 换目录(items 变了)必须换一份状态, 不许把上一个目录的照片留在屏幕上。
     // List 的 equals 是结构比较 → "刷新后内容没变"不会重建状态机。
-    val vm = remember(pairing, items, startIndex) {
+    val vm = remember(pairing, items, startIndex, decisions) {
         ViewerViewModel(
             pairing = pairing,
             items = items,
@@ -107,6 +115,7 @@ fun ViewerScreen(
                     imageLoader.enqueue(ImageRequest.Builder(context).data(url).build())
                 }
             },
+            decisions = decisions,
         )
     }
     val state by vm.state.collectAsState()
@@ -125,6 +134,9 @@ fun ViewerScreen(
                 canRequestHighRes = state.canRequestHighRes,
                 highResLoading = state.highResLoading,
                 onHighRes = { vm.enterHighRes() },
+                // 跨张的"未同步 N 张"**带动作**: 没有动作的角标等于让用户知道出事了却做不了什么
+                unsyncedLabel = state.unsyncedLabel,
+                onRetryUnsynced = { scope.launch { vm.retryAllUnsynced() } },
                 onClose = onClose,
             )
 
@@ -249,17 +261,111 @@ fun ViewerScreen(
                     )
                 }
             }
+
+            // ── 决策(星级/色标)的写入结果 ───────────────────────────────────
+            //
+            // 纪律③("未同步 ≠ 已同步")在查看器里的落点就在这三行: 失败要说清 + 给动作,
+            // 批量重试的半成功要说清, 其余时候也要有一句"这台手机上的改动还没写进电脑"。
+            val writeFailure = state.writeFailure
+            val batchNote = state.lastBatchNote
+            val unsyncedNote = state.unsyncedNote
+            when {
+                writeFailure != null -> WriteFailureCard(
+                    head = state.writeHead.orEmpty(),
+                    text = state.writeText.orEmpty(),
+                    action = state.writeAction,
+                    actionLabel = state.writeActionLabel.orEmpty(),
+                    onRetry = { scope.launch { vm.retryCurrent() } },
+                    onReloadFolder = {
+                        onReloadFolder()
+                        onClose()
+                    },
+                    onReconnect = onClose,
+                    onDismiss = { vm.dismissWriteFailure() },
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
+                )
+
+                batchNote != null -> ViewerNotice(loading = false, text = batchNote)
+
+                unsyncedNote != null -> Text(
+                    unsyncedNote,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                    modifier = Modifier.padding(start = 12.dp, end = 12.dp, bottom = 4.dp),
+                )
+            }
+
+            // 底部: 星级 + 色标。**写完不自动前进**(M2′ 的查看器是手动切图的那一种),
+            // 失败更不前进 —— 见 ViewerViewModel.commit 的注释。
+            RatingBar(
+                rating = state.rating,
+                label = state.label,
+                enabled = !state.writing,
+                writing = state.writing,
+                onRating = { stars -> scope.launch { vm.setRating(stars) } },
+                onLabel = { label -> scope.launch { vm.setLabel(label) } },
+            )
         }
     }
 }
 
-/** 顶部: 文件名 · (i/N) + 「高清」+「关闭」。**高清是显式入口, 不是预取**。 */
+/**
+ * 写入失败的卡: 一行标题 + 服务端那条码对应的话 + **那一个**动作。
+ *
+ * 动作字由 [ViewerState.writeActionLabel] 给(它查 `WriteMessages`), 这里一个字都不拼 ——
+ * "重试写入"与"知道了（要去电脑上改）"要做的事不在一台设备上, 字必须不一样。
+ */
+@Composable
+private fun WriteFailureCard(
+    head: String,
+    text: String,
+    action: WriteAction?,
+    actionLabel: String,
+    onRetry: () -> Unit,
+    onReloadFolder: () -> Unit,
+    onReconnect: () -> Unit,
+    onDismiss: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Card(
+        modifier = modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer),
+    ) {
+        Column(modifier = Modifier.padding(12.dp)) {
+            Text(head, style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.error)
+            Spacer(Modifier.height(6.dp))
+            Text(text, style = MaterialTheme.typography.bodySmall)
+            Spacer(Modifier.height(4.dp))
+            Row(horizontalArrangement = Arrangement.End, modifier = Modifier.fillMaxWidth()) {
+                // 只有"重试"需要一个额外的出口: 现在不方便重试的用户可以把这句话收起来,
+                // **改动本身与"未同步"标记都留着**(dismiss 不会假装写成了)。
+                if (action == WriteAction.RETRY) {
+                    TextButton(onClick = onDismiss) { Text("知道了") }
+                }
+                TextButton(
+                    onClick = when (action) {
+                        WriteAction.RETRY -> onRetry
+                        WriteAction.RELOAD_FOLDER -> onReloadFolder
+                        // 手机上做不了重新配对(那要去目录页的「设置」)→ 关掉查看器, 那是唯一的下一步
+                        WriteAction.RECONNECT -> onReconnect
+                        WriteAction.PC_SIDE, WriteAction.DISMISS, null -> onDismiss
+                    },
+                ) { Text(actionLabel.ifBlank { "知道了" }) }
+            }
+        }
+    }
+}
+
+/** 顶部: 文件名 · (i/N) + 「未同步 N 张」+「高清」+「关闭」。**高清是显式入口, 不是预取**。 */
 @Composable
 private fun ViewerTopBar(
     title: String,
     canRequestHighRes: Boolean,
     highResLoading: Boolean,
     onHighRes: () -> Unit,
+    /** 非 null = 有"改了但电脑还没写成"的改动(纪律③的可见性; 跨张计数, 不只是当前这张)。 */
+    unsyncedLabel: String?,
+    onRetryUnsynced: () -> Unit,
     onClose: () -> Unit,
 ) {
     Surface(tonalElevation = 3.dp) {
@@ -277,6 +383,12 @@ private fun ViewerTopBar(
             if (highResLoading) {
                 CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
                 Spacer(Modifier.width(4.dp))
+            }
+            // 未同步角标**本身就是按钮**: 点一下把这一批重试一遍(没有动作的警告等于没警告)。
+            if (unsyncedLabel != null) {
+                TextButton(onClick = onRetryUnsynced) {
+                    Text(unsyncedLabel, color = MaterialTheme.colorScheme.error)
+                }
             }
             TextButton(onClick = onHighRes, enabled = canRequestHighRes) { Text("高清") }
             TextButton(onClick = onClose) { Text("关闭") }

@@ -42,6 +42,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import coil3.ImageLoader
 import coil3.compose.AsyncImage
+import com.imagefilter.mobile.data.ApiClient
 import com.imagefilter.mobile.data.FolderEntryDto
 import com.imagefilter.mobile.data.Pairing
 import kotlinx.coroutines.CoroutineScope
@@ -84,6 +85,21 @@ fun GridScreen(
     // (桌面端为此误判过两次: 文案是给人看的, 不能当状态)。
     var viewerIndex by remember { mutableStateOf<Int?>(null) }
 
+    /**
+     * 星级/色标的本地镜像 —— **建在这里, 由网格持有**。
+     *
+     * 为什么不是建在查看器里: 它的寿命必须比查看器长。放进查看器的话, 用户一旦关掉查看器
+     * (或切了张)这份"哪张改了、哪张没写成"就随 ViewModel 一起没了 —— 而规格 §11 纪律③
+     * 要的正是"未同步 ≠ 已同步"**看得见**。放在网格这一层, 它就与"这个文件夹开着"同寿。
+     *
+     * 它自己那个 [ApiClient] 与网格/查看器/Coil 共用**同一个 OkHttpClient**
+     * ([ApiClient] 的默认参数走 `SharedHttpClient.forToken`), 所以"JSON 通、图片 401"那种
+     * 分裂在结构上不成立。M2′ Task 3 的筛选与网格角标直接用它。
+     */
+    val decisions = remember(pairing) {
+        DecisionStore(ApiClient(pairing.url, pairing.token))
+    }
+
     // 系统返回键 = 回目录页。少这一条, 真机上按返回会直接退出 App(而界面里那个
     // 「返回」按钮还在)—— 这是这一页最容易漏掉的一条。
     BackHandler { onBack() }
@@ -108,6 +124,7 @@ fun GridScreen(
                 pairing = pairing,
                 items = state.items,
                 startIndex = index,
+                decisions = decisions,
                 onClose = { viewerIndex = null },
                 // 「回网格刷新」这个动作只有网格做得了(它有 GridViewModel)
                 onReloadFolder = { scope.launch { vm.load() } },
