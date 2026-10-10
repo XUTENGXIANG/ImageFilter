@@ -17,9 +17,8 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
-import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.grid.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
@@ -45,6 +44,7 @@ import coil3.ImageLoader
 import coil3.compose.AsyncImage
 import com.imagefilter.mobile.data.FolderEntryDto
 import com.imagefilter.mobile.data.Pairing
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 
 /**
@@ -64,7 +64,8 @@ import kotlinx.coroutines.launch
  *   · **不手写预取**: Coil 对 `LazyGrid` 可见区已经做了该做的事, 桌面端那套
  *     IntersectionObserver 是 Web 的补偿手段, 在 Compose 里是多余的。
  *
- * 点击格子**只弹一句话** —— 看大图的查看器是 M2′ 的任务, M1′ 不顺手做掉。
+ * 点击格子打开**查看器**(M2′): 它是盖在网格上的一层(下面的网格保持在场), 所以关掉查看器
+ * 时滚动位置、已经取到的缩略图都还在。查看器自己的逻辑全在 [ViewerViewModel] 里。
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -79,7 +80,9 @@ fun GridScreen(
     val scope = rememberCoroutineScope()
     // ImageLoader 与 ViewModel 共用同一枚 token 的**同一个** OkHttpClient(见它的 KDoc)
     val imageLoader = rememberAppImageLoader(pairing.token)
-    var viewerNotice by remember { mutableStateOf(false) }
+    // null = 没开查看器; 非 null = 正在看第几张。**不用任何文案判断查看器开没开**
+    // (桌面端为此误判过两次: 文案是给人看的, 不能当状态)。
+    var viewerIndex by remember { mutableStateOf<Int?>(null) }
 
     // 系统返回键 = 回目录页。少这一条, 真机上按返回会直接退出 App(而界面里那个
     // 「返回」按钮还在)—— 这是这一页最容易漏掉的一条。
@@ -87,6 +90,44 @@ fun GridScreen(
 
     LaunchedEffect(vm) { vm.load() }
 
+    // Box 是为了让查看器盖在网格之上(而不是替换掉网格 —— 替换会把滚动位置丢掉)
+    Box(modifier = Modifier.fillMaxSize()) {
+        GridContent(
+            vm = vm,
+            state = state,
+            folder = folder,
+            imageLoader = imageLoader,
+            onBack = onBack,
+            scope = scope,
+            onOpenViewer = { index -> viewerIndex = index },
+        )
+
+        val index = viewerIndex
+        if (index != null && state.items.isNotEmpty()) {
+            ViewerScreen(
+                pairing = pairing,
+                items = state.items,
+                startIndex = index,
+                onClose = { viewerIndex = null },
+                // 「回网格刷新」这个动作只有网格做得了(它有 GridViewModel)
+                onReloadFolder = { scope.launch { vm.load() } },
+            )
+        }
+    }
+}
+
+/** 网格本体(顶栏 + 错误卡 + 格子)。查看器是它的**上层**, 见 [GridScreen]。 */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun GridContent(
+    vm: GridViewModel,
+    state: GridState,
+    folder: FolderEntryDto,
+    imageLoader: ImageLoader,
+    onBack: () -> Unit,
+    scope: CoroutineScope,
+    onOpenViewer: (Int) -> Unit,
+) {
     Scaffold(
         topBar = {
             TopAppBar(
@@ -153,27 +194,13 @@ fun GridScreen(
                 state.hasPhotos -> PhotoGrid(
                     items = state.items,
                     imageLoader = imageLoader,
-                    onCellClick = { viewerNotice = true },
+                    onCellClick = onOpenViewer,
                 )
 
                 // 失败且一张都没有: 上面那张错误卡就是全部内容, 这里不再画第二句话
                 else -> Unit
             }
         }
-    }
-
-    if (viewerNotice) {
-        AlertDialog(
-            onDismissRequest = { viewerNotice = false },
-            title = { Text("查看器还没做") },
-            text = {
-                Text(
-                    "M1′ 只做到网格：点格子看大图的查看器是 M2′ 的任务" +
-                        "（预览端点与画质档位在服务端已经就绪）。",
-                )
-            },
-            confirmButton = { TextButton(onClick = { viewerNotice = false }) { Text("知道了") } },
-        )
     }
 }
 
@@ -182,12 +209,15 @@ fun GridScreen(
  *
  * 是 [ColumnScope] 的扩展, 只为一件事: `Modifier.weight(1f)` 只有在这个作用域里才存在
  * (与 [BrowseScreen] 的 `SelectedFolder` 同一个写法)。
+ *
+ * `onCellClick` 收的是**下标**(不是格子): 查看器需要"从第几张开始", 而格子本身的数据
+ * 它自己会从同一个 `items` 里取。
  */
 @Composable
 private fun ColumnScope.PhotoGrid(
     items: List<GridItem>,
     imageLoader: ImageLoader,
-    onCellClick: (GridItem) -> Unit,
+    onCellClick: (Int) -> Unit,
 ) {
     LazyVerticalGrid(
         // Adaptive(96.dp): 窄屏两列、平板多列 —— 列数不写死, 但每格是正方形
@@ -199,8 +229,8 @@ private fun ColumnScope.PhotoGrid(
         horizontalArrangement = Arrangement.spacedBy(4.dp),
     ) {
         // key = 路径: Coil 的缓存与滚动位置都跟着它, 刷新后同一张图不会被当成新格子
-        items(items, key = { it.path }) { item ->
-            GridCell(item = item, imageLoader = imageLoader, onClick = { onCellClick(item) })
+        itemsIndexed(items, key = { _, item -> item.path }) { index, item ->
+            GridCell(item = item, imageLoader = imageLoader, onClick = { onCellClick(index) })
         }
     }
 }
