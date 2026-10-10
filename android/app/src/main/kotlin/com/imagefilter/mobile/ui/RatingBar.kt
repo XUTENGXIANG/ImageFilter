@@ -33,8 +33,11 @@ import androidx.compose.ui.unit.sp
 /**
  * 五色标签对应的颜色。**只在这里出现一次** —— 与 [LABELS] 的取值一一对应
  * (桌面端 `labels.ts` 的五色). 颜色不是协议的一部分, 协议只是那五个字符串。
+ *
+ * `internal` 而不是 `private`: 网格格子的色标角标([GridCells.kt])要画**同一个**颜色 ——
+ * 两处各写一份调色板, 迟早有一处忘记跟着改, 而"红标"在筛选栏与格子上就不是一个红了。
  */
-private val LABEL_COLORS: Map<String, Color> = mapOf(
+internal val LABEL_COLORS: Map<String, Color> = mapOf(
     "red" to Color(0xFFE53935),
     "yellow" to Color(0xFFFDD835),
     "green" to Color(0xFF43A047),

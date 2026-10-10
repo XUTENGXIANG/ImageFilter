@@ -5,7 +5,11 @@ package com.imagefilter.mobile.ui
 import com.imagefilter.mobile.data.ApiClient
 import com.imagefilter.mobile.data.ApiException
 import com.imagefilter.mobile.data.DecisionDto
+import com.imagefilter.mobile.data.DecisionReadDto
+import com.imagefilter.mobile.data.DecisionReadFailure
 import com.imagefilter.mobile.data.FailureSource
+import com.imagefilter.mobile.data.ReadMessages
+import com.imagefilter.mobile.data.ReadSource
 import com.imagefilter.mobile.data.WriteFailure
 import com.imagefilter.mobile.data.WriteMessages
 import com.imagefilter.mobile.data.WriteSummaryDto
@@ -163,7 +167,59 @@ internal fun afterAck(current: Decision?, sent: DecisionDto, failure: WriteFailu
 }
 
 /**
- * 本地决策镜像 + 推送(规格 §4.3 / §11 三条纪律)。
+ * 一次**文件夹级**远端读取的合并结果。
+ *
+ * 为什么把三个计数做成返回值而不是"合完就算": **"本地意图赢了没有"必须是一个可断言的事实**。
+ * 只断言"最后看到的星级是 4"是不够的 —— 那可能是"远端值被采纳了恰好也是 4"或者"整个合并根本没跑"
+ * 蒙对的。三个计数说清每一类路径各归了谁。
+ */
+data class MergeOutcome(
+    /** 远端值被采纳(本地对这张**没有任何意图**)。 */
+    val adopted: Int,
+    /** 远端值被**本地意图**挡住 —— 本任务核心不变量的落点, 这个数不许为 0 当本地有未同步改动时。 */
+    val keptLocal: Int,
+    /** 远端说这张什么都没有(rating/label 都是 null)且本地没动过 → 把之前合并进来的那条**清掉**。 */
+    val cleared: Int,
+)
+
+/**
+ * 一次**文件夹级决策读取**(`GET /api/v1/decisions?paths=…`)的结论。
+ *
+ * 与 [PushResult] 同一种形状、同一条理由: 三件不同的事不许混成一个布尔值 ——
+ *   · [Merged] —— 服务端把问到的**每一张**都回报了;
+ *   · [Partial] —— 200 但**没回报全**(少一条就算; 已经回来的那些是真值, 照常采纳, 但张数只能说
+ *     "未统计" —— 与 [WriteMessages.UNCONFIRMED] 同一条"没有被确认就不许说知道"的纪律);
+ *   · [Failed] —— 整个请求没被确认(HTTP 错误 / 网络断了): 远端值**一个都不采纳**, 而本地意图
+ *     一个字节都不动(读取失败绝不允许碰它);
+ *   · [NothingToRead] —— 手机上这些路径**没有照片**(空文件夹), 一个请求都没发出去。
+ *
+ * [requested] 逐字是**手机上问出去的张数**(不减去服务端报回来的), 与 [PushResult] 一致。
+ */
+sealed class RemotePull {
+    abstract val requested: Int
+
+    data class Merged(
+        override val requested: Int,
+        val merge: MergeOutcome,
+    ) : RemotePull()
+
+    /** 200 但没对上报回来的条目: [mismatched] 是**少报 + 多报**的条数之和。 */
+    data class Partial(
+        override val requested: Int,
+        val merge: MergeOutcome,
+        val mismatched: Int,
+    ) : RemotePull()
+
+    data class Failed(
+        override val requested: Int,
+        val failure: DecisionReadFailure,
+    ) : RemotePull()
+
+    data class NothingToRead(override val requested: Int) : RemotePull()
+}
+
+/**
+ * 本地决策镜像 + 推送 + **文件夹级远端读取的合并**(规格 §4.3 / §11 三条纪律)。
  *
  * 1. **乐观更新**: 用户点星后界面立刻变 —— 网络往返不该让人等;
  * 2. **失败不回滚丢弃**: 保留本地值并**明确报告**失败。静默回滚会让用户以为"白打了一次分",
@@ -173,6 +229,11 @@ internal fun afterAck(current: Decision?, sent: DecisionDto, failure: WriteFailu
  *
  * 这个类**不做重试队列的持久化**(那是 M3′ 的待重试面板): 它只保证"这一次改动有没有落盘"
  * 在同一会话里可见、可重试。
+ *
+ * ⚠️ 本类里**有两个镜像**, 它们的分工是本任务最容易出错的地方:
+ *   · [local] —— **这台手机上的意图**(只有 `applyLocal` 与推送回报写它);
+ *   · [remote] —— 电脑上**上一次读到的**值(只有 [mergeRemote] 写它, 且只在本地没动过时)。
+ *   [get] 把两者合成一份"界面该看到什么", 顺序是 [local] 优先 —— 见 [mergeRemote] 的 KDoc。
  */
 class DecisionStore(private val api: ApiClient) {
     private val mutex = Mutex()
@@ -183,13 +244,147 @@ class DecisionStore(private val api: ApiClient) {
      */
     private val local = LinkedHashMap<String, Decision>()
 
+    /**
+     * 电脑上读到的值, 按路径。**只有 [mergeRemote] 写它**。
+     *
+     * 与 [local] 分开存的理由不是洁癖, 是三条真实的行为差异:
+     *   · [push] 只读 [local] —— 远端值**永远不会**被当成"用户改过的东西"再发回电脑
+     *     (那会是一次没有用户的写入, 纪律①"绝不静默覆盖"最怕的就是它);
+     *   · [unsynced] 只读 [local] —— 远端值不可能混进"未同步 N 张"这个角标里;
+     *   · [get] 的 `local[path] ?: remote[path]` 是**唯一**的优先级执法点(见 [mergeRemote])。
+     *
+     * ⚠️ 远端值**照存不误**, 哪怕本地对同一张有意图(那时它被 [get] 挡住)。刻意如此:
+     * 优先级若在"存"与"读"两处各执法一遍, 两处就会互相掩盖 —— 任何单点修改都测不出来。
+     */
+    private val remote = LinkedHashMap<String, Decision>()
+
     /** 没动过的路径也要能回答(**不是** null): 界面拿到的永远是一份完整的意图。 */
-    fun get(path: String): Decision = local[path] ?: Decision(path)
+    fun get(path: String): Decision = local[path] ?: remote[path] ?: Decision(path)
 
     fun all(): List<Decision> = local.values.toList()
 
     /** 改过但电脑还没确认的那些 —— 纪律③的"未同步"就是这个集合。 */
     fun unsynced(): List<Decision> = local.values.filter { it.sync == SyncState.UNSYNCED }
+
+    /**
+     * 合并之后的**每一张**(本地意图优先, 其余用远端值) —— 筛选与张数统计的输入。
+     *
+     * ⚠️ 刻意**逐条走 [get]**: 优先级只在 `get` 那一行里决定, 这里不再写第二遍 ——
+     * 两处各写一遍的话, 改错一处就会让"网格里显示 4 星、查看器里显示 2 星"这种分裂复活,
+     * 而且**任何单点修改都测不出来**(两个实现互相掩盖)。这也是本任务核心不变量的执法点。
+     *
+     * 只包含"本地动过或远端读到过"的路径: 两者都没有的路径本来就没有决策可言
+     * ([get] 会给一份空的 [Decision])。
+     */
+    fun resolved(): Map<String, Decision> {
+        val paths = LinkedHashSet<String>().apply {
+            addAll(remote.keys)
+            addAll(local.keys)
+        }
+        return paths.associateWith { get(it) }
+    }
+
+    /**
+     * 把一次**文件夹级**远端读取合并进本地。
+     *
+     * ⚠️ **本地意图优先, 这条规则没有例外** —— 只要用户在这台手机上对某一张说过话
+     * ([local] 里有它), 远端值就**不许**覆盖它:
+     *
+     *   · `UNSYNCED`(**本任务的核心不变量**): 用户离线打了 4 星, 电脑上还是 2 星。采纳远端
+     *     就等于把用户**还没发出去**的决定静默删掉 —— 这是纪律③("未同步 ≠ 已同步")最贵的
+     *     一种失败: 他会看到星星自己变回 2, 而且没有任何提示。
+     *   · `SYNCED`: 服务端确认过的那一版同样不许被一次**更早发出的**读取翻回去。"刷新"(读)与
+     *     "打分"(写)是并发的两条链, 旧快照回来时会把屏幕上已经落定的值改成旧的 —— 同一件事的
+     *     另一面, 所以一并挡住。
+     *   · `UNTOUCHED` 的本地条目不存在([applyLocal] 一律标 [SyncState.UNSYNCED]), 所以"没动过"
+     *     就只有"远端有值"这一种形态。
+     *
+     * **执法点在 [get] 那一行**(`local[path] ?: remote[path]`); 这里只负责如实**数**出
+     * 挡住/采纳/清掉各几条([MergeOutcome])—— 那三个数就是"本地赢了没有"的可断言形态。
+     * (若在"存"这一侧再挡一道, 两个实现就会互相掩盖: 任何单点修改都测不出来。)
+     *
+     * 代价是**明说的**: 电脑上后来改过、而这台手机上也改过的那一张, 在同一个 store 活着的时候
+     * 会以本地为准; 想拿电脑上的最新值就重新进这个文件夹(store 会重建并重新读一次)。
+     *
+     * 远端报 `rating`/`label` 都是 `null`(电脑上确实没有星级/色标)时**不是**"采纳一个空值",
+     * 而是把之前合并进来的那条清掉 —— 否则电脑上清掉的评分会在这台手机的角标上留着。
+     */
+    fun mergeRemote(read: List<DecisionReadDto>): MergeOutcome {
+        var adopted = 0
+        var keptLocal = 0
+        var cleared = 0
+        for (dto in read) {
+            val path = dto.path
+            // 没有路径的条目归不到任何一张照片上, 采纳它只会让 resolved() 多一条没人能查到的记录。
+            if (path.isBlank()) continue
+            // 本地对这张有没有意图 —— 只用来**数**, 不用来决定存不存(见类 KDoc 与 resolved()):
+            // 优先级只在 get 那一处执法, 这里再挡一道就会变成"两个实现互相掩盖"。
+            val localWins = local.containsKey(path)
+            if (dto.rating == null && dto.label == null) {
+                if (remote.remove(path) != null) cleared++
+                continue
+            }
+            remote[path] = Decision(
+                path = path,
+                rating = dto.rating,
+                label = dto.label,
+                // 电脑上的值**不是**这台手机上的意图: 它没有"未同步"这回事(纪律③),
+                // 也不该让界面去标一个未同步角标。
+                sync = SyncState.UNTOUCHED,
+            )
+            if (localWins) keptLocal++ else adopted++
+        }
+        return MergeOutcome(adopted = adopted, keptLocal = keptLocal, cleared = cleared)
+    }
+
+    /**
+     * 读一次**文件夹级**的决策并合并(规格 §5.1 的 `GET /decisions?paths=…`)。
+     *
+     * 失败**绝不清空本地意图**(读取是只读操作, 它没有任何资格改动用户的评分), 也绝不清空
+     * 上一次读到的远端值 —— 把已知的东西抹掉比留在那儿更坏。失败本身由返回值如实带出去,
+     * 由界面显示成状态([DecisionReadFailure])。
+     *
+     * 401 与其它链路同一条纪律: **第一次 401 绝不当成"token 被轮换"**, 必须复探消歧
+     * ([ApiClient.classifyUnauthorized])。
+     */
+    suspend fun pullRemote(paths: List<String>): RemotePull {
+        val requested = paths.distinct()
+        if (requested.isEmpty()) return RemotePull.NothingToRead(0)
+        return try {
+            merge(requested, api.readDecisions(requested))
+        } catch (e: ApiException) {
+            RemotePull.Failed(
+                requested = requested.size,
+                // HTTP 层的码查 §5.3 那张表(由 ReadSource.HTTP 指定, 不靠猜)。
+                failure = DecisionReadFailure(
+                    code = e.code,
+                    source = ReadSource.HTTP,
+                    cause = if (e.isUnauthorized) api.classifyUnauthorized() else null,
+                ),
+            )
+        } catch (e: IOException) {
+            // 协程被取消时 OkHttp 抛的也是 IOException —— 别把"用户退出了这一页"说成网络故障。
+            currentCoroutineContext().ensureActive()
+            RemotePull.Failed(
+                requested = requested.size,
+                failure = DecisionReadFailure(
+                    code = apiCodeFor(e),
+                    source = ReadSource.CLIENT,
+                ),
+            )
+        }
+    }
+
+    private fun merge(requested: List<String>, read: List<DecisionReadDto>): RemotePull {
+        val outcome = mergeRemote(read)
+        val asked = requested.toSet()
+        val got = read.map { it.path }.toSet()
+        // 逐条对账(与 WriteSummary 的"三项之和必须等于输入项数"同一条纪律): 多一条少一条都算
+        // "没对上" —— 这一份读回来的东西是我们对"电脑上这个文件夹现在是什么样"的**全部**依据。
+        val mismatched = requested.count { it !in got } + got.count { it !in asked }
+        if (mismatched == 0) return RemotePull.Merged(requested.size, outcome)
+        return RemotePull.Partial(requested.size, outcome, mismatched)
+    }
 
     /**
      * 用户改了一下(星级/色标): 立即生效(乐观更新), 并把它标成**未同步**。

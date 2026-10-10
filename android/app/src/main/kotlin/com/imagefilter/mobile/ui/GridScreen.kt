@@ -3,14 +3,12 @@
 package com.imagefilter.mobile.ui
 
 import androidx.activity.compose.BackHandler
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -18,7 +16,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.itemsIndexed
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
@@ -34,28 +31,24 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.painter.ColorPainter
-import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import coil3.ImageLoader
-import coil3.compose.AsyncImage
-import com.imagefilter.mobile.data.ApiClient
 import com.imagefilter.mobile.data.FolderEntryDto
 import com.imagefilter.mobile.data.Pairing
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 
 /**
- * 照片网格(M1′ 的价值点): 选中文件夹 → 缩略图铺满屏幕。
+ * 照片网格(M1′ 的价值点 + M2′ 的筛选与角标): 选中文件夹 → 缩略图铺满屏幕。
  *
  * 逻辑全在 [GridViewModel] 里(纯状态, JVM 单测覆盖); 这里只做三件事: 收状态、
  * 把用户动作转成方法调用、把图和文案画出来。所以这个文件里**没有一条业务判断** ——
- * 连"顶部写几个字"都来自 [GridState.countLabel]。
+ * 连"顶部写几个字"都来自 [GridState.countLabel], "当前显示 N / 共 M 张"来自
+ * [GridState.shownLabel], "哪些格子留下"来自 [GridState.visibleItems]。
  *
- * 四条来自契约的约束, 都在这里看得见:
+ * 五条来自契约的约束, 都在这里看得见:
  *   · **每个格子固定尺寸**(`aspectRatio(1f)` + `GridCells.Adaptive(96.dp)`):
  *     绝不让图片决定高度 —— 否则一屏格子随图片长宽比抖动, 滚动时行高乱跳;
  *   · **缩略图与 JSON 共用同一个带鉴权头的 OkHttpClient**(见 [rememberAppImageLoader]):
@@ -63,7 +56,10 @@ import kotlinx.coroutines.launch
  *   · **`v=<mtime>` 在 URL 上**(由 [GridItem.thumbnailUrl] 拼): 电脑上换掉照片后
  *     Coil 的缓存必须失效, 否则用户看到的是旧图;
  *   · **不手写预取**: Coil 对 `LazyGrid` 可见区已经做了该做的事, 桌面端那套
- *     IntersectionObserver 是 Web 的补偿手段, 在 Compose 里是多余的。
+ *     IntersectionObserver 是 Web 的补偿手段, 在 Compose 里是多余的;
+ *   · **筛选之后进查看器, 左右切图只在筛出来的那些里走**(查看器收的是
+ *     [GridState.visibleItems], 不是全部照片) —— 否则用户会把被筛掉的照片一张张翻出来,
+ *     而他明明刚说过"只想看 ≥3 星的"。
  *
  * 点击格子打开**查看器**(M2′): 它是盖在网格上的一层(下面的网格保持在场), 所以关掉查看器
  * 时滚动位置、已经取到的缩略图都还在。查看器自己的逻辑全在 [ViewerViewModel] 里。
@@ -86,25 +82,28 @@ fun GridScreen(
     var viewerIndex by remember { mutableStateOf<Int?>(null) }
 
     /**
-     * 星级/色标的本地镜像 —— **建在这里, 由网格持有**。
+     * 星级/色标的本地镜像 —— **由 ViewModel 持有, 由查看器借用**。
      *
-     * 为什么不是建在查看器里: 它的寿命必须比查看器长。放进查看器的话, 用户一旦关掉查看器
-     * (或切了张)这份"哪张改了、哪张没写成"就随 ViewModel 一起没了 —— 而规格 §11 纪律③
-     * 要的正是"未同步 ≠ 已同步"**看得见**。放在网格这一层, 它就与"这个文件夹开着"同寿。
+     * 它必须活得比查看器久: 放进查看器的话, 用户一旦关掉查看器(或切了张)这份"哪张改了、
+     * 哪张没写成"就随 ViewModel 一起没了 —— 而规格 §11 纪律③要的正是"未同步 ≠ 已同步"
+     * **看得见**。放在 ViewModel 里, 它的寿命就是"这个文件夹开着"。
      *
-     * 它自己那个 [ApiClient] 与网格/查看器/Coil 共用**同一个 OkHttpClient**
-     * ([ApiClient] 的默认参数走 `SharedHttpClient.forToken`), 所以"JSON 通、图片 401"那种
-     * 分裂在结构上不成立。M2′ Task 3 的筛选与网格角标直接用它。
+     * 筛选、角标与查看器用的是**同一份**(这是本任务的一条硬要求): 建两份的话, 格子上显示
+     * 4 星而查看器里显示 2 星只是时间问题。
      */
-    val decisions = remember(pairing) {
-        DecisionStore(ApiClient(pairing.url, pairing.token))
-    }
+    val decisions = vm.decisions
 
     // 系统返回键 = 回目录页。少这一条, 真机上按返回会直接退出 App(而界面里那个
     // 「返回」按钮还在)—— 这是这一页最容易漏掉的一条。
     BackHandler { onBack() }
 
-    LaunchedEffect(vm) { vm.load() }
+    // 进这个文件夹 = 文件列表 + **文件夹级的决策读取**(`GET /decisions?paths=…`)。
+    // 只调一次 loadAll 是刻意的: 谁忘了第二步, 筛选栏就会安静地整页说"未统计"。
+    LaunchedEffect(vm) { vm.loadAll() }
+
+    // 关掉查看器回到网格那一刻: store 里可能刚多了"改了但没写成"或"已同步"的条目,
+    // 抄一份进来(不碰网络) —— 否则角标与未同步边框会缺一块, 而那正是纪律③最怕的静默。
+    LaunchedEffect(viewerIndex) { if (viewerIndex == null) vm.refreshDecisions() }
 
     // Box 是为了让查看器盖在网格之上(而不是替换掉网格 —— 替换会把滚动位置丢掉)
     Box(modifier = Modifier.fillMaxSize()) {
@@ -119,21 +118,24 @@ fun GridScreen(
         )
 
         val index = viewerIndex
-        if (index != null && state.items.isNotEmpty()) {
+        // 查看器看的是**筛出来的**那些(不是全部照片): 左右切图不许切到被筛掉的照片
+        val visible = state.visibleItems
+        if (index != null && visible.isNotEmpty()) {
             ViewerScreen(
                 pairing = pairing,
-                items = state.items,
-                startIndex = index,
+                items = visible,
+                // 防御性夹一下: 打开期间若决策刷新让列表变了, 也不许越界崩掉
+                startIndex = index.coerceIn(0, visible.lastIndex),
                 decisions = decisions,
                 onClose = { viewerIndex = null },
                 // 「回网格刷新」这个动作只有网格做得了(它有 GridViewModel)
-                onReloadFolder = { scope.launch { vm.load() } },
+                onReloadFolder = { scope.launch { vm.loadAll() } },
             )
         }
     }
 }
 
-/** 网格本体(顶栏 + 错误卡 + 格子)。查看器是它的**上层**, 见 [GridScreen]。 */
+/** 网格本体(顶栏 + 筛选栏 + 错误卡 + 格子)。查看器是它的**上层**, 见 [GridScreen]。 */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun GridContent(
@@ -162,7 +164,15 @@ private fun GridContent(
                 },
                 navigationIcon = { TextButton(onClick = onBack) { Text("返回") } },
                 actions = {
-                    TextButton(onClick = { scope.launch { vm.load() } }) { Text("刷新") }
+                    // 顶栏的**待重试角标**(规格 §8.1), 与查看器同一个入口、同一句文案。
+                    // 它本身是按钮: 没有动作的角标等于让用户知道出事了却做不了什么。
+                    val unsynced = state.unsyncedLabel
+                    if (unsynced != null) {
+                        TextButton(onClick = { scope.launch { vm.retryUnsynced() } }) {
+                            Text(unsynced, color = MaterialTheme.colorScheme.error)
+                        }
+                    }
+                    TextButton(onClick = { scope.launch { vm.loadAll() } }) { Text("刷新") }
                 },
             )
         },
@@ -175,8 +185,19 @@ private fun GridContent(
                 fontFamily = FontFamily.Monospace,
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.padding(start = 12.dp, end = 12.dp, top = 4.dp, bottom = 8.dp),
+                modifier = Modifier.padding(start = 12.dp, end = 12.dp, top = 4.dp, bottom = 4.dp),
             )
+
+            // 筛选栏(星级 / 色标 / 未同步, 规格 §8.1)。三个维度上的张数由 FilterCounts 给 ——
+            // 读不到电脑上原有的值时它说"未统计", 不拿 0 顶上。
+            FilterBar(
+                f = state.filters,
+                counts = state.counts,
+                shown = state.visibleItems.size,
+                total = state.items.size,
+                onChange = { vm.setFilters(it) },
+            )
+            Spacer(Modifier.height(4.dp))
 
             val error = state.error
             if (error != null) {
@@ -185,8 +206,36 @@ private fun GridContent(
                     ErrorCard(
                         head = "这个文件夹的照片没读出来",
                         text = error.text(),
-                        onRetry = { scope.launch { vm.load() } },
+                        onRetry = { scope.launch { vm.loadAll() } },
                     )
+                }
+                Spacer(Modifier.height(8.dp))
+            }
+
+            // 决策读取失败: **单独一张卡**, 与上面的文件列表失败分开 —— 照片照样能看,
+            // 受影响的是筛选栏上的张数与角标(所以正文必须说清这件事, 见 ReadMessages)。
+            val readFailure = state.readFailure
+            if (readFailure != null) {
+                Box(modifier = Modifier.padding(horizontal = 12.dp)) {
+                    ReadFailureCard(
+                        head = state.readFailureHead.orEmpty(),
+                        text = state.readFailureText.orEmpty(),
+                        action = state.readFailureAction,
+                        actionLabel = state.readFailureActionLabel.orEmpty(),
+                        onRetry = { scope.launch { vm.loadDecisions() } },
+                        // 「回目录页重新配对」在网格里能做的那一步就是返回(重新配对在目录页的「设置」)
+                        onReconnect = onBack,
+                        onDismiss = { vm.clearReadFailure() },
+                    )
+                }
+                Spacer(Modifier.height(8.dp))
+            }
+
+            // 重新推送"未同步"那一批的**批次级**结论(半成功必须说出来, 纪律②)
+            val batchNote = state.lastBatchNote
+            if (batchNote != null) {
+                Box(modifier = Modifier.padding(horizontal = 12.dp)) {
+                    HintCard(body = batchNote)
                 }
                 Spacer(Modifier.height(8.dp))
             }
@@ -208,8 +257,14 @@ private fun GridContent(
                     HintCard(body = state.emptyMessage ?: GRID_EMPTY)
                 }
 
-                state.hasPhotos -> PhotoGrid(
-                    items = state.items,
+                // **有照片但全被筛掉**是另一句话: 说成"没有照片"会让用户以为照片丢了
+                state.allFilteredOut -> Box(modifier = Modifier.padding(12.dp)) {
+                    HintCard(body = state.filteredOutNotice ?: filteredOutMessage(state.items.size))
+                }
+
+                state.hasVisiblePhotos -> PhotoGrid(
+                    items = state.visibleItems,
+                    decisions = state.decisions,
                     imageLoader = imageLoader,
                     onCellClick = onOpenViewer,
                 )
@@ -228,11 +283,13 @@ private fun GridContent(
  * (与 [BrowseScreen] 的 `SelectedFolder` 同一个写法)。
  *
  * `onCellClick` 收的是**下标**(不是格子): 查看器需要"从第几张开始", 而格子本身的数据
- * 它自己会从同一个 `items` 里取。
+ * 它自己会从同一个 `items` 里取 —— 那个下标因此是**筛出来的列表**里的下标, 与查看器拿到
+ * 的列表是同一个, 这正是"筛选后切图不会切到被筛掉的照片"的实现方式。
  */
 @Composable
 private fun ColumnScope.PhotoGrid(
     items: List<GridItem>,
+    decisions: Map<String, Decision>,
     imageLoader: ImageLoader,
     onCellClick: (Int) -> Unit,
 ) {
@@ -247,35 +304,13 @@ private fun ColumnScope.PhotoGrid(
     ) {
         // key = 路径: Coil 的缓存与滚动位置都跟着它, 刷新后同一张图不会被当成新格子
         itemsIndexed(items, key = { _, item -> item.path }) { index, item ->
-            GridCell(item = item, imageLoader = imageLoader, onClick = { onCellClick(index) })
+            GridCell(
+                item = item,
+                // 决策来自**唯一**那份真相的快照(star/色标角标与未同步边框都靠它)
+                decision = decisions[item.path],
+                imageLoader = imageLoader,
+                onClick = { onCellClick(index) },
+            )
         }
-    }
-}
-
-/**
- * 一格。固定正方形 + `ContentScale.Crop` —— 缩略图是服务端按长边降采样出来的,
- * 宽高比各不相同, 不 Crop 就会在格子里留白或变形。
- *
- * 占位是**纯色块**(Coil 的 `placeholder`/`error` 两个 painter): M1′ 不为观感引入
- * shimmer 动画与额外算力。
- */
-@Composable
-private fun GridCell(item: GridItem, imageLoader: ImageLoader, onClick: () -> Unit) {
-    Box(
-        modifier = Modifier
-            .aspectRatio(1f)
-            .clip(RoundedCornerShape(6.dp))
-            .clickable(onClick = onClick),
-    ) {
-        AsyncImage(
-            model = item.thumbnailUrl,
-            imageLoader = imageLoader,
-            // 读屏时要能听懂这是哪一张(文件名就是用户在电脑上看到的那个名字)
-            contentDescription = item.displayName,
-            contentScale = ContentScale.Crop,
-            placeholder = ColorPainter(MaterialTheme.colorScheme.surfaceVariant),
-            error = ColorPainter(MaterialTheme.colorScheme.errorContainer),
-            modifier = Modifier.fillMaxSize(),
-        )
     }
 }
