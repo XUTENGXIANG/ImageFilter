@@ -24,7 +24,6 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -217,6 +216,10 @@ fun PairingScreen(onPaired: (Pairing) -> Unit) {
         modifier = Modifier
             .fillMaxSize()
             .verticalScroll(rememberScrollState())
+            // 这是首屏, 没有 Scaffold/TopAppBar 的 `windowInsets` 默认值 —— 少了这两行,
+            // 标题「配对电脑」会被状态栏压住, 最后那段说明会被手势条压住(见 [topBarInsets])。
+            .topBarInsets()
+            .bottomBarInsets()
             .padding(24.dp),
     ) {
         Text("配对电脑", style = MaterialTheme.typography.headlineSmall)
@@ -261,20 +264,18 @@ fun PairingScreen(onPaired: (Pairing) -> Unit) {
             value = url,
             onValueChange = { url = it; invalidate() },
             label = { Text("电脑地址") },
-            placeholder = { Text("http://192.168.1.5:8765") },
+            placeholder = { Text(PairingMessages.URL_EXAMPLE) },
             singleLine = true,
             isError = urlProblem != null,
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
+            // FIX 4: 形状要说在**一直看得见**的地方 —— 占位符只在框为空且聚焦时才出现,
+            // 而第一次配对的人正是看着空框在猜("localhost? 主机名? 要带端口吗?")。
+            // 出错时这一行换成那句话(**一处**说一件事, 不再另起一行重复)。
+            supportingText = {
+                Text(urlProblem?.let { PairingMessages.forInputProblem(it) } ?: PairingMessages.ADDRESS_HINT)
+            },
             modifier = Modifier.fillMaxWidth(),
         )
-        val urlErr = urlProblem
-        if (urlErr != null) {
-            Text(
-                PairingMessages.forInputProblem(urlErr),
-                color = MaterialTheme.colorScheme.error,
-                style = MaterialTheme.typography.bodySmall,
-            )
-        }
         Spacer(Modifier.height(12.dp))
 
         OutlinedTextField(
@@ -290,19 +291,15 @@ fun PairingScreen(onPaired: (Pairing) -> Unit) {
                 PasswordVisualTransformation()
             },
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Ascii),
+            supportingText = {
+                Text(
+                    tokenProblem?.let { PairingMessages.forInputProblem(it) }
+                        ?: PairingMessages.TOKEN_HINT,
+                )
+            },
             modifier = Modifier.fillMaxWidth(),
         )
-        val tokenErr = tokenProblem
-        if (tokenErr != null) {
-            Text(
-                PairingMessages.forInputProblem(tokenErr),
-                color = MaterialTheme.colorScheme.error,
-                style = MaterialTheme.typography.bodySmall,
-            )
-        }
-        TextButton(onClick = { showToken = !showToken }) {
-            Text(if (showToken) "隐藏配对码" else "显示配对码")
-        }
+        ShowTokenToggle(show = showToken, onChange = { showToken = !showToken })
         Spacer(Modifier.height(4.dp))
 
         OutlinedTextField(
@@ -326,9 +323,11 @@ fun PairingScreen(onPaired: (Pairing) -> Unit) {
 
         when (val result = check) {
             is PairingCheck.Connected -> ConnectedCard(result, busy, ::startUsing)
+            // FIX 6: 这张卡**不再**把那张四条清单抄一遍 —— 它就在下面常驻着([PairingMessages.CHECKLIST_HEAD] 那张),
+            // 同一屏上说两次只会让人以为是两件事。卡里留下的仍然是**可执行的那一句**。
             is PairingCheck.Failed -> MessageCard(
                 head = "没连上",
-                body = PairingMessages.forFailure(result.code, result.unauthorizedCause),
+                body = PairingMessages.forFailureInWizard(result.code, result.unauthorizedCause),
             )
             is PairingCheck.BadInput -> MessageCard(
                 head = "请先改一下输入",
@@ -342,9 +341,11 @@ fun PairingScreen(onPaired: (Pairing) -> Unit) {
 
         Spacer(Modifier.height(24.dp))
         // §1.3: 这四条都会表现为"手机连不上", 而用户从手机这侧看不出是哪一条 —— 常驻列出。
+        // 标题与失败卡里那句"按下面「…」里的四条逐一排查"取自**同一个**常量([PairingMessages.CHECKLIST_HEAD]),
+        // 所以改一处两处一起变(否则卡里会指着一个屏幕上不存在的标题)。
         Card(modifier = Modifier.fillMaxWidth()) {
             Column(modifier = Modifier.padding(16.dp)) {
-                Text("连不上？逐条确认", style = MaterialTheme.typography.titleSmall)
+                Text(PairingMessages.CHECKLIST_HEAD, style = MaterialTheme.typography.titleSmall)
                 Spacer(Modifier.height(8.dp))
                 for (item in PairingMessages.PREREQUISITES) {
                     Text("· $item", style = MaterialTheme.typography.bodySmall)

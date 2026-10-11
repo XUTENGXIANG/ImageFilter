@@ -3,16 +3,25 @@
 package com.imagefilter.mobile.ui
 
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.unit.dp
 import com.imagefilter.mobile.data.PairingCheck
 
@@ -68,5 +77,48 @@ internal fun MessageCard(head: String, body: String) {
             Spacer(Modifier.height(4.dp))
             Text(body, style = MaterialTheme.typography.bodySmall)
         }
+    }
+}
+
+/**
+ * 「显示配对码」—— FIX 5: 它本来是一个 `TextButton`, 也就是**一行看起来像链接的字**,
+ * 而它实际上是个开关(按下之后那个框里显示的还是隐藏的配对码)。一行字说不出"我现在是什么状态"。
+ *
+ * 所以改成真正的开关:
+ *   · `Checkbox`(勾选框的图形 + 勾没勾的对比);
+ *   · 整行 `toggleable(role = Role.Checkbox)` —— 点字与点框是**同一下**, 而且读屏会把它念成
+ *     "复选框, 已勾选/未勾选"(`stateDescription`), 而不是一个没有状态的按钮;
+ *   · `Checkbox(onCheckedChange = null)`: 点击由整行那一个 [toggleable] 处理,
+ *     两处都处理会让一次点击翻两次(等于按了没反应)。
+ *
+ * [PairingScreen] 的 KDoc 说"配对码是机密": 这个开关只是把它显示/隐藏, **不落盘、不进日志**,
+ * 而且旋转屏幕后仍然回到隐藏态(那个字段刻意没有进 saved instance state)。
+ */
+@Composable
+internal fun ShowTokenToggle(show: Boolean, onChange: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .toggleable(
+                value = show,
+                role = Role.Checkbox,
+                onValueChange = { onChange() },
+            )
+            .semantics(mergeDescendants = true) {
+                contentDescription = "显示配对码"
+                stateDescription = if (show) "已显示" else "已隐藏"
+            }
+            .padding(vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Checkbox(checked = show, onCheckedChange = null)
+        Spacer(Modifier.width(8.dp))
+        Text("显示配对码", style = MaterialTheme.typography.bodyMedium)
+        Spacer(Modifier.width(8.dp))
+        Text(
+            if (show) "（现在能看见它）" else "（默认遮起来）",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
     }
 }

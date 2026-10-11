@@ -114,4 +114,78 @@ class PairingMessagesTest {
             PairingMessages.forInputProblem(PairingInputProblem.BAD_TOKEN_SHAPE).contains("64"),
         )
     }
+
+    // ── FIX 4: 两个框**常驻**的格式提示 ──────────────────────────────────────
+    //
+    // 原来两个框只有一个字符集占位符(而且 placeholder 只在"空 + 聚焦"时才出现),
+    // 第一次配对的人只能猜"填主机名还是 IP? 要带端口吗? 配对码多长?"。
+
+    @Test
+    fun the_address_hint_shows_a_concrete_address_with_a_port() {
+        val hint = PairingMessages.ADDRESS_HINT
+
+        assertTrue("要给一个**具体的**例子: $hint", hint.contains(PairingMessages.URL_EXAMPLE))
+        assertTrue("例子必须带 scheme: $hint", PairingMessages.URL_EXAMPLE.startsWith("http://"))
+        assertTrue("例子必须带端口(少了它这条提示就没解决任何一个问题)", PairingMessages.URL_EXAMPLE.contains(":8765"))
+        assertTrue("要说清去哪儿抄: $hint", hint.contains("设置"))
+    }
+
+    @Test
+    fun the_token_hint_says_the_shape_and_the_length_of_the_code() {
+        val hint = PairingMessages.TOKEN_HINT
+
+        assertTrue("要说清是十六进制字符: $hint", hint.contains("十六进制"))
+        assertTrue("要说清多少个字符(用户就是靠它判断有没有粘全): $hint", hint.contains("64"))
+        assertTrue("要说清去哪儿拿: $hint", hint.contains("设置") || hint.contains("二维码"))
+    }
+
+    // ── FIX 6: 失败卡不再把那张四条清单抄第二遍 ──────────────────────────────
+
+    @Test
+    fun the_wizard_failure_card_says_it_once_and_points_at_the_standing_card() {
+        // 配对向导里那张清单**一直**挂在失败卡正下方。失败卡再说一遍就是同一屏上把四件事
+        // 列两次 —— 用户会以为是两组不同的排查项。
+        for (code in ApiErrorCodes.ALL) {
+            val inWizard = PairingMessages.forFailureInWizard(code)
+            assertTrue("向导里那句话不能空: $code", inWizard.length >= 10)
+            if (!PairingMessages.carriesChecklist(code)) continue
+            for (item in PairingMessages.PREREQUISITES) {
+                assertFalse("向导里**不许**再抄一遍清单($code): $item\n实际=$inWizard", inWizard.contains(item))
+            }
+            assertTrue(
+                "但要指着下面那张常驻卡说去哪看: $inWizard",
+                inWizard.contains(PairingMessages.CHECKLIST_HEAD),
+            )
+            // 可执行的那一句必须还在(去掉的只许是重复的那四条):
+            val head = PairingMessages.forFailureHead(code)
+            assertTrue("可执行的那句话必须留着: $inWizard", inWizard.startsWith(head))
+        }
+    }
+
+    @Test
+    fun the_standing_card_head_is_shared_by_both_sides() {
+        // 卡里那句"按下面「…」里的四条逐一排查"与那张卡的标题取自同一个常量 ——
+        // 各写一份就迟早出现"卡里指着一个屏幕上不存在的标题"。
+        val text = PairingMessages.forFailureInWizard(ApiErrorCodes.SERVICE_OFF)
+        assertTrue("常量本身就是常驻卡的标题", PairingMessages.CHECKLIST_HEAD.isNotBlank())
+        assertTrue(text.contains("「${PairingMessages.CHECKLIST_HEAD}」"))
+    }
+
+    @Test
+    fun the_other_screens_still_carry_the_whole_checklist() {
+        // 对照: 浏览页/查看器/… 那些页面上**没有**这张常驻卡, 所以它们拿到的文案
+        // (forFailure)必须自带清单 —— "去掉重复"绝不许变成"把清单删掉"。
+        for (code in ApiErrorCodes.ALL) {
+            val text = PairingMessages.forFailure(code)
+            if (!PairingMessages.carriesChecklist(code)) continue
+            for (item in PairingMessages.PREREQUISITES) {
+                assertTrue("$code 的文案里少了这一条: $item", text.contains(item))
+            }
+        }
+        assertEquals(
+            "三档传输层失败才带清单",
+            setOf(ApiErrorCodes.SERVICE_OFF, ApiErrorCodes.TIMEOUT, ApiErrorCodes.NETWORK),
+            ApiErrorCodes.ALL.filter { PairingMessages.carriesChecklist(it) }.toSet(),
+        )
+    }
 }

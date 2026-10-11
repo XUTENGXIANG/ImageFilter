@@ -30,6 +30,30 @@ object PairingMessages {
         "手机与电脑连在同一个 WiFi",
     )
 
+    /**
+     * 那份清单在界面上**常驻**卡片的标题。**只在这里写一次** ——
+     * 配对向导里那张失败卡要指着它说"看下面这份", 两处各写一句就迟早对不上。
+     */
+    const val CHECKLIST_HEAD = "连不上？逐条确认"
+
+    // ── 两个输入框的**常驻**格式提示(FIX 4)────────────────────────────────────
+    //
+    // 为什么不能只靠 placeholder: Material 的 placeholder 只在框**为空且聚焦**时才出现 ——
+    // 而第一次配对的人恰恰是看着一个空的、没聚焦的框在猜"要填主机名还是 IP? 要带端口吗?"。
+    // 所以形状提示做成 `supportingText`(**一直**看得见), placeholder 只作为例子重复一次。
+
+    /** 地址的**例子**。它同时出现在 placeholder 与 [ADDRESS_HINT] 里, 所以只能有一份。 */
+    const val URL_EXAMPLE = "http://192.168.3.10:8765"
+
+    /** 地址框下面那一行, 一直看得见。 */
+    const val ADDRESS_HINT =
+        "要填成一整个地址：$URL_EXAMPLE —— 照电脑上「设置 → 图库服务」里显示的那一串抄（局域网 IP + 端口）"
+
+    /** 配对码框下面那一行, 一直看得见。 */
+    const val TOKEN_HINT =
+        "64 位十六进制字符（0-9 / a-f 共 64 个，形如 3f9a…），从电脑「设置 → 图库服务」里复制，" +
+            "或者直接扫那个二维码"
+
     // ── 扫码配对(M4′ Task 1)────────────────────────────────────────────────
     //
     // ⚠️ 这几句**加在既有这张表里**, 不另起一张: 它们说的是同一个屏幕上的同一件事
@@ -97,13 +121,15 @@ object PairingMessages {
     }
 
     /**
-     * 一次失败 → 一句**可执行**的话(规格 §5.3: 每条码必须落到"用户下一步做什么")。
+     * 一次失败 → 一句**可执行**的话(**不含** §1.3 那张清单)。
      *
      * [cause] 只有 [ApiErrorCodes.UNAUTHORIZED] 时才该非空; 三种 401 成因给**三句不同的话**,
      * 这正是 Task 2 那条消歧存在的意义 —— 三句都写成"配对码不对"的话, 消歧就白做了,
      * 而网络断了的用户会照着它去白换一遍配对码。
+     *
+     * ⚠️ **清单被拆出去了([forFailure] / [forFailureInWizard]), 理由见 [carriesChecklist]**。
      */
-    fun forFailure(code: String, cause: UnauthorizedCause? = null): String = when (code) {
+    fun forFailureHead(code: String, cause: UnauthorizedCause? = null): String = when (code) {
         ApiErrorCodes.UNAUTHORIZED -> when (cause) {
             // 没有消歧结论时也只能照最可能的成因说 —— 但那种组合在生产路径上不会出现:
             // ApiClient 只在 401 上抛 unauthorized, 而 401 一定会被消歧。
@@ -115,15 +141,9 @@ object PairingMessages {
                 "刚收到一次 401，但复验没能打通（网络中断或电脑睡了）——先检查网络与电脑再重试，" +
                     "先别急着换配对码"
         }
-        ApiErrorCodes.SERVICE_OFF -> withPrerequisites(
-            "连不上电脑（没有任何进程在应答）。逐条确认：",
-        )
-        ApiErrorCodes.TIMEOUT -> withPrerequisites(
-            "电脑没有回应（超时）。逐条确认：",
-        )
-        ApiErrorCodes.NETWORK -> withPrerequisites(
-            "连接中途断了（网络不稳）。逐条确认：",
-        )
+        ApiErrorCodes.SERVICE_OFF -> "连不上电脑（没有任何进程在应答）。"
+        ApiErrorCodes.TIMEOUT -> "电脑没有回应（超时）。"
+        ApiErrorCodes.NETWORK -> "连接中途断了（网络不稳）。"
         ApiErrorCodes.FORBIDDEN_PATH ->
             // ⚠️ 这一条在这条链路里是**读**(配对校验只发 GET /shares), 而只读模式拦的是写
             // (`routes.rs::refuse_writes_in_read_only` 判的是 `is_write_method`)—— 它造不出一个
@@ -155,10 +175,50 @@ object PairingMessages {
         else -> GENERIC
     }
 
+    /**
+     * 这一档码的文案里**是否嵌着** §1.3 那张四条清单。
+     *
+     * 判据只有这一处, 因为同一个问题在界面上有两种**正确**答法, 用错一种就会说话说两遍:
+     *   · **页面上没有那份常驻清单**的调用方(浏览页/查看器/… 用的 [forFailure])——文案必须
+     *     自带清单, 否则用户拿到的是一句"连不上电脑"而没有下一步;
+     *   · **配对向导**([forFailureInWizard])——那张清单就在失败卡**正下方**常驻,
+     *     再说一遍就是同一屏上把四件事列两次(FIX 6 要修的就是它)。
+     */
+    fun carriesChecklist(code: String): Boolean = code in CHECKLIST_CODES
+
+    /**
+     * 一次失败 → 一句**可执行**的话 + §1.3 那张清单(**整份**)。
+     *
+     * 给"页面上没有常驻清单"的调用方用。少列一条, 就少一条用户能自己排掉的原因。
+     */
+    fun forFailure(code: String, cause: UnauthorizedCause? = null): String {
+        val head = forFailureHead(code, cause)
+        if (!carriesChecklist(code)) return head
+        return head + "逐条确认：" + checklist() + "。"
+    }
+
+    /**
+     * **配对向导那张失败卡**的话(FIX 6): 那张清单就在它下面常驻, 所以这里**一个条目不重复**,
+     * 只给出"去哪看"。
+     *
+     * 两件事都保住: 可执行的那句话(哪一档失败、下一步做什么)照旧在卡里, 而清单一处一份。
+     */
+    fun forFailureInWizard(code: String, cause: UnauthorizedCause? = null): String {
+        val head = forFailureHead(code, cause)
+        if (!carriesChecklist(code)) return head
+        return head + "按下面「$CHECKLIST_HEAD」里的四条逐一排查。"
+    }
+
     /** 圈子数字编号。写死四个, 与 [PREREQUISITES] 的四条一一对应(测试钉住条数)。 */
     private val NUMBERING = listOf("①", "②", "③", "④")
 
-    /** 把 §1.3 的四条硬前提**整份**嵌进错误文案 —— 少列一条, 就少一条用户能自己排掉的原因。 */
-    private fun withPrerequisites(head: String): String =
-        head + PREREQUISITES.mapIndexed { i, text -> "${NUMBERING[i]} $text" }.joinToString("；") + "。"
+    /** 文案里嵌着那份清单的码: 传输层的三档(连不上 / 超时 / 中途断) —— 用户动作相同。 */
+    private val CHECKLIST_CODES = setOf(
+        ApiErrorCodes.SERVICE_OFF,
+        ApiErrorCodes.TIMEOUT,
+        ApiErrorCodes.NETWORK,
+    )
+
+    private fun checklist(): String =
+        PREREQUISITES.mapIndexed { i, text -> "${NUMBERING[i]} $text" }.joinToString("；")
 }
