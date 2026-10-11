@@ -82,6 +82,19 @@ sealed interface UndoResult {
 
     /** 把改动前的值送回了电脑; [push] 就是服务端对那一次写入的回报。 */
     data class Push(val push: PushResult) : UndoResult
+
+    /**
+     * 反向写入**发出去了, 但服务端回报这一项什么都没改**(`written = 0` 且 `skipped > 0`)。
+     *
+     * 为什么它必须单独一档: 撤销的全部意义就是"让电脑上变回改动前那个值", 而一个没让电脑发生
+     * 任何变化的写入**证明不了**这件事(它要么说明电脑上已经是那个值, 要么说明这一份请求什么
+     * 都没要求写 —— 老实现就是后者, 而且服务端**连文件都没打开**)。把它算进 [Push] 的成功
+     * 里就是本项目最贵的那种失败: 界面说"已撤销", 而边车里的值原封不动。
+     *
+     * 这一支下本地那一版**留在 [SyncState.UNSYNCED]**(见 `DecisionStore.undo`), 所以分歧看得见、
+     * 角标数得着、失败卡说得出为什么。
+     */
+    data class NotApplied(val push: PushResult.Ok) : UndoResult
 }
 
 /**
@@ -92,6 +105,11 @@ fun undoMessage(result: UndoResult): String = when (result) {
     UndoResult.Empty -> "没有可撤销的操作"
     // 说清"没发请求"这件事: 否则用户会以为电脑上刚被写了一次(而它一个字节都没动)。
     UndoResult.LocalOnly -> "已撤销（电脑上还没收到过那次改动，没有发送写入）"
+    // 发是发出去了, 但电脑上什么都没改 —— **绝不说撤销成功**: 撤销的判据是"电脑上真的变回去了",
+    // 而这一支恰恰证明不了。本地那一版还在(标未同步), 所以分歧看得见、能重试、能放弃。
+    is UndoResult.NotApplied ->
+        "撤销没能让电脑上的值发生变化（服务端回报这一项 skipped）—— 这一次写入什么都没改，" +
+            "所以不能说撤销成功。这一版留在手机上并标着未同步，分歧看得见。"
     is UndoResult.Push -> when (result.push) {
         is PushResult.Ok -> "已撤销"
         is PushResult.NothingToPush -> "已撤销（没有需要发送的改动）"

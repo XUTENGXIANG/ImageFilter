@@ -16,6 +16,7 @@ import com.imagefilter.mobile.ui.DecisionStore
 import com.imagefilter.mobile.ui.DesktopRating
 import com.imagefilter.mobile.ui.GridViewModel
 import com.imagefilter.mobile.ui.PENDING_CORRUPT_NOTICE
+import com.imagefilter.mobile.ui.PENDING_TARGET_UNWRITABLE
 import com.imagefilter.mobile.ui.PendingDecode
 import com.imagefilter.mobile.ui.PendingItem
 import com.imagefilter.mobile.ui.PendingStore
@@ -44,6 +45,7 @@ import okhttp3.mockwebserver.MockWebServer
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -595,6 +597,50 @@ class PendingStoreTest {
         assertEquals("a.jpg", fileNameOf(a))
         assertEquals("c.jpg", fileNameOf(c))
         assertEquals("没有分隔符时原样返回", "a.jpg", fileNameOf("a.jpg"))
+    }
+
+    @Test
+    fun a_pending_row_with_no_writable_field_says_so_instead_of_no_changes() {
+        // ⚠️ 空手的一条有**两种**, 而它们正相反: "这台手机上没动过它"(没什么事了)与
+        // "动过, 但那一下什么都没要求写"(这一条永远办不成事)。混成一句话, 用户就会把一条
+        // **卡住的**分歧当成"没什么可做的"留在那儿 —— 而它的重试只会再被服务端跳过一次。
+        val untouched = Decision(a)
+        val queued = Decision(a).copy(sync = SyncState.UNSYNCED)
+
+        assertEquals("没有本地意图 ⇒ 确实没什么要写的", "没有要写的改动", pendingTargetText(untouched))
+        assertEquals(PENDING_TARGET_UNWRITABLE, pendingTargetText(queued))
+        assertNotEquals(
+            "两种'空手'绝不许说成同一句话",
+            pendingTargetText(untouched),
+            pendingTargetText(queued),
+        )
+        // 面板那一行读的就是这个纯函数, 所以它必须把同一句话画出来
+        assertEquals(PENDING_TARGET_UNWRITABLE, toPendingRows(listOf(queued)).single().target)
+    }
+
+    @Test
+    fun retrying_a_queued_entry_that_cannot_express_anything_never_reports_success() = runTest {
+        // FIX 3 的第二种形态: 队列里**已经**躺着这样一条(从更早的版本落盘下来的)。"重试"若发出
+        // 一个空请求, 服务端会回 skipped, 而 skipped 在本项目里被读成"电脑上已经是这个值" ⇒
+        // 出队列 + 角标清 0 + "电脑确认写成了 1 项" —— 一次从没被解决的分歧就这么消失了。
+        val queue = queueIn()
+        val s = store(queue)
+        queue.add(Decision(a))
+        assertEquals("前提: 队列里真的有这一条", 1, queue.count())
+
+        val report = retryPending(queue, s)
+
+        assertTrue("它绝不算写成", report.synced.isEmpty())
+        assertFalse(report.allSynced)
+        assertEquals("一个请求都不发(发出去也只会被服务端跳过)", 0, server.requestCount)
+        assertEquals("它还在队列里 —— 分歧没被解决", 1, queue.count())
+        assertEquals(1, report.stillQueued)
+        assertEquals(listOf(a), report.failures.map { it.path })
+        assertEquals(WriteMessages.NOTHING_WRITABLE, report.failures.single().code)
+        assertFalse("总结句不许说队列清空了: ${retryNote(report)}", retryNote(report).contains("已清空"))
+        assertTrue("要说清这一项没写进电脑: ${retryNote(report)}", retryNote(report).contains("没写进电脑"))
+        assertEquals("角标照旧数着它", "待重试 1", pendingBadgeText(queue.count()))
+        assertEquals("本地那一版也不许被标成已同步", SyncState.UNSYNCED, s.get(a).sync)
     }
 
     // ── ⑦ 网格那一层: 角标 / 装回 / 二次确认的入口 / 重试全部 ──────────────────

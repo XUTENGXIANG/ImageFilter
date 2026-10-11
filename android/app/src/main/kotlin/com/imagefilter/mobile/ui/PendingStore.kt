@@ -564,8 +564,22 @@ fun pendingTargetText(d: Decision): String {
         d.rating?.let { add(if (it == REJECT_STARS) "废弃" else "$it★") }
         if (d.clearLabel) add("删掉色标") else d.label?.let { add("${labelName(it)}色标") }
     }
-    return if (parts.isEmpty()) "没有要写的改动" else parts.joinToString(" · ")
+    if (parts.isNotEmpty()) return parts.joinToString(" · ")
+    // 空手的一条有**两种**, 而它们正相反, 所以不许说成同一句话:
+    //   · 没有本地意图(远端读回来的那份) = "这台手机上没动过它" —— 本来就没什么要写;
+    //   · 有本地意图 = 用户动过, 但那一下**什么都没要求写**([Decision.hasWritableField])。
+    //     这一条发出去只会被服务端**整条跳过**(连文件都不打开), 所以它永远办不成事 ——
+    //     把它说成"没有要写的改动"就是告诉用户"没什么事了", 而它其实是一条**卡住的**分歧。
+    return if (d.hasLocalIntent) PENDING_TARGET_UNWRITABLE else "没有要写的改动"
 }
+
+/**
+ * 待重试队列里一条"**一个可写字段都没有**"的项([Decision.hasWritableField] 为 false)在面板上的说法。
+ *
+ * 它不是"没有要写的改动"(那是"没什么事了"), 而是"这一条写不出去" —— 用户看到它才知道
+ * 自己该在这一张上重新打一次分, 或者用「放弃本地改动」把它去掉。
+ */
+const val PENDING_TARGET_UNWRITABLE = "这一条没有可写的字段（电脑不会改动任何东西）"
 
 /**
  * 队列 → 面板的行。**顺序逐字保留队列的顺序**(它是稳定的, 见 [mergePending])。

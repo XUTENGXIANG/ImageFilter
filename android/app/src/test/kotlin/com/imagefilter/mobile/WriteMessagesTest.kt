@@ -64,13 +64,42 @@ class WriteMessagesTest {
 
     @Test
     fun every_client_synthesized_code_gets_its_own_sentence() {
-        for (code in ApiErrorCodes.CLIENT_SYNTHESIZED_CODES + WriteMessages.UNCONFIRMED) {
+        // ⚠️ 手机自己合成的码也要一起进这个循环: `nothingWritable` / `nothingChanged` 是**本轮**
+        // 加的两档, 少了它们就会安静地落到兜底句上(那句"点重试写入再确认一次"对一条永远办不成
+        // 事的意图来说是一句错话)。
+        for (code in ApiErrorCodes.CLIENT_SYNTHESIZED_CODES +
+            listOf(WriteMessages.UNCONFIRMED, WriteMessages.NOTHING_WRITABLE, WriteMessages.NOTHING_CHANGED)) {
             val text = WriteMessages.forFailure(client(code))
             assertNotEquals(WriteMessages.clientGeneric(code), text)
             assertNotEquals(WriteMessages.httpGeneric(code), text)
             assertNotEquals(WriteMessages.xmpGeneric(code), text)
             assertTrue(text.length > 20)
         }
+    }
+
+    @Test
+    fun the_two_no_op_codes_do_not_masquerade_as_a_connection_problem() {
+        // ⚠️ 这两档**不是**"没连上电脑": 一档是请求根本没发出去, 另一档是请求到了电脑而它什么都
+        // 没改。说成网络问题会让用户去查 WiFi/电源, 而真正的问题在"这一条改动表达不出来"。
+        for (code in listOf(WriteMessages.NOTHING_WRITABLE, WriteMessages.NOTHING_CHANGED)) {
+            val f = client(code)
+            assertEquals(
+                "码 $code 的标题不许说成'没能连上电脑'",
+                "这次写入没有让电脑上的值发生变化",
+                WriteMessages.headFor(f),
+            )
+            assertNotEquals(WriteMessages.headFor(client(ApiErrorCodes.SERVICE_OFF)), WriteMessages.headFor(f))
+            assertEquals("动作仍是重试(不猜原因)", WriteAction.RETRY, WriteMessages.actionFor(f))
+            val text = WriteMessages.forFailure(f)
+            assertTrue("必须说清这一版留在手机上: $text", text.contains("这台手机") || text.contains("留着"))
+            assertTrue("必须说清电脑上的值没有发生变化: $text", text.contains("没有让电脑上的值发生变化") ||
+                text.contains("不会让电脑上的值发生变化"))
+        }
+        // 两档说的**不是**同一件事: 一档连请求都没发, 另一档服务端确实看过了
+        assertNotEquals(
+            WriteMessages.forFailure(client(WriteMessages.NOTHING_WRITABLE)),
+            WriteMessages.forFailure(client(WriteMessages.NOTHING_CHANGED)),
+        )
     }
 
     @Test

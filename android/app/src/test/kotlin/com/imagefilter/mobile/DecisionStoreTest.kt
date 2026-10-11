@@ -3,9 +3,12 @@
 package com.imagefilter.mobile
 
 import com.imagefilter.mobile.data.ApiClient
+import com.imagefilter.mobile.data.ApiErrorCodes
 import com.imagefilter.mobile.data.DecisionDto
 import com.imagefilter.mobile.data.FailureSource
 import com.imagefilter.mobile.data.Json
+import com.imagefilter.mobile.data.WriteAction
+import com.imagefilter.mobile.data.WriteFailure
 import com.imagefilter.mobile.data.WriteMessages
 import com.imagefilter.mobile.data.buildHttpClient
 import com.imagefilter.mobile.ui.Decision
@@ -23,6 +26,7 @@ import okhttp3.mockwebserver.MockWebServer
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -312,6 +316,94 @@ class DecisionStoreTest {
         assertEquals(0, server.requestCount)
         assertEquals(SyncState.UNTOUCHED, s.get(path).sync)
         assertNull("没动过的路径不是未同步 —— 否则未同步角标全是假的", s.get(path).lastError)
+    }
+
+    // ── ③′ 一条"永远办不成事"的意图: 不发、也绝不说成功(FIX 3) ──────────────
+
+    @Test
+    fun an_intent_with_no_writable_field_is_never_sent_and_is_never_marked_as_synced() = runTest {
+        // `{rating:null, label:null, clearLabel:false}` 发出去只会被服务端**整条跳过**
+        // (`xmp.rs::write_one` 的短路口: 连边车都不打开)。而"跳过"在本类里被读成
+        // "电脑上已经是这个值"(幂等成功) ⇒ 标已同步、出队列、角标清 0 —— 一次**从没被解决**的
+        // 本地/电脑分歧就这么消失了, 而界面还会说它成功了。
+        val s = store()
+        s.applyLocal(Decision(path))          // 一个可写字段都没有
+        assertFalse(s.get(path).hasWritableField)
+        // 万一真的发了出去, 让它拿到服务端对空请求的那个回答(**跳过**) —— 于是本用例红在
+        // 下面那条"它被当成成功了"的断言上(一句看得懂的话), 而不是因为没人应答挂到超时。
+        enqueueSummary(skipped = 1)
+
+        val r = s.push(listOf(path))
+
+        val f = r as? PushResult.Failed
+        assertNotNull("这一条永远办不成事的意图被发出去并当成了成功: $r", f)
+        assertEquals(1, f!!.requested)
+        assertEquals(WriteMessages.NOTHING_WRITABLE, f.failures.single().code)
+        assertEquals(FailureSource.CLIENT, f.failures.single().source)
+        assertFalse("一个请求都没发出去", f.summaryConfirmed)
+        assertEquals("**一个字节都不发** —— 发出去只会被服务端跳过", 0, server.requestCount)
+        assertEquals("本地那一版留着(绝不落成已同步)", SyncState.UNSYNCED, s.get(path).sync)
+        assertEquals(WriteMessages.NOTHING_WRITABLE, s.get(path).lastError?.code)
+        assertEquals("它还在'未同步'里 ⇒ 角标不许被清掉", 1, s.unsynced().size)
+        assertTrue("而且它有话说(不是一句兜底话)", WriteMessages.forFailure(s.get(path).lastError!!).length > 20)
+        assertEquals(
+            "动作必须是重试(不猜原因), 而它**不是**'没连上电脑'",
+            WriteAction.RETRY,
+            WriteMessages.actionFor(s.get(path).lastError!!),
+        )
+        assertNotEquals(
+            "绝不许说成'没连上电脑': 请求根本没被发出去, 说成网络问题会让用户去查错的方向",
+            WriteMessages.headFor(WriteFailure(path, ApiErrorCodes.SERVICE_OFF, FailureSource.CLIENT)),
+            WriteMessages.headFor(s.get(path).lastError!!),
+        )
+    }
+
+    @Test
+    fun a_batch_mixing_a_writable_intent_with_a_dead_one_reports_both_truthfully() = runTest {
+        // 一批里混着"能写"与"表达不出来"的: 只能发前者, 而**两者都要如实回报** ——
+        // 少报一条就是"这一批里有一项的结果没人说得出"(与 settle 的三项对账同一条纪律)。
+        enqueueSummary(written = 1)
+        val s = store()
+        s.applyLocal(Decision(path))                  // 表达不出来
+        s.applyLocal(Decision(other).withRating(5))   // 能写
+
+        val f = s.push(listOf(path, other)) as PushResult.Failed
+
+        assertEquals("只发了能写的那一张", 1, server.requestCount)
+        assertEquals("用户点名的是两张", 2, f.requested)
+        assertEquals("成了的那张如实计数", 1, f.written)
+        assertEquals(1, f.failures.size)
+        assertEquals(WriteMessages.NOTHING_WRITABLE, f.failures.single().code)
+        assertEquals(path, f.failures.single().path)
+        assertEquals(SyncState.SYNCED, s.get(other).sync)
+        assertEquals(SyncState.UNSYNCED, s.get(path).sync)
+        // 表达不出来的那条**不许**出现在线上(它只会被服务端跳过, 而且它没有内容可写)
+        val body = server.takeRequest().body.readUtf8()
+        assertTrue(body, body.contains(jsonPath(other)))
+        assertFalse("表达不出来的那条不许被发出去: $body", body.contains(jsonPath(path)))
+    }
+
+    @Test
+    fun a_named_path_the_store_knows_nothing_about_is_still_reported_as_unconfirmed() = runTest {
+        // 调用方点名了两条, 而 store 里只有一条有意图。少了的那条**从没被发出去** ⇒
+        // 它必须是"没有结论"([WriteMessages.UNCONFIRMED]), 而且**不许**因为这次改动被悄悄漏掉
+        // (漏掉 = `requested` 少一个, 用户以为那一项没人管)。
+        //
+        // ⚠️ 这里只钉"数得对、码对、没被发出去"这三件事: 那条失败**归到哪个路径上**用的还是
+        // `settle` 里那条既有的启发式规则(一批只有一张时才敢归位), 本次改动没有碰它 ——
+        // 断言一个我没改过的归位细节只会把它的现状**钉死**成"正确"。
+        enqueueSummary(written = 1)
+        val s = store()
+        s.applyLocal(Decision(path).withRating(4))
+
+        val f = s.push(listOf(path, other)) as PushResult.Failed
+
+        assertEquals("点名的是两张", 2, f.requested)
+        assertEquals(1, f.written)
+        assertEquals(1, f.failures.size)
+        assertEquals(WriteMessages.UNCONFIRMED, f.failures.single().code)
+        val body = server.takeRequest().body.readUtf8()
+        assertFalse("没有意图的那条**一个字节都不许发**: $body", body.contains(jsonPath(other)))
     }
 
     @Test

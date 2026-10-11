@@ -104,4 +104,16 @@ class UndoStackTest {
         assertTrue(undoMessage(UndoResult.Empty).contains("没有可撤销"))
         assertTrue(undoMessage(UndoResult.LocalOnly).contains("没有发送写入"))
     }
+
+    @Test
+    fun an_undo_write_that_changed_nothing_is_never_called_undone() {
+        // ⚠️ 服务端回 `written=0, skipped=1` 时, 电脑上**一个字节都没变** —— 撤销的全部意义就是
+        // "让电脑上变回去", 所以这一支证明不了撤销成功。老实现把它算进 Push 的成功里, 界面于是说
+        // "已撤销"而边车里的值原封不动(本轮修的 CRITICAL 就是它)。
+        val note = undoMessage(UndoResult.NotApplied(PushResult.Ok(1, 0, 1, false)))
+
+        assertFalse("一个什么都没改的写入绝不许说'已撤销': $note", note.contains("已撤销"))
+        assertTrue("要说清是服务端回报 skipped: $note", note.contains("skipped"))
+        assertTrue("要说清分歧还在(本地这一版留着): $note", note.contains("未同步"))
+    }
 }

@@ -129,6 +129,18 @@ data class Decision(
 
     /** 发给电脑的那一项。字段名逐字对应服务端 `DecisionWrite`(camelCase)。 */
     fun toDto(): DecisionDto = DecisionDto(path = path, rating = rating, label = label, clearLabel = clearLabel)
+
+    /**
+     * 这一份意图**有没有能写出去的字段** —— 与服务端 `write_one` 的短路口逐字对应:
+     * `rating.is_none() && label.is_none() && !clear_label` ⇒ 服务端直接回 `Skipped`,
+     * **连边车文件都不会打开**(`src-tauri/src/xmp.rs` 的第一行)。
+     *
+     * ⚠️ 为什么它必须是一个显式判据: 服务端的 `skipped` 在本项目里被读成"电脑上已经是这个值"
+     * (那是**幂等成功**)。于是一条"什么都没要求写"的意图会安静地变成"已同步"、出待重试队列、
+     * 角标清 0 —— 一次**从没被解决**的本地/电脑分歧就这样消失了, 而界面上说它成功了。
+     * 所以这种项: 不发([DecisionStore.push])、面板上如实说([pendingTargetText])。
+     */
+    val hasWritableField: Boolean get() = rating != null || label != null || clearLabel
 }
 
 /**
@@ -211,6 +223,37 @@ internal fun afterAck(current: Decision?, sent: DecisionDto, failure: WriteFailu
 }
 
 /**
+ * 一次撤销**要发给电脑**的那一份 —— 把电脑上"改动后的值"([now])改回改动前那一份([before])。
+ *
+ * 为什么不能直接把 `before` 发出去: 协议里 `rating = null` / `label = null` 是**"不动这个属性"**,
+ * 不是"清掉它"(见 [DecisionDto])。所以"撤销一次绝对赋值"与"撤销一个加上去的标签"都必须换成
+ * **能表达出目标状态的**写法, 否则服务端判"什么都没要求写"而**整条跳过** —— 边车一个字节都不动,
+ * 界面上却写着"已撤销"。两条替换用的都是本项目**已有**的表示法, 出处逐条可查:
+ *
+ *   · **星级 → `0`**: 项目里"没有星级"的可表示形态就是 `0`。服务端契约写着 "0 即清除星级"
+ *     (`src-tauri/src/xmp.rs::DecisionWrite`); 桌面端读到 `0` 就把本地那个键删掉
+ *     (`src/xmp.ts::mergeRemoteRatings`), 而桌面端自己的 Ctrl+Z 走的正是这条
+ *     (`src/undo.ts::applyRatingPatch`, `prev` 是 `number`, "之前没评过"就是 `0`);
+ *   · **色标 → `clearLabel = true`**: 删掉标签是显式的一次性命令(`[Decision.clearLabel]`,
+ *     与 [Decision.withLabel] 同一条), 光发 `label = null` 只会让旧标签在下次读盘时复活。
+ *
+ * ⚠️ 判据是"**现在**电脑上带着一个 `before` 表达不出来的值", 与 `before` 是不是本地意图无关:
+ * 一份 `{rating = null}` 的本地意图(例如"只加过标签"的那一份)后来被抬到 3 星, 电脑上同样是我们
+ * 放上去的 3 星 —— 撤销它同样必须用 0 把那颗星拿掉, 否则那 3 星会在下次读盘时"复活"到屏幕上。
+ *
+ * 替换之后这一份**必然是可写的**([Decision.hasWritableField]): [DecisionStore.undo] 只在
+ * "现在这份与 before 逐字不同"时才走到这里, 而 `sync = SYNCED` 的意图里 `clearLabel` 一定是 false
+ * ([afterAck] 成功时会消费掉那条一次性命令)—— 所以差异必然落在 rating 或 label 上, 上面两条
+ * 替换把这两种差异都变成了能写出去的形态。
+ */
+internal fun reverseTarget(now: Decision, before: Decision): Decision {
+    var target = before
+    if (now.rating != null && before.rating == null) target = target.copy(rating = REJECT_STARS)
+    if (now.label != null && before.label == null && !before.clearLabel) target = target.copy(clearLabel = true)
+    return target
+}
+
+/**
  * 一次**文件夹级**远端读取的合并结果。
  *
  * 为什么把三个计数做成返回值而不是"合完就算": **"本地意图赢了没有"必须是一个可断言的事实**。
@@ -224,6 +267,14 @@ data class MergeOutcome(
     val keptLocal: Int,
     /** 远端说这张什么都没有(rating/label 都是 null)且本地没动过 → 把之前合并进来的那条**清掉**。 */
     val cleared: Int,
+    /**
+     * 服务端**回报了这一张, 但它的边车读不动**([DecisionReadDto.sidecarReadable] = false)的条数。
+     *
+     * 它与上面三个数**不重叠**: 那几条既没被采纳、也没被清掉、也不算"本地赢了" —— 它们的值是
+     * **不知道**, 所以 [mergeRemote] 会把它们从"知道"里去掉(见那里的 KDoc)。
+     * 界面靠这个数把张数降级成"未统计": 拿一个不含它们的下界当"这个文件夹有几张 ≥3★"是一句谎话。
+     */
+    val unreadable: Int = 0,
 )
 
 /**
@@ -231,8 +282,10 @@ data class MergeOutcome(
  *
  * 与 [PushResult] 同一种形状、同一条理由: 三件不同的事不许混成一个布尔值 ——
  *   · [Merged] —— 服务端把问到的**每一张**都回报了;
- *   · [Partial] —— 200 但**没回报全**(少一条就算; 已经回来的那些是真值, 照常采纳, 但张数只能说
- *     "未统计" —— 与 [WriteMessages.UNCONFIRMED] 同一条"没有被确认就不许说知道"的纪律);
+ *   · [Partial] —— 200 但**没能把问到的每一张都变成"知道"**: 少回报一条算, 有项的边车读不动
+ *     ([DecisionReadDto.sidecarReadable] = false)也算 —— 没变成知道的那几张, 电脑上是几星这台
+ *     手机不知道, 所以张数只能说"未统计"(与 [WriteMessages.UNCONFIRMED] 同一条"没有被确认就
+ *     不许说知道"的纪律); 已经回来的那些是真值, 照常采纳;
  *   · [Failed] —— 整个请求没被确认(HTTP 错误 / 网络断了): 远端值**一个都不采纳**, 而本地意图
  *     一个字节都不动(读取失败绝不允许碰它);
  *   · [NothingToRead] —— 手机上这些路径**没有照片**(空文件夹), 一个请求都没发出去。
@@ -247,11 +300,13 @@ sealed class RemotePull {
         val merge: MergeOutcome,
     ) : RemotePull()
 
-    /** 200 但没对上报回来的条目: [mismatched] 是**少报 + 多报**的条数之和。 */
+    /** 200 但**没能把每一张都读成事实**: [mismatched] 是少报 + 多报的条数之和, [unreadable] 是边车读不动的项数。 */
     data class Partial(
         override val requested: Int,
         val merge: MergeOutcome,
         val mismatched: Int,
+        /** 服务端回报了、但它的边车读不动(`sidecarReadable = false`)的项数 —— 那些值**不知道**。 */
+        val unreadable: Int = 0,
     ) : RemotePull()
 
     data class Failed(
@@ -355,6 +410,15 @@ class DecisionStore(
      */
     fun knows(path: String): Boolean = path in known
 
+    /**
+     * 服务端**回报过**的路径(有值没值都算"知道") —— 界面用它把"确知没有星级"与"不知道"分开画。
+     *
+     * 界面手里只有 [resolved] 那份合成结果, 而那里**没有值**的路径与**不知道**的路径看起来
+     * 一模一样(都是查不到): 一次失败的读取因此会把一张 4/5 星的照片画成一排空星星
+     * (与"没评过"无法分辨)。这一份知识是那个区别的**唯一**来源(见 `GridState.ratingKnown`)。
+     */
+    fun knownPaths(): Set<String> = known.toSet()
+
     fun all(): List<Decision> = local.values.toList()
 
     /** 改过但电脑还没确认的那些 —— 纪律③的"未同步"就是这个集合。 */
@@ -407,10 +471,21 @@ class DecisionStore(
         var adopted = 0
         var keptLocal = 0
         var cleared = 0
+        var unreadable = 0
         for (dto in read) {
             val path = dto.path
             // 没有路径的条目归不到任何一张照片上, 采纳它只会让 resolved() 多一条没人能查到的记录。
             if (path.isBlank()) continue
+            // ⚠️ **边车读不动** ⇒ 这一项里的两个 null **不是**"电脑上没有值"的证据(它们是
+            // "不知道")。这一条与"读取失败"必须走**同一条**路: 把那一路径从"知道"里去掉,
+            // 于是 [get] 出来的 desktopRating 是 [DesktopRating.Unknown] —— 保留(右滑)不写、
+            // 界面画"未知"、一次打星要先确认, 全都不用另写一套判据。
+            // (远端上一次读到的值**照旧留着显示**: 把已知的东西抹掉比留在那儿更坏。)
+            if (dto.sidecarReadable == false) {
+                forget(listOf(path))
+                unreadable++
+                continue
+            }
             // 本地对这张有没有意图 —— 只用来**数**, 不用来决定存不存(见类 KDoc 与 resolved()):
             // 优先级只在 get 那一处执法, 这里再挡一道就会变成"两个实现互相掩盖"。
             val localWins = local.containsKey(path)
@@ -431,7 +506,7 @@ class DecisionStore(
             )
             if (localWins) keptLocal++ else adopted++
         }
-        return MergeOutcome(adopted = adopted, keptLocal = keptLocal, cleared = cleared)
+        return MergeOutcome(adopted = adopted, keptLocal = keptLocal, cleared = cleared, unreadable = unreadable)
     }
 
     /**
@@ -483,11 +558,11 @@ class DecisionStore(
         // 逐条对账(与 WriteSummary 的"三项之和必须等于输入项数"同一条纪律): 多一条少一条都算
         // "没对上" —— 这一份读回来的东西是我们对"电脑上这个文件夹现在是什么样"的**全部**依据。
         val mismatched = requested.count { it !in got } + got.count { it !in asked }
-        if (mismatched == 0) return RemotePull.Merged(requested.size, outcome)
+        if (mismatched == 0 && outcome.unreadable == 0) return RemotePull.Merged(requested.size, outcome)
         // 没回报到的那些路径同样**重新变成"不知道"**: 问了两张只回来一张时, 没回来的那张在
         // 电脑上是几星谁也不知道 —— 正是这种"部分回报"最容易让保留那一支赌输。
-        forget(requested.filter { it !in got })
-        return RemotePull.Partial(requested.size, outcome, mismatched)
+        if (mismatched > 0) forget(requested.filter { it !in got })
+        return RemotePull.Partial(requested.size, outcome, mismatched, outcome.unreadable)
     }
 
     /**
@@ -544,6 +619,10 @@ class DecisionStore(
      *      不写回去就等于让界面(与角标)继续显示一个与电脑不一致的值。
      *      否则(写失败 / 还没发出去)电脑上**本来就还是老样子**, 发一次反向写入就是一次
      *      **服务端没有被请求过**的写入 —— 一个字节都不发。
+     *   ②′ **反向写入必须表达得出目标状态, 而且要真的让电脑发生变化**([reverseTarget] 与
+     *      [UndoResult.NotApplied]): 协议里 `null` = "不动这个属性", 所以"撤销一次绝对赋值"
+     *      必须显式写 `0`、"撤销一个加上去的标签"必须显式发 `clearLabel = true`; 而被服务端
+     *      **整条跳过**的反向写入(written = 0, skipped > 0)证明不了撤销成功, 不许说"已撤销"。
      *   ③ 写没写成**只由服务端说了算**: 反向写入走的是与打分同一条 [PushResult] 链路,
      *      失败时本地值留着、标未同步、带码可见(与 [push] 逐字同一套)。
      *
@@ -556,18 +635,45 @@ class DecisionStore(
         val desktopHoldsChange = now != null && now.sync == SyncState.SYNCED
         // "电脑上已经是 before 这个值"时也不必写(例如在 5 星上又点了一次 5 星, 服务端判 skipped):
         // 逐字比对**要发出去的那一份**, 而不是"值看起来差不多"。
-        if (!desktopHoldsChange || now.toDto() == e.before.toDto()) {
+        if (now == null || !desktopHoldsChange || now.toDto() == e.before.toDto()) {
             if (e.before.hasLocalIntent) local[e.path] = e.before else local.remove(e.path)
             // 本地意图刚变了(可能是"恢复成之前那份未同步的", 也可能是"这一张没有本地意图了")
             // ⇒ 持久队列跟着对齐。少了这一行, 撤销之后的队列会与屏幕上看到的对不上。
             persistPending()
             return@withLock UndoResult.LocalOnly
         }
-        // 电脑上已经是改动后的值 ⇒ 必须把 before 送回去。`before` 当时不是本地意图时, 它得先
-        // 成为一条**未同步**的意图才发得出去(它是"我们现在要写的东西", 不是电脑上已有的值)。
-        val target = if (e.before.hasLocalIntent) e.before else e.before.copy(sync = SyncState.UNSYNCED)
+        // 电脑上已经是改动后的值 ⇒ 必须把 before 送回去。
+        //
+        // ⚠️ 送回去的必须是**能表达出目标状态**的反向写入([reverseTarget]): 协议里的 `null` 是
+        // "不动这个属性", 拿 `rating: null` 去撤销一次绝对赋值, 服务端会**连文件都不打开**地跳过它
+        // (`xmp.rs::write_one` 的短路口) —— 边车里的 3 星原封不动, 而界面说"已撤销"。
+        //
+        // 目标一律标**未同步**: 这一次反向写入还没被任何回报确认过。`before` 自己那份 sync 说的是
+        // 它**过去**的状态, 照抄它会让写失败时本地冒充"已同步"、而电脑上还是改动后的值。
+        val target = reverseTarget(now, e.before).copy(sync = SyncState.UNSYNCED)
         local[e.path] = target
-        UndoResult.Push(send(listOf(e.path), listOf(target)))
+        val result = send(listOf(e.path), listOf(target))
+        // ⚠️ 服务端回报这一项**什么都没改**(written = 0 且 skipped > 0): 电脑上一个字节都没变。
+        // 撤销的全部意义就是"让电脑上变回改动前那个值", 所以一个没让电脑发生任何变化的写入
+        // **证明不了**撤销成功 —— 它既不许落成已同步, 也不许说"已撤销", 而必须把分歧留在界面上
+        // (本地这一版留着、标着未同步、带一条说清原因的码, 于是角标与失败卡都看得见)。
+        if (result is PushResult.Ok && result.written == 0 && result.skipped > 0) {
+            val settled = local[e.path]
+            // 写入在飞的时候用户又改过这一张 ⇒ 那由 afterAck 处理, 这里不许覆盖更新的那一版。
+            if (settled != null && settled.sync == SyncState.SYNCED) {
+                local[e.path] = target.copy(
+                    sync = SyncState.UNSYNCED,
+                    lastError = WriteFailure(
+                        path = e.path,
+                        code = WriteMessages.NOTHING_CHANGED,
+                        source = FailureSource.CLIENT,
+                    ),
+                )
+                persistPending()
+            }
+            return@withLock UndoResult.NotApplied(result)
+        }
+        UndoResult.Push(result)
     }
 
     /**
@@ -584,7 +690,56 @@ class DecisionStore(
         // 请求**发出去之前**先把意图落盘: 请求还在飞的时候进程被系统杀掉, 用户的决定也不该丢
         // (这是"半离线承诺"的落点 —— 决定一做出就有一份持久的副本)。
         persistPending()
-        send(requested, items)
+        // ⚠️ **一个可写字段都没有**的那些([Decision.hasWritableField])一个字节都不发:
+        // 服务端收到它们只会**整条跳过**(连边车都不打开), 而"跳过"在本类里等于"电脑上已经是这个值"
+        // ⇒ 标已同步、出队列、角标清 0 —— 一次**从没被解决**的本地/电脑分歧就这么消失了。
+        // 所以: 不写它、也不替它说成功, 如实记一条带码的失败并把它留在队列里(可重试, 可放弃)。
+        val (dead, live) = items.partition { !it.hasWritableField }
+        val deadFailures = dead.map {
+            WriteFailure(path = it.path, code = WriteMessages.NOTHING_WRITABLE, source = FailureSource.CLIENT)
+        }
+        for (f in deadFailures) {
+            local[f.path] = local.getValue(f.path).copy(sync = SyncState.UNSYNCED, lastError = f)
+        }
+        if (live.isEmpty()) {
+            persistPending()
+            return@withLock PushResult.Failed(
+                requested = requested.size,
+                written = 0,
+                skipped = 0,
+                failures = deadFailures,
+                // 一个请求都没发出去 ⇒ 没有服务端的 WriteSummary 可转述("没被确认"的字面意思)。
+                summaryConfirmed = false,
+            )
+        }
+        // 调用方点名了、而 store 里**连本地意图都没有**的路径照旧交给 [send] 去算:
+        // 它们会走 settle 那条"没发出去"的口子, 记成 [WriteMessages.UNCONFIRMED]
+        // (与本次改动之前逐字同一条 —— 少报一条就是"这一项的结果没人说得出")。
+        val notLocal = requested.filter { local[it] == null }
+        withDeadFailures(send(live.map { it.path } + notLocal, live), deadFailures, total = requested.size)
+    }
+
+    /**
+     * 把"表达不出来"的那几条如实接在一次写入结论后面。
+     *
+     * 它们既不是成功, 也不是传输失败 —— 它们**根本没被发出去**。所以一律并成
+     * [PushResult.Failed] 的逐项失败(各带 [WriteMessages.NOTHING_WRITABLE]), 而且
+     * [PushResult.Failed.requested] 报**用户点名的那一批**的项数(不是实际发出去的项数)。
+     */
+    private fun withDeadFailures(
+        result: PushResult,
+        extra: List<WriteFailure>,
+        total: Int,
+    ): PushResult {
+        if (extra.isEmpty()) return result
+        val failed = result as? PushResult.Failed
+        return PushResult.Failed(
+            requested = total,
+            written = failed?.written ?: (result as? PushResult.Ok)?.written ?: 0,
+            skipped = failed?.skipped ?: (result as? PushResult.Ok)?.skipped ?: 0,
+            failures = failed?.failures.orEmpty() + extra,
+            summaryConfirmed = failed?.summaryConfirmed ?: (result is PushResult.Ok),
+        )
     }
 
     /**
