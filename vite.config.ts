@@ -31,6 +31,19 @@ export default defineConfig(async () => ({
     // 某些编辑器/工具保存文件时会先写 .xxx.<pid>.<uuid>.tmpdir/xxx.tmp 再改名,
     // Vite 的 watcher 一旦去 watch 这种正被占用的临时文件会抛未捕获的 EBUSY,
     // 直接终止 dev 进程(表现为 beforeDevCommand terminated with a non-zero status code)。
-    watch: { ignored: ["**/src-tauri/**", "**/.*.tmpdir/**", "**/*.tmp"] },
+    //
+    // android/ 同理必须忽略 —— 它是同一个仓库里的另一个工程。Gradle 会在它的 build/ 下
+    // 写出成千上万个文件(还有每次跑测试都重写的报告 HTML)。实测: 一轮安卓改动就让桌面端
+    // webview 白刷了几百次(dev 日志里成片的 "[vite] page reload android/..."),
+    // 既费 CPU, 又让正在调试的桌面界面反复重置; Gradle 构建期间写文件更密,
+    // 属于上面那种 EBUSY 风险。
+    watch: {
+      ignored: [
+        "**/src-tauri/**",
+        "**/android/**",
+        "**/.*.tmpdir/**",
+        "**/*.tmp",
+      ],
+    },
   },
 }));
