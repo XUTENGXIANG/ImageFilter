@@ -69,6 +69,24 @@ class RatingKnowledgeTest {
     }
 
     @Test
+    fun a_known_desktop_value_is_framed_as_the_last_read_not_as_the_current_one() {
+        // FIX 3: [DecisionStore.desktopRating] **只由读取**写(一次写入的回执不会更新它),
+        // 所以用户在手机上打完分之后, 这一行立刻就是上一次读到的旧值。旧口径("电脑上：2★")
+        // 会被读成"我这一下没生效"; 有值的那两档因此必须自报家门说清时态。
+        // (为什么不去把这一格更新成刚写的值: 一次 WriteSummary 是**计数 + 一张失败清单**,
+        //  它不逐张点名谁真的写进去了 —— 见 [ratingKnowledgeLabel] 的 KDoc。)
+        val rated = ratingKnowledgeLabel(DesktopRating.Rated(4))
+        val unrated = ratingKnowledgeLabel(DesktopRating.Unrated)
+
+        assertTrue("有值那一档要说清是**上次读到**: $rated", rated.startsWith("上次读到"))
+        assertTrue("'确知没有星级'同样会过时, 也要说清: $unrated", unrated.startsWith("上次读到"))
+        assertFalse("上一次读到的值不许冒充电脑现在的事实: $rated", rated.startsWith("电脑上："))
+        assertFalse("同上: $unrated", unrated.startsWith("电脑上："))
+        // 数值本身照旧要对(换口径不是把信息换没)
+        assertTrue("4 这个数不许丢: $rated", rated.contains("4"))
+    }
+
+    @Test
     fun the_guard_sentence_says_that_nothing_was_written_and_how_to_override() {
         val msg = ratingGuardMessage(3)
 

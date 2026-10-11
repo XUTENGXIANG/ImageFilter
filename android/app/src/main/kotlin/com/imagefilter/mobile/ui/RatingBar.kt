@@ -60,7 +60,9 @@ internal val LABEL_COLORS: Map<String, Color> = mapOf(
  *   · `desktopRating = Unknown` 时, 星星右边多一个 [RATING_UNKNOWN_MARK] 角标, 下面那行
  *     写"电脑上：没读到（未知）"。**这就是"未知"与"没有星级"在屏幕上的区别** ——
  *     少了它, 一次失败的读取会让一张 4/5 星的照片看起来与"没评过"一模一样, 而一次点击
- *     就是一次绝对赋值(拦截在 [ViewerViewModel.setRating], 那是**执法点**, 这里只是画)。
+ *     就是一次绝对赋值(拦截在 [ViewerViewModel.setRating], 那是**执法点**, 这里只是画);
+ *   · 确知是几星的**那两档说的是"上次读到"**, 不是"电脑上现在" —— 打一次分就会让这一行过时的
+ *     原因与取舍写在 [ratingKnowledgeLabel] 的 KDoc 里(FIX 3)。
  *
  * ⚠️ **本组件的真实观感没有真机验证**(本轮没有设备): 星星是文本字形(★/☆)、
  * 色标是圆点, 布局在三个 Row 里, 不依赖任何新依赖(没有引入 material-icons)。

@@ -27,11 +27,30 @@ const val RATING_UNKNOWN_MARK = "★?"
  *
  * 三态各有各的说法(见 [DesktopRating]): 屏幕上那颗星星是**合并之后**的值(本地意图优先),
  * 所以它**不能**代表电脑上是几星; 想知道电脑上是什么, 只能看这一行。
+ *
+ * ⚠️ **FIX 3: 有值的那两档必须自报家门说清"这是上一次读到的那一份"**。
+ *
+ * 经过: 用户在这台手机上打分 → 写入被电脑确认(`applyAck` 落成已同步) → 而这一行**立刻就是旧的**
+ * —— [DecisionStore.get] 的 `desktopRating` 只由**读取**写([DecisionStore.remote] /
+ * [DecisionStore.known] 只有 `mergeRemote` 动), 一次写入的回执**不会**更新它。原来那句话写的是
+ * "电脑上：2★", 于是用户刚打完 5 星就看到"电脑上：2★", 读起来就是"我这一下没生效"。
+ *
+ * 取舍(为什么是**改口径**而不是"写入成功后顺手把这一格更新成刚写的值"):
+ *   · 一次写入的回执是 `{written, skipped, failed, failures[]}` —— **计数加一张失败清单**,
+ *     它并**不逐张点名**"哪几张真的写进去了"。服务端漏报一项时(`settle` 里那条 `unconfirmed`
+ *     的路)手机连"这一张到底写没写"都不知道, 那时把刚写的值升格成"电脑上现在是它"就是**编**
+ *     一份服务端没给过的知识 —— 与本项目"没被确认就不许说知道"([ReadMessages.INCOMPLETE] /
+ *     [DesktopRating.Unknown])是同一条纪律的反面;
+ *   · 而"上一次读到 2 星"永远是**真的**: 读取是这句话的唯一来源, 主语的时态因此不需要跟着
+ *     写入链路变。用户看到它 + 顶栏的未同步角标, 就能分清"我写了"与"我读到的是什么"。
+ *
+ * 判据不变: [DesktopRating.Unknown] 依然说"没读到"(那才是"不知道"); 只有"确知是几星/确知没有"
+ * 这两档改成过去时 —— 因为只有它们会在写入之后过时。
  */
 fun ratingKnowledgeLabel(desktopRating: DesktopRating): String = when (desktopRating) {
     DesktopRating.Unknown -> "电脑上：没读到（未知）"
-    DesktopRating.Unrated -> "电脑上：没有星级"
-    is DesktopRating.Rated -> "电脑上：${desktopRating.stars}★"
+    DesktopRating.Unrated -> "上次读到：没有星级"
+    is DesktopRating.Rated -> "上次读到：${desktopRating.stars}★"
 }
 
 /**

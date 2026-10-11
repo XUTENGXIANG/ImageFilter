@@ -16,6 +16,7 @@ import com.imagefilter.mobile.ui.MergeOutcome
 import com.imagefilter.mobile.ui.PushResult
 import com.imagefilter.mobile.ui.RemotePull
 import com.imagefilter.mobile.ui.SyncState
+import com.imagefilter.mobile.ui.ratingKnowledgeLabel
 import kotlinx.coroutines.test.runTest
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
@@ -483,6 +484,34 @@ class DecisionMergeTest {
         assertEquals(SyncState.UNSYNCED, s.get(path).sync)
         assertFalse("本地意图不许冒充「电脑上是什么」的知识", s.knows(path))
         assertEquals(DesktopRating.Unknown, s.get(path).desktopRating)
+    }
+
+    // ── ⑦′ FIX 3: 写完分之后, "电脑上那几星"这一行说的是**上次读到**的那一份 ─────────
+
+    @Test
+    fun after_a_confirmed_write_the_desktop_line_still_reports_the_last_read_and_says_so() = runTest {
+        // 场景逐字是评审给的那一条: 读到电脑上是 2 星 → 用户在手机上打成 5 星 → 电脑确认写了。
+        // 屏幕上那颗星已经是 5(本地意图), 而"电脑上"那一行**仍然是上一次读到的 2** ——
+        // 它必须自己说清时态, 否则用户看到"电脑上：2★"就会以为这一下没生效。
+        enqueueRead(readJson(path, rating = 2))
+        enqueueSummaryOk(written = 1)
+        val s = store()
+        s.pullRemote(listOf(path))
+        s.applyLocal(Decision(path).withRating(5))
+
+        val r = s.push(listOf(path))
+
+        assertEquals(PushResult.Ok(requested = 1, written = 1, skipped = 0, degraded = false), r)
+        assertEquals("写入被确认 = 本地已同步", SyncState.SYNCED, s.get(path).sync)
+        assertEquals("屏幕上那颗星是本地意图(5)", 5, s.get(path).rating)
+        assertEquals(
+            "而这一份**知识**只来自读取, 写入的回执不更新它(见 ratingKnowledgeLabel 的 KDoc)",
+            DesktopRating.Rated(2),
+            s.get(path).desktopRating,
+        )
+        val line = ratingKnowledgeLabel(s.get(path).desktopRating)
+        assertTrue("这一行必须自报家门: $line", line.startsWith("上次读到"))
+        assertFalse("绝不许把刚写下去的值说成电脑上现在的值: $line", line.contains("5"))
     }
 
     // ── ⑦ 边车读不动: `null` 不是"没有值"的证据(FIX 4 消费 `sidecarReadable`) ─────
