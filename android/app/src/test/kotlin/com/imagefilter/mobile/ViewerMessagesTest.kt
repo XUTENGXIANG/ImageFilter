@@ -71,8 +71,8 @@ class ViewerMessagesTest {
         val notFound = ViewerMessages.forFailure(ApiErrorCodes.NOT_FOUND)
 
         assertNotEquals("403 与 404 合成一句话, 必然有一边是错的", forbidden, notFound)
-        // 403: 照片在电脑上存在, 只是**不在共享根里**(或只读模式) → 动作在电脑上
-        assertTrue("403 要说共享根/只读模式: $forbidden", forbidden.contains("共享根"))
+        // 403: 照片在电脑上存在, 只是**不在共享根里** → 动作在电脑上
+        assertTrue("403 要说共享根: $forbidden", forbidden.contains("共享根"))
         assertEquals(ViewerAction.PC_SIDE, ViewerMessages.actionFor(ApiErrorCodes.FORBIDDEN_PATH))
         // 404: 照片真的没了 → 动作是"回网格刷新"
         assertTrue("404 要说明它没了: $notFound", notFound.contains("找不到"))
@@ -96,6 +96,24 @@ class ViewerMessagesTest {
         // 这一条是刻意的: 403 上"重试"是个陷阱动作(在手机上做什么都没用)
         assertTrue("403 必须说清手机这一侧没用: $forbidden", forbidden.contains("手机"))
         assertNotEquals(ViewerAction.RETRY, ViewerMessages.actionFor(ApiErrorCodes.FORBIDDEN_PATH))
+    }
+
+    @Test
+    fun a_403_on_the_read_path_never_blames_read_only_mode() {
+        // FIX 2: 看图这条链路跑的都是 GET, 而只读模式拦的是**写**(`routes.rs::is_write_method`)——
+        // 它造不出一个读请求的 403, 所以 403 的成因只有一个: 这个路径不在任何共享根里。
+        // 旧文案说"或者电脑上正开着只读模式", 用户会抱着手机去关一个与本次失败无关的开关。
+        val forbidden = ViewerMessages.forFailure(ApiErrorCodes.FORBIDDEN_PATH)
+
+        assertTrue("要逐字纠正这个错因: $forbidden", forbidden.contains("只读模式拦的是写"))
+        assertFalse(
+            "不许把只读模式说成本次失败的可能原因: $forbidden",
+            forbidden.contains("正开着只读模式") || forbidden.contains("只读模式开着"),
+        )
+        // 真正的原因与真正能做的动作都要在句子里(否则用户看了还是不知道干什么)
+        assertTrue("要说清真正的原因(不在共享根里): $forbidden", forbidden.contains("共享根"))
+        assertTrue("要给电脑上的动作: $forbidden", forbidden.contains("电脑上"))
+        assertEquals(ViewerAction.PC_SIDE, ViewerMessages.actionFor(ApiErrorCodes.FORBIDDEN_PATH))
     }
 
     // ── ② unsupportedForm: 媒体语义, 不是边车语义 ───────────────────────────

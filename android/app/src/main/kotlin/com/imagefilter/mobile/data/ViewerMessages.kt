@@ -17,7 +17,13 @@ enum class ViewerAction {
     /** 这张照片在电脑上没了 → 回网格刷新这个目录(手机上能做的事)。 */
     RELOAD_FOLDER,
 
-    /** 只有去电脑上改设置才有用(共享根 / 只读模式 / 换个版本的 ImageFilter)。 */
+    /**
+     * 只有去电脑上改设置才有用(共享根 / 换个版本的 ImageFilter)。
+     *
+     * ⚠️ 上面**刻意没有"只读模式"**: 看图这条链路上跑的都是 GET, 而只读模式只拦写方法
+     * (`routes.rs::is_write_method`)—— 把它列进"电脑这一侧能改的东西"就是把一个与本次失败
+     * 无关的开关摆给用户。
+     */
     PC_SIDE,
 
     /** token 真的失效了 → 回目录页进「设置」重新配对。 */
@@ -101,8 +107,14 @@ object ViewerMessages {
      */
     fun forFailure(code: String, cause: UnauthorizedCause? = null): String = when (code) {
         ApiErrorCodes.FORBIDDEN_PATH ->
-            "电脑上的服务拒绝了这次读取（403 forbiddenPath）——这张照片不在电脑的共享根里，" +
-                "或者电脑上正开着只读模式。去电脑上「设置 → 图库服务」把它的上级目录加进共享根；" +
+            // ⚠️ **只读模式拦的是写、不拦读**(`routes.rs::refuse_writes_in_read_only` 判的是
+            // `is_write_method`, 而 /thumb 与 /preview 都是 GET)——它**永远**造不出一个读请求的
+            // 403。所以这一条不许把只读模式列成因: 写那张表([WriteMessages])里的"可能正开着只读
+            // 模式"照抄到这里, 会让用户抱着手机去关一个与本次失败**无关**的开关(与
+            // [ReadMessages] 的 403 逐字同一条纪律)。
+            "电脑不允许读这张照片（403 forbiddenPath）——它不在电脑的共享根里" +
+                "（**只读模式拦的是写、不拦读**，所以这一条与只读模式无关）。" +
+                "去电脑上「设置 → 图库服务」把它所在的上级目录加进共享根；" +
                 "在这台手机上无论重试多少次都不会变。"
         ApiErrorCodes.NOT_FOUND ->
             "电脑上找不到这张照片了（404 notFound）——它可能被改名、移走或删除了。" +

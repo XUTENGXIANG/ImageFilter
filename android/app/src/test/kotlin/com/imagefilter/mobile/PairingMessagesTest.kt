@@ -88,6 +88,23 @@ class PairingMessagesTest {
     }
 
     @Test
+    fun a_403_on_the_read_path_never_blames_read_only_mode() {
+        // FIX 2(一致性): 这一档在配对流程里走不到(未配对先回 401; 已配对时 /shares 不会 403),
+        // 但它是**按码公开**的表 —— 读这条链路上的 403 只可能是"不在共享根里", 只读模式拦的是
+        // 写方法(`routes.rs::is_write_method`), 造不出它。旧文案让用户"确认服务是否处在只读模式",
+        // 那就是把人赶到一个与本次失败无关的开关上(与 ReadMessages / ViewerMessages 同一条纪律)。
+        val text = PairingMessages.forFailure(ApiErrorCodes.FORBIDDEN_PATH)
+
+        assertTrue("要逐字纠正这个错因: $text", text.contains("只读模式拦的是写"))
+        assertFalse(
+            "不许把只读模式列成本次失败的原因: $text",
+            text.contains("是否处在只读模式") || text.contains("正开着只读模式"),
+        )
+        assertTrue("要说清真正的原因: $text", text.contains("共享根"))
+        assertTrue("要给出电脑上的动作: $text", text.contains("电脑上"))
+    }
+
+    @Test
     fun every_local_input_problem_has_a_distinct_sentence_naming_the_fix() {
         val texts = PairingInputProblem.entries.map { PairingMessages.forInputProblem(it) }
         assertEquals("四个问题四句话", PairingInputProblem.entries.size, texts.toSet().size)

@@ -125,7 +125,15 @@ object PairingMessages {
             "连接中途断了（网络不稳）。逐条确认：",
         )
         ApiErrorCodes.FORBIDDEN_PATH ->
-            "电脑上的服务拒绝了这次请求（403 forbiddenPath）——去设置里确认共享根，以及服务是否处在只读模式"
+            // ⚠️ 这一条在这条链路里是**读**(配对校验只发 GET /shares), 而只读模式拦的是写
+            // (`routes.rs::refuse_writes_in_read_only` 判的是 `is_write_method`)—— 它造不出一个
+            // 读请求的 403。所以这里不许把只读模式列成因(与 [ReadMessages] / [ViewerMessages]
+            // 的 403 逐字同一条纪律), 要说清真正的原因并给出真正能做的动作。
+            // (这一档在配对流程里走不到 —— 未配对先回 401, 而已配对时 /shares 不会 403;
+            //  它仍然要写对: 表是**按码**公开的, 任何一条链路复用到这里都不该看到一句错话。)
+            "电脑上的服务拒绝了这次请求（403 forbiddenPath）——这个位置不在电脑的共享根里" +
+                "（只读模式拦的是写、不拦读，与这一条无关）：" +
+                "去电脑上「设置 → 图库服务」把它的上级目录加进共享根"
         ApiErrorCodes.NOT_FOUND ->
             "电脑上的服务说没有这个端点（404）——确认地址填的是 ImageFilter 的图库服务，而不是别的程序"
         ApiErrorCodes.CONFLICT ->
