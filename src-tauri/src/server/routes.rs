@@ -807,7 +807,14 @@ impl<'de> Deserialize<'de> for DecisionsQ {
     }
 }
 
-/// 读边车(星级/色标)。与桌面端 `read_decisions` **同一个实现**, 本层只做白名单 + 序列化。
+/// 读边车(星级/色标)。与桌面端 `read_decisions` **同一个 IO 实现**, 本层只做白名单 + 序列化。
+///
+/// 本层唯一多做的事: 逐项带上**可选**的 `sidecarReadable`(见 `xmp::DecisionReadStatus`)。
+/// 为什么 HTTP 需要它而桌面端不需要: 桌面端把 `rating: null` 读成"保留我本地的值" ——
+/// 读失败降级成 null 对它是安全的; 手机端把同一个 null 读成"**电脑上没有星级**"的
+/// 证据(右滑覆盖就建立在这个证据上), 于是"边车读不动"必须与"边车确实没有值"分开,
+/// 否则 Lightroom 占着边车的那一秒里右滑一次就会把电脑上的 4-5 星静默覆盖掉。
+/// 正常读**不发这个键**(`skip_serializing_if`), 老客户端看到的就是本字段之前的字节。
 ///
 /// 不加写锁(与 `decisions_put` 不对称是刻意的): 边车的替换是"同目录临时文件 + rename",
 /// 读到的要么是旧文本、要么是新文本, 不可能读到半截。而"读到的还是旧值"恰好就是
@@ -835,10 +842,12 @@ async fn decisions_get(
         );
     }
 
-    // `read_decisions` 唯一会失败的地方是 `spawn_blocking` 的 JoinError(任务 panic)。
+    // `read_decisions_status` 唯一会失败的地方是 `spawn_blocking` 的 JoinError(任务 panic)。
     // 单项"读不出来"(权限/超限/不是 XMP/没有边车)在 `xmp.rs` 里本来就降级成
-    // `rating: null`(前端保留本地值), 不是错误 —— 这条语义同样原样继承。
-    let out = crate::xmp::read_decisions(checked)
+    // `rating: null`(前端保留本地值), 不是错误 —— 这条语义同样原样继承; 新加的那一位
+    // `sidecarReadable` 只是把"读不动"从"没有值"里**分出来**, 不改任何既有的值或码。
+    // **错误体仍然是 `{ code }`**: 这是 200 体里的字段, 不是错误通道。
+    let out = crate::xmp::read_decisions_status(checked)
         .await
         .map_err(|_| ApiError::Internal)?;
     Ok(Json(out).into_response())

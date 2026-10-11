@@ -2001,6 +2001,463 @@ async fn decisions_read_accepts_repeated_paths_and_keeps_the_order() {
     std::fs::remove_dir_all(&root).ok();
 }
 
+// ── 边车读不动: `rating: null` 什么时候**不是**"电脑上没有值"的证据 ────────────────
+//
+// 背景(对抗式审查查出来的): `xmp.rs::read_one` 把"读失败"与"确实没有值"**都**降级成
+// `rating: null`。那个合同是给**桌面端**写的(桌面端把 null 读成"保留我的值", 读失败降级成
+// null 对它是安全的); 手机端把同一个 null 读成"**电脑上没有星级**"的**证据** —— 右滑覆盖
+// 就建立在这个证据上。于是边车被 Lightroom 之类占着(本仓库明写这是这条路径上最常见的情形)
+// 的那一秒里右滑一次, 电脑上的 4-5 星会被静默覆盖。协议因此给每一项加了**可选**的
+// `sidecarReadable`: `false` = 边车存在但读不动, 那个 null 不是证据; 缺字段/true = 正常读。
+//
+// 这一组从**真 HTTP 请求**出发, 用**磁盘上真实的边车**造出"读不动", 不 mock 任何一层。
+
+/// 一份**合法**的 XMP 边车, 但**没有** `xmp:Rating`/`xmp:Label` —— 这是"读到了, 只是没有值"。
+/// 它与"读不动"在线上**只差** `sidecarReadable` 一个键(见下面最锋利的那条测试)。
+const XMP_WITHOUT_ANY_DECISION: &str = r#"<x:xmpmeta xmlns:x="adobe:ns:meta/">
+ <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+  <rdf:Description rdf:about="" xmlns:xmp="http://ns.adobe.com/xap/1.0/"/>
+ </rdf:RDF>
+</x:xmpmeta>"#;
+
+/// 一份带 4 星的合法边车(对照组: "读到了**并且**有值").
+const XMP_WITH_RATING_4: &str = r#"<x:xmpmeta xmlns:x="adobe:ns:meta/">
+ <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+  <rdf:Description rdf:about="" xmlns:xmp="http://ns.adobe.com/xap/1.0/" xmp:Rating="4"/>
+ </rdf:RDF>
+</x:xmpmeta>"#;
+
+/// 边车大小上限(`xmp::XMP_SIZE_LIMIT` = 1MB)。`xmp` 是**私有**模块, 集成测试够不到那个
+/// 常量, 所以这里抄一份 —— 它一旦变了, 下面"超限 ⇒ 读不动"的测试会**响亮地**失败
+/// (那两张的 `rating` 会变回可读的 null 而 `sidecarReadable` 不再出现), 不会被静默跳过。
+const SIDECAR_SIZE_LIMIT: usize = 1024 * 1024;
+
+/// 一项的键集合(排序)。用来钉"新字段是**唯一**的改动": 既有的键一个都不许多、不许少。
+fn key_set(item: &serde_json::Value) -> Vec<String> {
+    let mut keys: Vec<String> = item
+        .as_object()
+        .expect("决策项必须是 JSON 对象")
+        .keys()
+        .cloned()
+        .collect();
+    keys.sort();
+    keys
+}
+
+/// **正常读不许发这个键.** 三种"读到了但没有值"(没有边车 / 空边车 / 合法 XMP 但没有属性)
+/// 加一种"读到了且有值"逐项验过。
+///
+/// 这是线上契约的另一半: 手机端把"缺字段"与 `true` 当**同一个意思**, 所以正常的读多发一个
+/// 键就是噪音 —— 而且是**新**噪音, 老客户端看到的字节本不该变。
+#[tokio::test]
+async fn decisions_read_omits_the_sidecar_signal_when_the_read_succeeded() {
+    let (app, token, root) = route_app("decsignalok");
+    let no_sidecar = root.join("a.jpg"); // ① 连边车都没有
+    let empty = root.join("sub").join("b.jpg"); // ② 0 字节边车
+    let xmp_no_value = root.join("子目录").join("c.jpg"); // ③ 合法 XMP 但没有决策属性
+    let with_value = root.join("d.jpg"); // ④ 读到了**并且**有值
+
+    std::fs::write(root.join("sub").join("b.xmp"), b"").unwrap();
+    std::fs::write(root.join("子目录").join("c.xmp"), XMP_WITHOUT_ANY_DECISION).unwrap();
+    std::fs::write(&with_value, b"jpegbytes").unwrap();
+    std::fs::write(root.join("d.xmp"), XMP_WITH_RATING_4).unwrap();
+
+    // 夹具前提: 三个边车必须真的躺在磁盘上(否则"读成功"是假的)
+    assert!(root.join("sub").join("b.xmp").is_file(), "夹具前提: 空边车要真的存在");
+    assert!(
+        root.join("子目录").join("c.xmp").is_file(),
+        "夹具前提: 合法 XMP 边车要真的存在"
+    );
+    assert!(root.join("d.xmp").is_file(), "夹具前提: 有值的边车要真的存在");
+
+    let (status, v) = get_decisions(
+        app,
+        Some(&token),
+        &[&no_sidecar, &empty, &xmp_no_value, &with_value],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{}", v);
+    let arr = v.as_array().expect("读端点必须回数组");
+    assert_eq!(arr.len(), 4, "{}", v);
+
+    for item in &arr[..3] {
+        assert!(item["rating"].is_null(), "三种'没有值'都必须是 null: {}", item);
+        assert!(item["label"].is_null(), "{}", item);
+    }
+    assert_eq!(arr[3]["rating"], 4, "对照组必须真的读到值: {}", v);
+
+    for item in arr {
+        assert!(
+            item.get("sidecarReadable").is_none(),
+            "读成功(**含**'没有边车'/'空边车'/'XMP 里没有值')不许发这个键 —— \
+             手机端把缺字段与 true 当同一个意思, 多发一个键就是线上格式的噪音: {}",
+            item
+        );
+        assert_eq!(
+            key_set(item),
+            vec!["label", "path", "rating", "sidecar"],
+            "正常读的线上形状必须与**本字段出现之前**逐字相同: {}",
+            item
+        );
+    }
+
+    // `sidecar` 与"这个键"是两回事: 没有边车 → null; 有边车且读到了 → 如实回传
+    assert!(arr[0]["sidecar"].is_null(), "没有边车不许编一个路径出来: {}", arr[0]);
+    assert!(
+        arr[1]["sidecar"].is_string(),
+        "空边车也是一个**读到了**的边车: {}",
+        arr[1]
+    );
+    assert!(arr[2]["sidecar"].is_string(), "{}", arr[2]);
+
+    std::fs::remove_dir_all(&root).ok();
+}
+
+/// **边车存在但读不动 ⇒ `sidecarReadable: false`.** 三种机制各来一份**真在磁盘上**的边车,
+/// 每一种都命中 `read_text_limited`/`looks_like_xmp` 里**已经存在**的那条失败分支:
+///   ① 超过 1MB 上限(`Err(TooLarge)`);
+///   ② UTF-16 BOM(`Err(Encoding)`);
+///   ③ 读得出来但内容不是 XMP(`looks_like_xmp` 挡住 —— 桌面端的写法器同样拒绝碰它)。
+///
+/// 三者在既有契约里都降级成 `rating: null`, 而这里必须**都**报 false: 手机端分不出来的话,
+/// 那个 null 就会被当成"电脑上没有星级"的证据。
+#[tokio::test]
+async fn decisions_read_marks_a_sidecar_it_could_not_read_as_false() {
+    let (app, token, root) = route_app("decsignalbad");
+    let oversized = root.join("a.jpg");
+    let utf16 = root.join("sub").join("b.jpg");
+    let not_xmp = root.join("子目录").join("c.jpg");
+    let with_value = root.join("d.jpg"); // 同一批里的对照: 读得到值的那张
+
+    // ① 超限: 先写合法内容再撑过上限 —— 免得它"因为不是 XMP"才失败, 那样测的就不是大小这一档
+    let mut big = XMP_WITH_RATING_4.as_bytes().to_vec();
+    big.resize(SIDECAR_SIZE_LIMIT + 1, b' ');
+    std::fs::write(root.join("a.xmp"), &big).unwrap();
+    // ② UTF-16 BOM
+    std::fs::write(root.join("sub").join("b.xmp"), [0xFFu8, 0xFE, b'<', 0x00]).unwrap();
+    // ③ 读得出来, 但不是 XMP
+    std::fs::write(root.join("子目录").join("c.xmp"), b"definitely not xmp").unwrap();
+    // ④ 对照
+    std::fs::write(&with_value, b"jpegbytes").unwrap();
+    std::fs::write(root.join("d.xmp"), XMP_WITH_RATING_4).unwrap();
+
+    // 夹具前提: 三份"读不动"的边车必须**真的存在**(否则测成了"没有边车", 那不是同一件事)
+    let bad = [
+        root.join("a.xmp"),
+        root.join("sub").join("b.xmp"),
+        root.join("子目录").join("c.xmp"),
+    ];
+    for p in &bad {
+        assert!(p.is_file(), "夹具前提: {} 必须真的在磁盘上", p.display());
+    }
+    assert!(
+        std::fs::metadata(&bad[0]).unwrap().len() > SIDECAR_SIZE_LIMIT as u64,
+        "夹具前提: ① 必须真的超过上限(否则它其实是可读的)"
+    );
+
+    let (status, v) = get_decisions(
+        app,
+        Some(&token),
+        &[&oversized, &utf16, &not_xmp, &with_value],
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "读不动**不是**请求级错误: 200 体里逐项如实标出来, 错误体仍然只有 {{ code }}: {}",
+        v
+    );
+    let arr = v.as_array().unwrap();
+    assert_eq!(arr.len(), 4, "{}", v);
+
+    for (i, item) in arr[..3].iter().enumerate() {
+        assert_eq!(
+            item["sidecarReadable"], false,
+            "第 {} 份边车存在但读不动 ⇒ 必须 false(缺这个键会让手机把 null 当成'没有值'的证据): {}",
+            i + 1,
+            item
+        );
+        assert!(item["rating"].is_null(), "既有契约不变: 读不动仍然是 null: {}", item);
+        assert!(item["label"].is_null(), "{}", item);
+        assert!(
+            item["sidecar"].is_string(),
+            "边车必须如实回传(证明这次失败不是'找不到边车'): {}",
+            item
+        );
+        assert_eq!(
+            key_set(item),
+            vec!["label", "path", "rating", "sidecar", "sidecarReadable"],
+            "新字段是**唯一**的改动: {}",
+            item
+        );
+    }
+
+    // ④ 对照: 同一份响应里读得到值的那张, 值照旧, 而且**没有**这个键(信号不泄漏)
+    assert_eq!(arr[3]["rating"], 4, "{}", v);
+    assert!(
+        arr[3].get("sidecarReadable").is_none(),
+        "信号不许泄漏到同一批里的正常项: {}",
+        arr[3]
+    );
+
+    std::fs::remove_dir_all(&root).ok();
+}
+
+/// **权限被拒的那一档(即问题清单里的 "permission"): 边车在位、但这次读被系统拒了。**
+///
+/// 夹具是**真 ACL**: 用 `icacls` 给边车加一条 deny 读的 ACE。只加在**本测试刚建出来的**
+/// 临时文件上, 且由 `AclDenyGuard` 在 `Drop` 里必撤 —— 带 deny 的文件连删除都会被拒, 所以
+/// 清理不能只写在函数末尾: panic 展开时 `Drop` 仍然会跑。
+///
+/// 为什么值得单开一条(而不是"反正超限那条已经覆盖了"): 这一档的现实形状最难被误判 ——
+/// deny 之后 `is_file()` 与 `metadata` **仍然成功**(实测: 属性查询照常, 只有
+/// `std::fs::read` 得到 ERROR_ACCESS_DENIED(5)), 也就是"边车看得见、值读不出来"。
+/// 它与"没有边车"在线上长得**一模一样**(都是 null), 只有这一位信号能分开。
+///
+/// ⚠️ 这个夹具要 `spawn` 一个 `icacls`(Windows 自带)。跑不成时**大声失败**而不是静默跳过
+/// —— 静默跳过的测试等于没有。
+#[cfg(target_os = "windows")]
+#[tokio::test]
+async fn decisions_read_marks_a_permission_denied_sidecar_as_false() {
+    /// 撤 deny 的 RAII: 展开(panic)时也要跑到, 否则 %TEMP% 里留一个删不掉的边车。
+    struct AclDenyGuard {
+        path: std::path::PathBuf,
+        who: String,
+        armed: bool,
+    }
+
+    impl Drop for AclDenyGuard {
+        fn drop(&mut self) {
+            if self.armed {
+                let _ = std::process::Command::new("icacls")
+                    .arg(&self.path)
+                    .arg("/remove:d")
+                    .arg(&self.who)
+                    .output();
+            }
+        }
+    }
+
+    fn icacls_deny_read(path: &std::path::Path) -> AclDenyGuard {
+        let user = std::env::var("USERNAME")
+            .expect("Windows 上必须有 USERNAME —— '权限被拒'这个夹具靠它指定被拒的人");
+        let who = match std::env::var("USERDOMAIN") {
+            Ok(d) if !d.is_empty() => format!("{}\\{}", d, user),
+            _ => user,
+        };
+        let out = std::process::Command::new("icacls")
+            .arg(path)
+            .arg("/deny")
+            .arg(format!("{}:(R)", who))
+            .output()
+            .expect("icacls 必须能跑起来(Windows 自带; 跑不了说明本环境不允许创建进程)");
+        assert!(
+            out.status.success(),
+            "夹具前提: icacls 加 deny 必须成功({}): {}{}",
+            who,
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        AclDenyGuard { path: path.to_path_buf(), who, armed: true }
+    }
+
+    let (app, token, root) = route_app("decacl");
+    let photo = root.join("a.jpg");
+
+    // 起点: 5 星 —— "右滑保留"就是拿这个 null 当证据去覆盖, 所以这一档误报的代价最大
+    let (_, s) = put_decisions(
+        app.clone(),
+        Some(&token),
+        &decision_body(&photo, Some(5), None, false),
+    )
+    .await;
+    assert_eq!(s["written"], 1, "夹具前提: 5 星边车要真的写出来: {}", s);
+    let sidecar = root.join("a.xmp");
+    let want_sidecar = canon_path(&sidecar);
+    assert!(sidecar.is_file(), "夹具前提: 边车必须真的存在");
+
+    let guard = icacls_deny_read(&sidecar);
+    // 夹具前提: deny 之后边车**仍然看得见**, 只是**读不出来** —— 这是"可区分"的关键,
+    // 也是它区别于"没有边车"的地方。三条断言缺一不可: 少任何一条, 这一档就可能是在测别的。
+    assert!(
+        sidecar.is_file(),
+        "夹具前提: 权限被拒的边车仍然必须可见(否则这一档测成了'没有边车')"
+    );
+    assert!(
+        std::fs::metadata(&sidecar).is_ok(),
+        "夹具前提: 属性查询必须仍然成功(这就是它'看得见'的含义)"
+    );
+    assert_eq!(
+        std::fs::read(&sidecar).err().and_then(|e| e.raw_os_error()),
+        Some(5),
+        "夹具前提: 读必须真的撞上 ERROR_ACCESS_DENIED(5)"
+    );
+
+    let (status, v) = get_decisions(app.clone(), Some(&token), &[&photo]).await;
+    assert_eq!(status, StatusCode::OK, "读被拒**不是**请求级错误: {}", v);
+    assert_eq!(
+        v[0]["sidecarReadable"], false,
+        "权限被拒 = 读不动 ⇒ 必须 false; 只回 null 的话手机就会把那个 null 当成 \
+         '电脑上没有 5 星'的证据: {}",
+        v
+    );
+    assert!(v[0]["rating"].is_null(), "既有契约不变: 读不动仍然是 null: {}", v);
+    assert_eq!(
+        v[0]["sidecar"].as_str(),
+        Some(want_sidecar.as_str()),
+        "边车路径要如实回传(证明不是'找不到边车'): {}",
+        v
+    );
+
+    // 撤掉 deny 之后必须恢复: 值读得回来, 信号消失(false 不是常驻状态)
+    drop(guard);
+    let (_, v) = get_decisions(app, Some(&token), &[&photo]).await;
+    assert_eq!(v[0]["rating"], 5, "权限一恢复, 5 星必须读得回来: {}", v);
+    assert!(
+        v[0].get("sidecarReadable").is_none(),
+        "恢复正常的读不许再带这个键: {}",
+        v
+    );
+
+    std::fs::remove_dir_all(&root).ok();
+}
+
+/// **最真实的那一档: 边车正被别的程序独占着(`share_mode(0)`)。**
+///
+/// "与 Lightroom 抢边车"是本仓库明写的**最常见**情形(`xmp.rs` 782-783), 所以这一档必须有
+/// 真实夹具。用一个**不共享任何访问**的句柄按住边车, 实测结果是: `Path::is_file()` 仍然为真
+/// (属性查询照常), 而 `std::fs::read` 撞上 ERROR_SHARING_VIOLATION(32) —— 也就是说这一档
+/// **可区分**: 边车看得见、值读不出来 ⇒ 必须报 `false`, 绝不能被当成"电脑上没有星级"。
+///
+/// 句柄一放, 同一个请求必须恢复成正常读(值照旧 + 缺字段): 与既有的 busy 测试同一条
+/// "可重试"纪律, 同时证明那个 `false` 不是常驻状态。
+#[cfg(target_os = "windows")]
+#[tokio::test]
+async fn decisions_read_reports_false_while_the_sidecar_is_held_exclusively() {
+    use std::os::windows::fs::OpenOptionsExt;
+
+    let (app, token, root) = route_app("decsignalheld");
+    let photo = root.join("a.jpg");
+    let (_, s) = put_decisions(
+        app.clone(),
+        Some(&token),
+        &decision_body(&photo, Some(4), None, false),
+    )
+    .await;
+    assert_eq!(s["written"], 1, "夹具前提: 4 星边车要真的写出来: {}", s);
+    let sidecar = root.join("a.xmp");
+    let want_sidecar = canon_path(&sidecar);
+    assert!(sidecar.is_file(), "夹具前提: 边车必须真的存在");
+
+    let hold = std::fs::OpenOptions::new()
+        .read(true)
+        .share_mode(0) // 一个都不共享: 别人连读都读不了
+        .open(&sidecar)
+        .unwrap();
+    // 夹具前提: 被独占的是**读**, 不是"这个文件消失了"
+    assert!(sidecar.is_file(), "夹具前提: 被独占的路径必须仍然存在");
+    let direct = std::fs::read(&sidecar);
+    assert_eq!(
+        direct.as_ref().err().and_then(|e| e.raw_os_error()),
+        Some(32),
+        "夹具前提: 独占句柄必须真的让 std::fs::read 撞上 ERROR_SHARING_VIOLATION(32) \
+         —— 否则这一档测的是别的失败(实际: {:?})",
+        direct
+    );
+
+    let (status, v) = get_decisions(app.clone(), Some(&token), &[&photo]).await;
+    assert_eq!(status, StatusCode::OK, "{}", v);
+    assert_eq!(
+        v[0]["sidecarReadable"], false,
+        "边车被独占 ⇒ 读不动 ⇒ 必须 false。只回 rating:null 的话, 手机右滑一次就会把这个 \
+         4 星静默覆盖掉: {}",
+        v
+    );
+    assert!(
+        v[0]["rating"].is_null(),
+        "既有契约不变: 读不出来仍然是 null(桌面端靠它保留本地值): {}",
+        v
+    );
+    assert_eq!(
+        v[0]["sidecar"].as_str(),
+        Some(want_sidecar.as_str()),
+        "边车必须如实回传(证明这次失败不是'找不到边车'): {}",
+        v
+    );
+
+    // 松开之后必须恢复: 值读得回来, 信号也消失(false 不是常驻状态)
+    drop(hold);
+    let (_, v) = get_decisions(app, Some(&token), &[&photo]).await;
+    assert_eq!(v[0]["rating"], 4, "句柄一放, 4 星必须读得回来: {}", v);
+    assert!(
+        v[0].get("sidecarReadable").is_none(),
+        "恢复正常的读不许再带这个键: {}",
+        v
+    );
+
+    std::fs::remove_dir_all(&root).ok();
+}
+
+/// **最锋利的一条: 同一张照片、同一个边车路径, 只把边车内容从"合法 XMP 但没有值"换成
+/// "读不动" —— 两份 200 体去掉新键之后必须完全相等。**
+///
+/// 这一条同时钉住"ADDITIVE": 既有的 `path`/`rating`/`label`/`sidecar` 与状态码一个字节都不许
+/// 变, 唯一的区别就是那一位信号。第一段的"读到了但没有值"因此必须**缺字段**(而不是 `true`):
+/// 缺字段与 true 在手机上同义, 而缺字段才是"本字段出现之前的字节"。
+#[tokio::test]
+async fn the_unreadable_signal_is_the_only_difference_from_a_normal_read() {
+    let (app, token, root) = route_app("decsignalonly");
+    let photo = root.join("a.jpg");
+    let sidecar = root.join("a.xmp");
+
+    // ① 读到了, 只是没有值
+    std::fs::write(&sidecar, XMP_WITHOUT_ANY_DECISION).unwrap();
+    let (s1, v1) = get_decisions(app.clone(), Some(&token), &[&photo]).await;
+    let read_ok = v1[0].clone();
+
+    // ② 同一个边车路径(同一个文件!): 内容撑过 1MB 上限 → 读不动
+    let mut big = XMP_WITHOUT_ANY_DECISION.as_bytes().to_vec();
+    big.resize(SIDECAR_SIZE_LIMIT + 1, b' ');
+    std::fs::write(&sidecar, &big).unwrap();
+    let (s2, v2) = get_decisions(app, Some(&token), &[&photo]).await;
+    let unreadable = v2[0].clone();
+
+    assert_eq!(s1, StatusCode::OK, "{}", v1);
+    assert_eq!(s2, StatusCode::OK, "{}", v2);
+    assert!(
+        read_ok.get("sidecarReadable").is_none(),
+        "① '读到了但没有值' 必须是**缺字段**: {}",
+        read_ok
+    );
+    assert_eq!(
+        unreadable["sidecarReadable"], false,
+        "② '读不动' 必须是 false: {}",
+        unreadable
+    );
+
+    // 两次指的是**同一个文件**, 所以下面逐字段比较才有意义
+    assert_eq!(unreadable["path"], read_ok["path"], "两次是同一个请求路径");
+    assert_eq!(unreadable["sidecar"], read_ok["sidecar"], "两次读的是同一个边车");
+    assert!(
+        unreadable["sidecar"].is_string(),
+        "边车必须存在(否则这就不是'读不动'): {}",
+        unreadable
+    );
+
+    let mut stripped = unreadable.clone();
+    stripped
+        .as_object_mut()
+        .unwrap()
+        .remove("sidecarReadable");
+    assert_eq!(
+        stripped, read_ok,
+        "去掉新字段之后两份响应必须**完全相等** —— 既有的四个字段与那个 null 一个都不许动"
+    );
+
+    std::fs::remove_dir_all(&root).ok();
+}
+
+///
 /// **`null`(不动) / `clearLabel`(删) / 给值(写) 三种语义必须真的分得开。**
 ///
 /// 这三种语义**只存在于既有的 `apply_decision`** —— 端点是原样转交, 所以这条测试同时是

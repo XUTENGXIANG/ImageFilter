@@ -145,6 +145,34 @@ pub struct DecisionRead {
     pub sidecar: Option<String>,
 }
 
+/// `GET /api/v1/decisions` 的**逐项**载荷: 既有的 `DecisionRead` + 一个**可选**的
+/// "边车这次到底读没读成"信号。
+///
+/// **为什么不给 `DecisionRead` 加一个字段**: 那个形状是**桌面端 IPC** 的合同 —— 那里
+/// `rating: null` 的意思就是"保留我本地的值", 而"读失败一律当没有值"(见 `read_one`)
+/// 正是为这个消费方式写的。桌面端那条线上格式一个字节都不该动, 所以这里是**并排的
+/// 新形状**, 桌面端照旧只认 `DecisionRead`。
+///
+/// 手机端的消费方式与桌面端**相反**: 它把 `rating: null` 当成"电脑上没有星级"的
+/// **证据**(右滑覆盖用的就是这个证据)。而边车**存在但读不动**时(权限 / 超过 1MB 上限 /
+/// 不是 UTF-8 / 内容不是 XMP —— 其中"与 Lightroom 抢边车"是这条路径上最常见的一档)
+/// 那个 `null` **不是**证据。`sidecarReadable` 就是两者的分界。
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct DecisionReadStatus {
+    /// 既有形状**原样展开**(path/rating/label/sidecar): 字段名与顺序都不在这里维护第二份
+    #[serde(flatten)]
+    pub read: DecisionRead,
+    /// **只有"边车存在、但这次读不动"才出现这个键, 且恒为 `false`**。
+    ///
+    /// 正常读(没有边车 / 空边车 / 读到 XMP 但没有 `xmp:Rating` / 读到并带值)一律
+    /// **不发这个键** —— 手机端把"缺这个字段"与 `true` 当**同一个意思**, 也就是本字段
+    /// 出现之前的全部行为。`skip_serializing_if` 因此是**线上契约的一部分**: 正常情形下
+    /// 不许因为本功能多出一个键。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sidecar_readable: Option<bool>,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DecisionWrite {
@@ -798,21 +826,61 @@ fn atomic_write(target: &Path, bytes: &[u8]) -> Result<bool, XmpError> {
 
 // ── 单项读写 ────────────────────────────────────────────────────────
 
-fn read_one(photo: &Path) -> DecisionRead {
+/// 一次单项读的**真身**: "读到了"与"读不动"是两件事 —— 既有契约把它们压成了同一件事
+/// (`rating: None`), 这对桌面端是对的, 对把 `null` 当证据的 HTTP 客户端是错的。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReadOutcome {
+    /// 读到了。含三种"没有值"的正常情形: 没有边车、边车是空的、XMP 里没有 `xmp:Rating`。
+    /// 此时 `DecisionRead::rating == None` 是**可信的**"电脑上没有值"。
+    Read,
+    /// 边车**存在**但读不动(权限 / 超限 / 编码 / 内容不是 XMP / IO 错)。
+    /// 此时 `DecisionRead::rating == None` **不是**"没有值"的证据 —— 我们根本不知道。
+    Unreadable,
+}
+
+/// 单项读的**唯一实现**: 既回桌面端契约那个 `DecisionRead`, 也回这次读的真身。
+///
+/// 两条消费路径共用它, 于是"读到了什么"绝不会有分歧; 唯一的分歧点是"读不动要不要
+/// 当成没有值"(桌面端要, HTTP 客户端不要)—— 那是**消费方**的选择, 不是 IO 层的事实。
+fn read_one_with_outcome(photo: &Path) -> (DecisionRead, ReadOutcome) {
     let path = photo.to_string_lossy().to_string();
     let Some(sidecar) = existing_sidecar(photo) else {
-        return DecisionRead { path, rating: None, label: None, sidecar: None };
+        // 没有边车**不是**读不动: 电脑上确实没有值。手机端拿这个 null 当证据是对的。
+        return (
+            DecisionRead { path, rating: None, label: None, sidecar: None },
+            ReadOutcome::Read,
+        );
     };
     let sidecar_str = Some(sidecar.to_string_lossy().to_string());
-    // 读失败(权限/超限/编码/不是 XMP)一律当"没有值" → 前端保留本地值。
-    // 读的失败不弹错: 写失败才是红线要求可见的那类。
     match read_text_limited(&sidecar) {
         Ok(Some(text)) if looks_like_xmp(&text) => {
             let (rating, label) = read_decision_from_text(&text);
-            DecisionRead { path, rating, label, sidecar: sidecar_str }
+            (
+                DecisionRead { path, rating, label, sidecar: sidecar_str },
+                ReadOutcome::Read,
+            )
         }
-        _ => DecisionRead { path, rating: None, label: None, sidecar: sidecar_str },
+        // 0 字节/纯空白: `read_text_limited` 已经把"读到的字节"判成"没有值"(见它的注释),
+        // 而**字节确实全读进来了** —— 所以这是"读到了, 只是没有值", 不是读不动。
+        Ok(None) => (
+            DecisionRead { path, rating: None, label: None, sidecar: sidecar_str },
+            ReadOutcome::Read,
+        ),
+        // ① 读成功但内容不是 XMP(`looks_like_xmp` 挡住): 桌面端的写法器**拒绝碰**这类
+        //    文件(不变式 3), 我们也无从知道里面有没有决策 → 读不动。
+        // ② 权限 / 超限 / 编码 / IO 错: 同理。
+        // 这两档在既有契约里都降级成 `rating: None`(桌面端保留本地值), **这里不改**。
+        _ => (
+            DecisionRead { path, rating: None, label: None, sidecar: sidecar_str },
+            ReadOutcome::Unreadable,
+        ),
     }
+}
+
+/// 桌面端的单项读。**契约不变**: 读失败(权限/超限/编码/不是 XMP)一律当"没有值"
+/// → 前端保留本地值。读的失败不弹错: 写失败才是红线要求可见的那类。
+fn read_one(photo: &Path) -> DecisionRead {
+    read_one_with_outcome(photo).0
 }
 
 enum Outcome {
@@ -917,6 +985,39 @@ pub async fn read_decisions(file_paths: Vec<String>) -> Result<Vec<DecisionRead>
     .map_err(|e| e.to_string())
 }
 
+/// HTTP 层用的批量读: 与 `read_decisions` **同一份 IO 实现**, 只是逐项多带一个
+/// "边车读得动吗"的信号(见 `DecisionReadStatus`)。
+///
+/// 为什么单独一个函数而不是给 `read_decisions` 加参数: 桌面端 IPC 的合同
+/// (`null` = 保留本地值)与手机端的消费方式(`null` = 电脑上没有值)是**两个不同的
+/// 意思**, 共用同一个函数就只能靠调用方自己记住该按哪个意思读。分成两个入口,
+/// 名字就把意思带上了。
+///
+/// **绝不猜**: 只有 IO 层真的判定"边车存在但读不动"(`ReadOutcome::Unreadable`)才发
+/// `Some(false)`。分不出来的情形(没有边车 / 空边车 / 读到 XMP 但没有值)一律 `None`
+/// —— 手机端把 `None`(缺字段)当"读到了", 也就是本字段出现之前的全部行为。
+pub async fn read_decisions_status(
+    file_paths: Vec<String>,
+) -> Result<Vec<DecisionReadStatus>, String> {
+    tokio::task::spawn_blocking(move || {
+        file_paths
+            .iter()
+            .map(|p| {
+                let (read, outcome) = read_one_with_outcome(Path::new(p));
+                DecisionReadStatus {
+                    read,
+                    sidecar_readable: match outcome {
+                        ReadOutcome::Read => None,
+                        ReadOutcome::Unreadable => Some(false),
+                    },
+                }
+            })
+            .collect::<Vec<DecisionReadStatus>>()
+    })
+    .await
+    .map_err(|e| e.to_string())
+}
+
 /// 批量写。队列按 path 合并后提交(撤销风暴 = 一次 IPC 写多项)。
 /// 单项失败**不影响其它项**, 全部收进 Summary.failures, 由前端按 code 决定
 /// "整卷不可写就降级 off / 单文件问题就只标记不降级"。
@@ -1013,6 +1114,66 @@ mod tests {
         let (r2, l2) = read_decision_from_text(t2);
         assert_eq!(r2, None);
         assert_eq!(l2.as_deref(), Some("yellow"));
+    }
+
+    /// **新信号是纯增量的**: 同一份夹具上, 桌面端读路径(`read_one`)拿到的 `DecisionRead`
+    /// 与带信号的读路径**逐字段相同** —— 两档"读不动"也一样(桌面端的契约是"读失败一律当
+    /// 没有值 → 保留本地值", 那条线上格式一个字节都不许动)。四档夹具同时把"读到了"与
+    /// "读不动"的分界钉死: 没有边车 / 空边车 / 合法 XMP 但没有属性 都是**读到了**,
+    /// 只有"边车存在却读不动"才是 `Unreadable`。
+    #[test]
+    fn the_sidecar_signal_never_changes_what_the_desktop_read_reports() {
+        let root = test_root("signal_invariance");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+
+        let no_sidecar = root.join("a.jpg");
+        std::fs::write(&no_sidecar, b"jpeg").unwrap();
+
+        let empty = root.join("b.jpg");
+        std::fs::write(&empty, b"jpeg").unwrap();
+        std::fs::write(root.join("b.xmp"), b"").unwrap();
+
+        let no_value = root.join("c.jpg");
+        std::fs::write(&no_value, b"jpeg").unwrap();
+        std::fs::write(
+            root.join("c.xmp"),
+            "<x:xmpmeta><rdf:RDF></rdf:RDF></x:xmpmeta>",
+        )
+        .unwrap();
+
+        let unreadable = root.join("d.jpg");
+        std::fs::write(&unreadable, b"jpeg").unwrap();
+        // 超限是**已经存在**的失败分支(`read_text_limited` 的 `TooLarge`), 不需要 ACL 权限花招
+        std::fs::write(root.join("d.xmp"), vec![b' '; XMP_SIZE_LIMIT as usize + 1]).unwrap();
+
+        for (photo, want) in [
+            (&no_sidecar, ReadOutcome::Read),
+            (&empty, ReadOutcome::Read),
+            (&no_value, ReadOutcome::Read),
+            (&unreadable, ReadOutcome::Unreadable),
+        ] {
+            assert!(photo.is_file(), "夹具前提: {} 必须真的存在", photo.display());
+            let (with_signal, outcome) = read_one_with_outcome(photo);
+            assert_eq!(outcome, want, "{} 的读结果判错了", photo.display());
+            assert_eq!(
+                with_signal,
+                read_one(photo),
+                "带信号的读与桌面端的读必须是同一个 DecisionRead: {}",
+                photo.display()
+            );
+            if want == ReadOutcome::Unreadable {
+                // 桌面端看到的仍然是"没有值"(契约不变), 而边车**确实存在**
+                assert_eq!(with_signal.rating, None);
+                assert_eq!(with_signal.label, None);
+                assert!(
+                    with_signal.sidecar.is_some(),
+                    "边车必须存在 —— 否则这档测的是'没有边车', 不是'读不动'"
+                );
+            }
+        }
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// 核心契约: 改星级时**其余每一个字节都不许动**
