@@ -175,6 +175,7 @@ class ViewerRatingGuardTest {
         // "这个状态机根本不会写"的空话(本项目撞过的假绿形状之一)。
         enqueue(written = 1)
         val vm = viewModel(store(listOf(DecisionReadDto(path = paths[0]))))
+        assertEquals("写之前: 电脑上确实没有星级", DesktopRating.Unrated, vm.state.value.desktopRating)
 
         val r = vm.setRating(3)
 
@@ -183,7 +184,10 @@ class ViewerRatingGuardTest {
         assertNull("没有被拦下 ⇒ 没有那句说明", vm.state.value.ratingGuardNote)
         assertNull("也没有武装", vm.state.value.blindRatingArmed)
         assertEquals(3, vm.state.value.rating)
-        assertEquals(DesktopRating.Unrated, vm.state.value.desktopRating)
+        // FIX 3: 写**之后**电脑上现在就是我们刚写进去的 3 星(服务端确认了), 所以这一格
+        // 不再是"确知没有星级" —— 也不是"上次读到"。
+        assertEquals(DesktopRating.Rated(3), vm.state.value.desktopRating)
+        assertTrue("而且它自称是刚写进去的那份", vm.state.value.desktopRatingFromWrite)
     }
 
     @Test
@@ -191,12 +195,16 @@ class ViewerRatingGuardTest {
         // 另一档"知道": 电脑上是 5 星。写 3 星是**用户明确的降级**(不是瞎写), 所以不拦。
         enqueue(written = 1)
         val vm = viewModel(store(listOf(DecisionReadDto(path = paths[0], rating = 5))))
+        assertEquals("写之前: 上一次读到的是 5 星", DesktopRating.Rated(5), vm.state.value.desktopRating)
 
         val r = vm.setRating(3)
 
         assertEquals(PushResult.Ok(1, 1, 0, false), r)
-        assertEquals(DesktopRating.Rated(5), vm.state.value.desktopRating)
         assertEquals(3, vm.state.value.rating)
+        // FIX 3: 确认写成之后, "电脑上是几星"跟着这一次写入走(3), 而不是留着旧读数的 5 ——
+        // 否则用户看到星星是 3、下面写着 5, 只能以为这次写入丢了。
+        assertEquals(DesktopRating.Rated(3), vm.state.value.desktopRating)
+        assertTrue(vm.state.value.desktopRatingFromWrite)
     }
 
     // ── ③ 0 星(废弃)是明确的取舍: 任何一档都不拦 ────────────────────────────

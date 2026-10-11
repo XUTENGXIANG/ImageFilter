@@ -235,6 +235,14 @@ data class ViewerState(
      */
     val desktopRating: DesktopRating = DesktopRating.Unknown,
     /**
+     * 上面那份知识是**刚被电脑确认写入**得到的(而不是"上一次读到"的) —— FIX 3 的时态。
+     *
+     * 数值一样、时态不同的两份知识必须说成两句不同的话: 打完分之后那句"上次读到：0★"
+     * 会被读成"我这一下没生效", 而事实上电脑上**现在就是** 4★。判据只有一处
+     * ([DecisionStore] 的 `written`), 这里只是把它带到界面上。
+     */
+    val desktopRatingFromWrite: Boolean = false,
+    /**
      * 上一次**打星被拦下**时的那句说明([ratingGuardMessage])。
      *
      * 与 [swipeNote] / [undoNote] 同一种"最近一次操作说了什么"的格子: 被拦下也是**一次操作的结果**,
@@ -825,6 +833,8 @@ class ViewerViewModel(
             unsyncedCount = decisions.unsynced().size,
             // "电脑上是几星"的**唯一**来源(本地意图与远端值的合并结论都在 store 里算)。
             desktopRating = decision?.desktopRating ?: DesktopRating.Unknown,
+            // 时态与数值来自**同一次** get(): 分开取就会出现"数值是新的、时态是旧的"。
+            desktopRatingFromWrite = decision?.desktopRatingFromWrite ?: false,
             // 换张 / 写完 / 别的操作之后, "刚刚那一下被拦下"这件事不再适用 —— 一起清掉,
             // 否则用户会在另一张照片上看到一句讲上一张的话(与 swipeNote/undoNote 同一条)。
             ratingGuardNote = null,

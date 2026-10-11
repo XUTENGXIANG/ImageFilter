@@ -25,32 +25,39 @@ const val RATING_UNKNOWN_MARK = "★?"
 /**
  * 电脑上那一份知识的一句话 —— 星级条上**一直**画着它。
  *
- * 三态各有各的说法(见 [DesktopRating]): 屏幕上那颗星星是**合并之后**的值(本地意图优先),
- * 所以它**不能**代表电脑上是几星; 想知道电脑上是什么, 只能看这一行。
+ * 屏幕上那颗星星是**合并之后**的值(本地意图优先), 所以它**不能**代表电脑上是几星;
+ * 想知道电脑上是什么, 只能看这一行。
  *
- * ⚠️ **FIX 3: 有值的那两档必须自报家门说清"这是上一次读到的那一份"**。
+ * ⚠️ **FIX 3: 这一行必须跟着电脑上那份知识走, 而且不许往两边任何一边过期。**
  *
- * 经过: 用户在这台手机上打分 → 写入被电脑确认(`applyAck` 落成已同步) → 而这一行**立刻就是旧的**
- * —— [DecisionStore.get] 的 `desktopRating` 只由**读取**写([DecisionStore.remote] /
- * [DecisionStore.known] 只有 `mergeRemote` 动), 一次写入的回执**不会**更新它。原来那句话写的是
- * "电脑上：2★", 于是用户刚打完 5 星就看到"电脑上：2★", 读起来就是"我这一下没生效"。
+ * 经过(真机上量到的): 用户在手机上点了第 4 颗星 → 写入被电脑确认 → 星星那一行是 4 颗实心,
+ * 而紧下面这一行还写着 `上次读到：0★` —— 读起来就是"我这一下没生效"。
  *
- * 取舍(为什么是**改口径**而不是"写入成功后顺手把这一格更新成刚写的值"):
- *   · 一次写入的回执是 `{written, skipped, failed, failures[]}` —— **计数加一张失败清单**,
- *     它并**不逐张点名**"哪几张真的写进去了"。服务端漏报一项时(`settle` 里那条 `unconfirmed`
- *     的路)手机连"这一张到底写没写"都不知道, 那时把刚写的值升格成"电脑上现在是它"就是**编**
- *     一份服务端没给过的知识 —— 与本项目"没被确认就不许说知道"([ReadMessages.INCOMPLETE] /
- *     [DesktopRating.Unknown])是同一条纪律的反面;
- *   · 而"上一次读到 2 星"永远是**真的**: 读取是这句话的唯一来源, 主语的时态因此不需要跟着
- *     写入链路变。用户看到它 + 顶栏的未同步角标, 就能分清"我写了"与"我读到的是什么"。
+ * 改法(与 [DecisionStore] 里的 `written` 那份知识配套):
+ *   · 一次写入**被服务端确认**过 ⇒ 电脑上现在就是写进去的那个值, 这是一份**被确认的事实**
+ *     (服务端把它记在 `written`/`skipped` 的账上; 没记账的项一律被标成
+ *     [WriteMessages.UNCONFIRMED]), 所以这一行改说"电脑上：4★(刚被确认写成)" ——
+ *     与上面那排星星**不再矛盾**;
+ *   · 写入**失败 / 没被确认** ⇒ 什么都不知道, 照旧说上一次读到的值(`上次读到：…`),
+ *     绝不拿本地那个乐观值冒充"电脑上现在是它";
+ *   · **另一个方向**也不许过期: 一次成功的读取(更晚的事实)会把那份"写入知识"作废,
+ *     于是这一行会退回"上次读到：…"; 而没被确认的读取(读失败 / 边车读不动)把两份知识
+ *     一起降级成"没读到" —— 见 [DecisionStore.forget] 的 KDoc。
  *
- * 判据不变: [DesktopRating.Unknown] 依然说"没读到"(那才是"不知道"); 只有"确知是几星/确知没有"
- * 这两档改成过去时 —— 因为只有它们会在写入之后过时。
+ * [fromWrite] 就是那份知识的**时态**, 由 [Decision.desktopRatingFromWrite] 带出来 ——
+ * 界面不自己判断"这是刚写的还是刚读的"(那需要界面各自再存一份状态, 一定会漂移)。
  */
-fun ratingKnowledgeLabel(desktopRating: DesktopRating): String = when (desktopRating) {
-    DesktopRating.Unknown -> "电脑上：没读到（未知）"
-    DesktopRating.Unrated -> "上次读到：没有星级"
-    is DesktopRating.Rated -> "上次读到：${desktopRating.stars}★"
+fun ratingKnowledgeLabel(desktopRating: DesktopRating, fromWrite: Boolean = false): String = when {
+    // 被确认的写入是**现在时**(它是我们刚刚让它变成的样子), 所以这档不说"上次读到"。
+    fromWrite && desktopRating is DesktopRating.Rated ->
+        "电脑上：${desktopRating.stars}★（刚刚被电脑确认写成）"
+
+    // 理论到不了(写入知识一定带一个数值), 但穷尽写全: 说不出来就别编一个数。
+    fromWrite -> "电脑上：没有星级（刚刚被电脑确认写成）"
+
+    desktopRating == DesktopRating.Unknown -> "电脑上：没读到（未知）"
+    desktopRating == DesktopRating.Unrated -> "上次读到：没有星级"
+    else -> "上次读到：${(desktopRating as DesktopRating.Rated).stars}★"
 }
 
 /**

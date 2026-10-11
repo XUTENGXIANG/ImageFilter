@@ -96,7 +96,15 @@ fun MoveSheet(panel: MovePanel) {
     }
 
     Surface(modifier = Modifier.fillMaxSize()) {
-        Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                // ⚠️ 顶栏那一行「关闭」与底部内容同样要避开系统栏: 这是整屏覆盖层, 没有
+                // Scaffold 的 `windowInsets` 默认值(见 [topBarInsets] 的 KDoc)。
+                .topBarInsets()
+                .bottomBarInsets()
+                .padding(16.dp),
+        ) {
             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
                 Column(modifier = Modifier.weight(1f)) {
                     Text(titleOf(state.stage), style = MaterialTheme.typography.titleMedium)

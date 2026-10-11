@@ -98,6 +98,14 @@ data class Decision(
      * [DecisionStore.get] 每次都会按它**唯一**的那份知识重算这一个字段(见那里的 KDoc)。
      */
     val desktopRating: DesktopRating = DesktopRating.Unknown,
+    /**
+     * 上面那份知识是不是**刚被服务端确认写入**得到的(而不是"上一次读到"的)。
+     *
+     * FIX 3: 这两件事在数值上可能一样, 但**时态不同** —— 打完分之后那句话必须说
+     * "电脑上：4★(刚被确认写成)", 而不是继续说"上次读到：0★"(用户会读成"我这一下没生效")。
+     * 判据仍然只有一处([DecisionStore] 的 `written`), 界面一个字节都不自己拼。
+     */
+    val desktopRatingFromWrite: Boolean = false,
 ) {
     /**
      * 这一份是不是**用户在这台手机上明确说过的意图**。
@@ -386,20 +394,55 @@ class DecisionStore(
     private val known = LinkedHashSet<String>()
 
     /**
+     * **服务端确认写入过**的星级: 路径 → 我们写进去的那个值。
+     *
+     * FIX 3 的那条知识。它与 [remote] 分开存, 因为它们的**时态不同**:
+     *   · [remote] 说的是"上一次**读到**电脑上是什么";
+     *   · 这一份说的是"上一次**写进去**的是什么, 而且服务端回执确认了"。
+     *
+     * 为什么它算"知道"(而不是"我们自己猜的"): 一次 `WriteSummary` 里 `written + skipped`
+     * 把这一项**记在了账上**(`skipped` = 电脑上本来就是它), 而 [settle] 会把"没被记上账"的
+     * 那些项逐条标成 [WriteMessages.UNCONFIRMED] —— 只有真的落了账的路径才会走到
+     * [confirmWritten]。这与"读到的值"是同一等级的**被确认过的事实**, 所以:
+     *   · 界面可以说"电脑上：4★"(时态由 [Decision.desktopRatingFromWrite] 带出去);
+     *   · 保留(右滑)那一支不再把"我们刚写过 0 星"当成"不知道"而拦下来。
+     *
+     * 它被**更晚的、被确认过的事实**改写, 两条路:
+     *   · [mergeRemote]: 一次成功的读取是更晚的事实(哪怕读到的值与它不同);
+     *   · [confirmWritten]: 又一次被确认的写入。
+     * 而**没被确认**的事(读取失败 / 边车读不动)会把它连同 [known] 一起清掉
+     * ([forget]) —— "没被确认就不许继续拿上一次的结论充数"这条纪律对写入同样成立。
+     */
+    private val written = LinkedHashMap<String, Int>()
+
+    /**
      * 没动过的路径也要能回答(**不是** null): 界面拿到的永远是一份完整的意图。
      *
      * ⚠️ 优先级仍然**只在这一行**: `local[path] ?: remote[path]`。这里只多做一件事 —— 把
-     * [Decision.desktopRating] 如实算出来(它描述的是**电脑**, 与本地意图无关, 所以不能沿用
-     * 传进来的那一份: 那是别人构造 Decision 时的默认值, 不是事实)。
+     * [Decision.desktopRating] 与它的时态([Decision.desktopRatingFromWrite])如实算出来
+     * (它描述的是**电脑**, 与本地意图无关, 所以不能沿用传进来的那一份: 那是别人构造
+     * Decision 时的默认值, 不是事实)。
      */
     fun get(path: String): Decision =
-        (local[path] ?: remote[path] ?: Decision(path)).copy(desktopRating = desktopRatingOf(path))
+        (local[path] ?: remote[path] ?: Decision(path)).copy(
+            desktopRating = desktopRatingOf(path),
+            // 时态与数值分开带出去: 数值一样的两份知识("读到 4"与"写进去 4")必须说成两句不同的话。
+            desktopRatingFromWrite = written.containsKey(path),
+        )
 
-    /** 电脑上这一张的星级 —— 只有**被服务端确认过**的路径才有资格给出结论(见 [known])。 */
-    private fun desktopRatingOf(path: String): DesktopRating = when {
-        path !in known -> DesktopRating.Unknown
-        // `known` 里有它但 `remote` 里没有值 = 服务端**明确回报**了这一张没有星级。
-        else -> remote[path]?.rating?.let { DesktopRating.Rated(it) } ?: DesktopRating.Unrated
+    /**
+     * 电脑上这一张的星级 —— 只有**被服务端确认过**的路径才有资格给出结论(见 [known] / [written])。
+     *
+     * 顺序要紧: **被确认的写入比更早的读取新**, 所以它先说; 两者都没有才轮到 [remote] 里
+     * 上一次读到的值。
+     */
+    private fun desktopRatingOf(path: String): DesktopRating {
+        written[path]?.let { return DesktopRating.Rated(it) }
+        return when {
+            path !in known -> DesktopRating.Unknown
+            // `known` 里有它但 `remote` 里没有值 = 服务端**明确回报**了这一张没有星级。
+            else -> remote[path]?.rating?.let { DesktopRating.Rated(it) } ?: DesktopRating.Unrated
+        }
     }
 
     /**
@@ -492,6 +535,10 @@ class DecisionStore(
             // 服务端回报了这一张 ⇒ 不管它有没有值, "电脑上这张是什么"从此刻起是**知道**的。
             // (少写这一行会让下面"两个 null"的那条分支变回"不知道", 降级口子就回来了。)
             known.add(path)
+            // ⚠️ **一次成功的读取是比一次写入更晚的事实** ⇒ 它作废"上一次写进去的那份"。
+            // 少了这一行, 用户在电脑上改过的值会被我们上一次写入的回声一直盖住(那就是
+            // FIX 3 里"另一个方向"的那半句: 这句话不许往两边任何一边过期)。
+            written.remove(path)
             if (dto.rating == null && dto.label == null) {
                 if (remote.remove(path) != null) cleared++
                 continue
@@ -568,12 +615,19 @@ class DecisionStore(
     /**
      * 这些路径**重新变成"不知道"**(这次读取没被确认)。
      *
-     * 刻意只动知识([known]), **不动**本地意图、也**不动**上一次读到的远端值([remote]):
-     * 读取失败没有资格改动用户的评分, 把已知的东西抹掉比留在那儿更坏 —— 只是"这是现在的事实"
-     * 这句话不许再说了(见 [desktopRatingOf])。
+     * 刻意只动知识([known] 与 [written]), **不动**本地意图、也**不动**上一次读到的远端值
+     * ([remote]): 读取失败没有资格改动用户的评分, 把已知的东西抹掉比留在那儿更坏 ——
+     * 只是"这是现在的事实"这句话不许再说了(见 [desktopRatingOf])。
+     *
+     * [written] 一起清掉的理由与 [known] 完全一样: 一次没被确认的读取**证明不了**电脑上现在
+     * 还是我们上次写进去的那个值(边车可能被别的程序动过), 所以宁可口径退回"不知道",
+     * 也不许继续拿上一次的结论充数。
      */
     private fun forget(paths: Collection<String>) {
-        for (p in paths) known.remove(p)
+        for (p in paths) {
+            known.remove(p)
+            written.remove(p)
+        }
     }
 
     /**
@@ -867,6 +921,26 @@ class DecisionStore(
                 ?: if (requested.size == 1) failures.firstOrNull() ?: reported.firstOrNull() else null
             val next = afterAck(local[path], dto, failure) ?: continue
             local[path] = next
+            // 电脑确认了这**一版**意图([SyncState.SYNCED] 意味着服务端把这一项记在了账上:
+            // `written` 或 `skipped`) ⇒ "电脑上这一张是几星"从此知道, 而且它比任何一次更早的
+            // 读取都新(FIX 3)。写失败/没被回报的那些项一个字都不记 —— 那正是"没被确认就不许
+            // 说知道"。
+            if (next.sync == SyncState.SYNCED) confirmWritten(path, dto)
         }
+    }
+
+    /**
+     * 记下"这一张的星级就是我们刚写进去的那个值, 而且服务端确认了"。
+     *
+     * ⚠️ **只在这一批真的碰了星级时才记**([DecisionDto.rating] 非 null): 一次只改色标的写入
+     * 关于星级**什么都没告诉我们** —— 拿它去更新星级知识, 就是无中生有。
+     *
+     * [known] 一起加进来: [written] 里的路径本来就必须同时"知道", 两个集合各写一半会让
+     * `knows()` 与 `desktopRating` 说出互相矛盾的话(一个说不认识、一个说 4 星)。
+     */
+    private fun confirmWritten(path: String, sent: DecisionDto) {
+        val stars = sent.rating ?: return
+        written[path] = stars
+        known.add(path)
     }
 }

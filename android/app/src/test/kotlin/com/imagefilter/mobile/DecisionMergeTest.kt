@@ -15,7 +15,10 @@ import com.imagefilter.mobile.ui.DesktopRating
 import com.imagefilter.mobile.ui.MergeOutcome
 import com.imagefilter.mobile.ui.PushResult
 import com.imagefilter.mobile.ui.RemotePull
+import com.imagefilter.mobile.ui.SwipeDirection
 import com.imagefilter.mobile.ui.SyncState
+import com.imagefilter.mobile.ui.DEFAULT_SWIPE_CONFIG
+import com.imagefilter.mobile.ui.decideSwipe
 import com.imagefilter.mobile.ui.ratingKnowledgeLabel
 import kotlinx.coroutines.test.runTest
 import okhttp3.mockwebserver.MockResponse
@@ -489,10 +492,14 @@ class DecisionMergeTest {
     // ── ⑦′ FIX 3: 写完分之后, "电脑上那几星"这一行说的是**上次读到**的那一份 ─────────
 
     @Test
-    fun after_a_confirmed_write_the_desktop_line_still_reports_the_last_read_and_says_so() = runTest {
+    fun a_confirmed_write_updates_the_desktop_line_so_it_cannot_contradict_the_stars() = runTest {
         // 场景逐字是评审给的那一条: 读到电脑上是 2 星 → 用户在手机上打成 5 星 → 电脑确认写了。
-        // 屏幕上那颗星已经是 5(本地意图), 而"电脑上"那一行**仍然是上一次读到的 2** ——
-        // 它必须自己说清时态, 否则用户看到"电脑上：2★"就会以为这一下没生效。
+        //
+        // ⚠️ **这条用例原来是反过来的**: 它当时断言"这一行只来自读取, 写入的回执不更新它",
+        // 于是打完分之后屏幕上是一排 5 颗实心星、下面却写着"上次读到：2★" —— 用户读成
+        // "我这一下没生效"。FIX 3 把口径改成: **被服务端确认过的写入也是一份事实**
+        // (`written`/`skipped` 记在账上, 没记账的项一律标 UNCONFIRMED), 所以这一行必须
+        // 跟着它走, 而且要说清这份知识的时态([Decision.desktopRatingFromWrite])。
         enqueueRead(readJson(path, rating = 2))
         enqueueSummaryOk(written = 1)
         val s = store()
@@ -505,13 +512,122 @@ class DecisionMergeTest {
         assertEquals("写入被确认 = 本地已同步", SyncState.SYNCED, s.get(path).sync)
         assertEquals("屏幕上那颗星是本地意图(5)", 5, s.get(path).rating)
         assertEquals(
-            "而这一份**知识**只来自读取, 写入的回执不更新它(见 ratingKnowledgeLabel 的 KDoc)",
-            DesktopRating.Rated(2),
+            "电脑确认了这一次写入 ⇒ 这才是电脑上**现在**的星级(比上一次读到的 2 新)",
+            DesktopRating.Rated(5),
             s.get(path).desktopRating,
         )
-        val line = ratingKnowledgeLabel(s.get(path).desktopRating)
-        assertTrue("这一行必须自报家门: $line", line.startsWith("上次读到"))
-        assertFalse("绝不许把刚写下去的值说成电脑上现在的值: $line", line.contains("5"))
+        assertTrue("还要说清这份知识是刚写进去的", s.get(path).desktopRatingFromWrite)
+        val line = ratingKnowledgeLabel(s.get(path).desktopRating, s.get(path).desktopRatingFromWrite)
+        assertTrue("这一行必须说清是电脑上**现在**的值: $line", line.startsWith("电脑上："))
+        assertTrue("值不许丢: $line", line.contains("5"))
+        assertFalse("绝不许再说成'上次读到'(那句话就是 FIX 3 里读起来像没生效的那句): $line", line.startsWith("上次读到"))
+    }
+
+    @Test
+    fun a_failed_write_leaves_the_desktop_line_on_the_last_read_value() = runTest {
+        // 对照(把上一条钉成真的): 同样"读到 2 → 打成 5", 但电脑**没接受**这次写入。
+        // 这时界面上一排 5 颗星只是**本地意图**(未同步角标会说出来), 而"电脑上"那一行
+        // 必须照旧是上一次读到的 2 —— 拿一个没被确认的值冒充"电脑上现在是它"就是编知识。
+        enqueueRead(readJson(path, rating = 2))
+        server.enqueue(
+            MockResponse().setResponseCode(200).setBody(
+                """{"written":0,"skipped":0,"failed":1,"degraded":false,"failures":[""" +
+                    """{"path":"${jsonPath(path)}","code":"readOnly","detail":""}]}""",
+            ),
+        )
+        val s = store()
+        s.pullRemote(listOf(path))
+        s.applyLocal(Decision(path).withRating(5))
+
+        s.push(listOf(path))
+
+        assertEquals("没被确认 ⇒ 仍然未同步", SyncState.UNSYNCED, s.get(path).sync)
+        assertEquals("这一行照旧是上一次读到的那个值", DesktopRating.Rated(2), s.get(path).desktopRating)
+        assertFalse("而且不许自称是刚写进去的", s.get(path).desktopRatingFromWrite)
+        val line = ratingKnowledgeLabel(s.get(path).desktopRating, s.get(path).desktopRatingFromWrite)
+        assertTrue("自报家门说是上次读到的: $line", line.startsWith("上次读到"))
+        assertFalse("绝不许把本地那个乐观值(5)说成电脑上现在的值: $line", line.contains("5"))
+    }
+
+    @Test
+    fun a_later_successful_read_supersedes_what_we_wrote() = runTest {
+        // FIX 3 的**另一个方向**: 那句话不许往另一边过期。
+        // 我们写了 5(被确认), 之后电脑上被别人改成 2, 而手机又读了一次 —— 这一行必须回到
+        // "上次读到：2★", 而不是继续拿着我们上次写进去的 5 说话。
+        enqueueRead(readJson(path, rating = 3))
+        enqueueSummaryOk(written = 1)
+        enqueueRead(readJson(path, rating = 2))
+        val s = store()
+        s.pullRemote(listOf(path))
+        s.applyLocal(Decision(path).withRating(5))
+        s.push(listOf(path))
+        assertEquals("前提: 写入被确认过", DesktopRating.Rated(5), s.get(path).desktopRating)
+
+        s.pullRemote(listOf(path))
+
+        assertEquals("更晚的一次读取是更新的事实", DesktopRating.Rated(2), s.get(path).desktopRating)
+        assertFalse("它不再是'刚写进去的那份'", s.get(path).desktopRatingFromWrite)
+    }
+
+    @Test
+    fun a_write_that_touched_only_the_label_teaches_nothing_about_the_rating() = runTest {
+        // 一次只改色标的写入关于**星级**什么都没说 —— 拿它去更新星级知识就是无中生有。
+        // (这一档很容易写错成"写入成功 ⇒ desktopRating = 发出去的那一份": 发出去的
+        //  `rating` 是 null("不动这个属性"), 于是那一行会变成"电脑上：没有星级"。)
+        enqueueRead(readJson(path, rating = 4))
+        enqueueSummaryOk(written = 1)
+        val s = store()
+        s.pullRemote(listOf(path))
+        s.applyLocal(Decision(path).withLabel("red"))
+
+        s.push(listOf(path))
+
+        assertEquals(SyncState.SYNCED, s.get(path).sync)
+        assertEquals("色标写成了", "red", s.get(path).label)
+        assertEquals("星级知识照旧是上一次读到的 4", DesktopRating.Rated(4), s.get(path).desktopRating)
+        assertFalse("它不是写入换来的", s.get(path).desktopRatingFromWrite)
+    }
+
+    @Test
+    fun a_confirmed_reject_also_teaches_the_keep_swipe_what_is_on_the_desktop() = runTest {
+        // 被确认过的写入**就是知识**这条纪律的一个可观察后果: 用户左滑废弃(0★)、电脑确认了,
+        // 之后再右滑"保留"就不该被当成"不知道电脑上是什么"而整支拦住(我们刚刚才让电脑
+        // 变成 0★ —— 那一支的判据正是 desktopRating)。
+        server.enqueue(MockResponse().setResponseCode(200).setBody("[]"))   // 读取: 这一张没被回报
+        enqueueSummaryOk(written = 1)
+        val s = store()
+        s.pullRemote(listOf(path))
+        assertFalse("前提: 还没读到过这一张 ⇒ 不知道", s.knows(path))
+
+        s.applyLocal(Decision(path).withRating(0))
+        s.push(listOf(path))
+
+        assertTrue("写入被确认 ⇒ 这一张的知识是知道的", s.knows(path))
+        assertEquals(DesktopRating.Rated(0), s.get(path).desktopRating)
+        val keep = decideSwipe(s.get(path), SwipeDirection.Right, DEFAULT_SWIPE_CONFIG)
+        assertFalse("保留不再被当成'瞎写'", keep.blocked)
+        assertFalse("于是它真的会写下去", keep.unchanged)
+        assertEquals(3, keep.rating)
+    }
+
+    @Test
+    fun an_unconfirmed_read_drops_the_write_confirmed_knowledge_too() = runTest {
+        // 另一个方向上的**保守**: 一次没被确认的读取证明不了电脑上现在还是我们上次写进去的
+        // 那个值(边车可能被别的程序动过), 所以两份知识一起降级成"不知道" ——
+        // 宁可口径退回"没读到", 也不许继续拿上一次的结论充数(见 DecisionStore.forget)。
+        enqueueSummaryOk(written = 1)
+        val s = store()
+        s.applyLocal(Decision(path).withRating(4))
+        s.push(listOf(path))
+        assertEquals("前提: 写入被确认过", DesktopRating.Rated(4), s.get(path).desktopRating)
+
+        server.enqueue(MockResponse().setResponseCode(500).setBody("""{"code":"internal"}"""))
+        s.pullRemote(listOf(path))
+
+        assertEquals(DesktopRating.Unknown, s.get(path).desktopRating)
+        assertFalse("它也不再自称是刚写进去的那份", s.get(path).desktopRatingFromWrite)
+        assertFalse(s.knows(path))
+        assertEquals("本地意图照旧一个字都没被动(读取没有资格碰用户的评分)", 4, s.get(path).rating)
     }
 
     // ── ⑦ 边车读不动: `null` 不是"没有值"的证据(FIX 4 消费 `sidecarReadable`) ─────

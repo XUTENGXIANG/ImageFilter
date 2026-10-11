@@ -70,11 +70,8 @@ class RatingKnowledgeTest {
 
     @Test
     fun a_known_desktop_value_is_framed_as_the_last_read_not_as_the_current_one() {
-        // FIX 3: [DecisionStore.desktopRating] **只由读取**写(一次写入的回执不会更新它),
-        // 所以用户在手机上打完分之后, 这一行立刻就是上一次读到的旧值。旧口径("电脑上：2★")
-        // 会被读成"我这一下没生效"; 有值的那两档因此必须自报家门说清时态。
-        // (为什么不去把这一格更新成刚写的值: 一次 WriteSummary 是**计数 + 一张失败清单**,
-        //  它不逐张点名谁真的写进去了 —— 见 [ratingKnowledgeLabel] 的 KDoc。)
+        // 有值的那两档在**只读到过**的时候必须自报家门说清时态: 读取是它们唯一的来源,
+        // 而一次写入之后这个数就会过时(用户会把"电脑上：2★"读成"我这一下没生效")。
         val rated = ratingKnowledgeLabel(DesktopRating.Rated(4))
         val unrated = ratingKnowledgeLabel(DesktopRating.Unrated)
 
@@ -84,6 +81,23 @@ class RatingKnowledgeTest {
         assertFalse("同上: $unrated", unrated.startsWith("电脑上："))
         // 数值本身照旧要对(换口径不是把信息换没)
         assertTrue("4 这个数不许丢: $rated", rated.contains("4"))
+    }
+
+    @Test
+    fun a_confirmed_write_is_framed_as_the_current_value_and_never_as_the_last_read() {
+        // FIX 3 的正题: 服务端确认过这次写入 ⇒ 电脑上**现在就是**这个值。
+        // 这一档必须与"上次读到"那句**不一样**, 而且不能说成"上次读到" ——
+        // 否则用户刚点完第 4 颗星, 屏幕上 4 颗实心、下面写着旧值, 读起来就是"没生效"。
+        val read = ratingKnowledgeLabel(DesktopRating.Rated(2))
+        val written = ratingKnowledgeLabel(DesktopRating.Rated(4), fromWrite = true)
+
+        assertNotEquals("读到的 2 与写进去的 4 不许说成同一句", read, written)
+        assertTrue("要说是电脑上**现在**的值: $written", written.startsWith("电脑上："))
+        assertFalse("绝不许再说'上次读到': $written", written.startsWith("上次读到"))
+        assertFalse("也不许说'没读到'(那是真的不知道): $written", written.contains("没读到"))
+        assertTrue("4 这个数不许丢: $written", written.contains("4"))
+        // 与上面那排星星**不矛盾**才是这一档存在的全部理由: 数必须与刚写下去的一致。
+        assertTrue("要说清它来自一次被确认的写入: $written", written.contains("确认"))
     }
 
     @Test

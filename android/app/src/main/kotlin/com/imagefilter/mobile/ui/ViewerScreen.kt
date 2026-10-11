@@ -312,6 +312,7 @@ fun ViewerScreen(
                 label = state.label,
                 // 电脑上是几星(三态): 画在条上, 并且由 setRating 用来拦下一次瞎写。
                 desktopRating = state.desktopRating,
+                desktopRatingFromWrite = state.desktopRatingFromWrite,
                 enabled = !state.writing,
                 writing = state.writing,
                 onRating = { stars -> scope.launch { vm.setRating(stars) } },
@@ -382,7 +383,13 @@ private fun ViewerTopBar(
 ) {
     Surface(tonalElevation = 3.dp) {
         Row(
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 4.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                // ⚠️ **必须在 padding 之前**: 顶栏底色照旧铺到屏幕最上沿, 让开的是内容 ——
+                // 少了这一行, 「关闭」与「未同步·重试」整颗按钮都落在状态栏的触摸区里,
+                // 真机上按不动(见 [topBarInsets] 的 KDoc)。
+                .topBarInsets()
+                .padding(horizontal = 4.dp, vertical = 4.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Text(

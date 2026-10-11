@@ -75,6 +75,13 @@ fun RatingBar(
     label: String?,
     /** **电脑上**这一张的星级(三态): 不知道时画未知角标并把话说清(见本函数 KDoc)。 */
     desktopRating: DesktopRating,
+    /**
+     * 上面那份知识是不是**刚被电脑确认写入**得到的([ViewerState.desktopRatingFromWrite])。
+     *
+     * **刻意没有默认值**: 忘了带上它, 用户刚打完一次成功的分就会重新看到"上次读到：N★"
+     * (读起来就是"我这一下没生效") —— 那正是 FIX 3。编译器必须替我们记住这件事。
+     */
+    desktopRatingFromWrite: Boolean,
     /** 写入在飞时为 false —— 禁掉连点, 免得手机这边自己制造乱序。 */
     enabled: Boolean,
     /** 正在写给电脑(显示一行进度说明)。 */
@@ -87,6 +94,10 @@ fun RatingBar(
         Column(
             modifier = modifier
                 .fillMaxWidth()
+                // ⚠️ 底部要让开系统手势条: 否则那条**半透明的手势把手**会横穿色标那一行 ——
+                // 它恰好只压住最后一个色点(紫), 看上去就像"紫色被选中了", 而这张照片
+                // 其实一个色标都没有(见 [bottomBarInsets] 的 KDoc)。
+                .bottomBarInsets()
                 .padding(horizontal = 12.dp, vertical = 6.dp),
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -110,8 +121,9 @@ fun RatingBar(
             Spacer(Modifier.height(2.dp))
 
             // 电脑上那一份知识: 三态各说各的(屏幕上那颗星星是合并之后的值, 不能代表电脑)。
+            // 时态([desktopRatingFromWrite])也一起交给纯函数 —— 界面里不写这一条判断。
             Text(
-                ratingKnowledgeLabel(desktopRating),
+                ratingKnowledgeLabel(desktopRating, desktopRatingFromWrite),
                 style = MaterialTheme.typography.bodySmall,
                 color = if (desktopRating == DesktopRating.Unknown) {
                     MaterialTheme.colorScheme.error

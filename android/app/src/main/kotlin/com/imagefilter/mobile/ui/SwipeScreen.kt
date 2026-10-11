@@ -384,6 +384,7 @@ fun SwipeScreen(
                 label = state.label,
                 // 电脑上是几星(三态): 一次 1..5 星的绝对赋值在"不知道"时会被拦下(见 setRating)。
                 desktopRating = state.desktopRating,
+                desktopRatingFromWrite = state.desktopRatingFromWrite,
                 enabled = !state.writing,
                 writing = state.writing,
                 onRating = { stars -> scope.launch { vm.setRating(stars) } },
@@ -511,7 +512,12 @@ private fun SwipeTopBar(
 ) {
     Surface(tonalElevation = 3.dp) {
         Row(
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 4.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                // ⚠️ **必须在 padding 之前**: 少了这一行, 「撤销」整颗按钮落在状态栏的触摸区里
+                // ——实测在按钮正中点三次都没反应(见 [topBarInsets] 的 KDoc)。
+                .topBarInsets()
+                .padding(horizontal = 4.dp, vertical = 4.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Text(
