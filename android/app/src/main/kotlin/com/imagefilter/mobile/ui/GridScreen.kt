@@ -113,9 +113,40 @@ fun GridScreen(
      */
     val decisions = vm.decisions
 
+    /**
+     * **移动分类**(M3′ Task 4)的状态机 —— 与 [GridViewModel] 分开: 它管的是"选中的那几张"
+     * 与"搬到哪、搬成了没有", 与"这个文件夹有什么照片"是两件事(混进 GridViewModel 只会让
+     * 两个状态机的生命周期互相牵扯: 关掉移动流程不该丢掉网格的滚动与筛选)。
+     *
+     * `sourceDir` 传的是**当前文件夹**: 只用来说清"目标就是当前文件夹"那种白跑一趟的情形。
+     */
+    val moveVm = remember(pairing, folder.path) { MoveViewModel(pairing, sourceDir = folder.path) }
+    val moveState by moveVm.state.collectAsState()
+
+    /**
+     * 目标文件夹选择器用的**浏览状态机** —— 就是浏览页那一个([BrowseViewModel])。
+     *
+     * 复用而不是另写一个"文件夹选择器": 目录树的口径只能有一份(另写一个迟早会出现
+     * "浏览页点得开、选择器点不开"), 而且**选什么根本不该由手机决定** —— 服务端没有 Mkdir
+     * 端点, 所以选择器里出现的每一个目标都必须是服务端真的回过的路径。
+     */
+    val pickerVm = remember(pairing) { BrowseViewModel(pairing) }
+    val pickerState by pickerVm.state.collectAsState()
+
+    /** 关掉整条移动流程: 真的搬过东西就先刷新这个文件夹(照片已经不在原处了)。 */
+    fun closeMove() {
+        if (moveState.summary != null) scope.launch { vm.loadAll() }
+        moveVm.cancelSelecting()
+    }
+
     // 系统返回键 = 回目录页。少这一条, 真机上按返回会直接退出 App(而界面里那个
     // 「返回」按钮还在)—— 这是这一页最容易漏掉的一条。
     BackHandler { onBack() }
+    // 多选模式下返回键 = 退出多选(与顶栏那个「取消」同一件事)。它注册在上面那一条**之后**,
+    // 所以在这一档里它优先(OnBackPressedDispatcher 是后注册者先收到)。
+    BackHandler(enabled = moveState.selecting && moveState.stage == MoveStage.Idle) {
+        moveVm.cancelSelecting()
+    }
 
     // 进这个文件夹 = 文件列表 + **文件夹级的决策读取**(`GET /decisions?paths=…`)。
     // 只调一次 loadAll 是刻意的: 谁忘了第二步, 筛选栏就会安静地整页说"未统计"。
@@ -146,6 +177,26 @@ fun GridScreen(
             onOpenCull = { cullQueue = state.visibleItems },
             // 打开面板那一刻先解除武装(见 PendingPanel 的 KDoc)
             onOpenPending = { vm.cancelAbandon(); pendingOpen = true },
+            // ── 移动(M3′ Task 4)────────────────────────────────────────────
+            move = moveState,
+            // 长按/点选: 没在多选里就先进入多选并选中这一格; 已经在多选里就切换它
+            onCellSelect = { path ->
+                if (!moveState.selecting) moveVm.startSelecting()
+                moveVm.toggle(path)
+            },
+            onCellEnsureSelected = { path ->
+                if (!moveState.selecting) moveVm.startSelecting()
+                moveVm.select(path)
+            },
+            onStartMove = {
+                moveVm.openPicker()
+                // 懒加载: 第一次打开选择器才去读共享根(不用移动功能的用户一个请求都不多发);
+                // 已经读到过的也不重拉 —— 电脑上新建了文件夹时由选择器里那个「刷新共享根」负责
+                if (!pickerState.hasRoots && !pickerState.rootsLoading) {
+                    scope.launch { pickerVm.loadRoots() }
+                }
+            },
+            onCancelSelecting = { moveVm.cancelSelecting() },
         )
 
         val index = viewerIndex
@@ -182,7 +233,31 @@ fun GridScreen(
             )
         }
 
-        // 待重试面板: **最上面一层**(它盖住网格、查看器与滑卡页)。放在最后画, 顺序就是层级。
+        // 移动(挑目标 / 确认 / 结果)盖在网格之上。**注意**它只在真的开始挑目标之后才盖上来:
+        // 多选模式下网格必须仍然可见可点(用户就是在网格上点照片的)。
+        if (moveState.stage != MoveStage.Idle) {
+            MoveSheet(
+                MovePanel(
+                    state = moveState,
+                    picker = folderPickerModel(pickerState),
+                    onPickRow = { path -> scope.launch { pickerVm.open(path) } },
+                    onPickRetry = { path -> scope.launch { pickerVm.retry(path) } },
+                    onRefreshRoots = { scope.launch { pickerVm.loadRoots() } },
+                    // 目标只有一处来源: 选择器里那个**服务端回过的**路径(见 FolderPickerModel)
+                    onPickThisFolder = {
+                        pickerState.selected?.let { p -> moveVm.pickFolder(pickerState.entryFor(p)) }
+                    },
+                    onBackToPicker = { moveVm.backToPicker() },
+                    // 顺序 = 网格顺序(与电脑上看到的一致); 服务端的逐项结果与请求一一对应
+                    onConfirm = { scope.launch { moveVm.move(state.visibleItems.map { it.path }) } },
+                    onRetryOne = { src -> scope.launch { moveVm.retryOne(src) } },
+                    onRetryAll = { scope.launch { moveVm.retryAll() } },
+                    onClose = { closeMove() },
+                ),
+            )
+        }
+
+        // 待重试面板: **最上面一层**(它盖住网格、查看器、滑卡页与移动流程)。放在最后画, 顺序就是层级。
         if (pendingOpen) {
             PendingSheet(
                 panel = pendingPanel(state, vm, scope) {
@@ -210,6 +285,16 @@ private fun GridContent(
     onOpenCull: () -> Unit,
     /** 打开**待重试面板**([PendingSheet])。 */
     onOpenPending: () -> Unit,
+    /** 移动那件事的界面状态(多选开没开、选了哪些)。 */
+    move: MoveState,
+    /** 点一格: 多选模式下 = 切换选中; 否则 = 打开查看器(那个分派就在 [PhotoGrid] 里一处)。 */
+    onCellSelect: (String) -> Unit,
+    /** 长按一格: **进入多选并选中它**(已经在多选里时是幂等的"选中", 不是"取消")。 */
+    onCellEnsureSelected: (String) -> Unit,
+    /** 顶栏「移动到…」。 */
+    onStartMove: () -> Unit,
+    /** 退出多选。 */
+    onCancelSelecting: () -> Unit,
 ) {
     Scaffold(
         topBar = {
@@ -228,23 +313,33 @@ private fun GridContent(
                 },
                 navigationIcon = { TextButton(onClick = onBack) { Text("返回") } },
                 actions = {
-                    // 顶栏那**一个**角标(规格 §8.1): 显示什么与按下去做什么由 [topBarBadge]
-                    // 一处决定 —— 待重试队列非空时它就是队列项数(按下去打开重试面板),
-                    // 队列为空的窗口里退回"未同步 N 张·重试"(按下去把这一页未同步的推一遍)。
-                    // 两句话**数的是同一个集合**, 所以不会出现"角标说 3、按下去重试 2 张"。
-                    val badge = state.topBadge
-                    if (badge != null) {
-                        PendingBadgeButton(
-                            badge = badge,
-                            enabled = !state.pending.busy,
-                            onOpenPanel = onOpenPending,
-                            onRetryUnsynced = { scope.launch { vm.retryUnsynced() } },
+                    // **多选模式**下顶栏换成移动那几个动作(已选 N 张 / 移动到… / 取消) —— 筛片与
+                    // 刷新在这个时候按下去只会让选中的那一批悄悄变样(筛片会改决策, 刷新会换列表)。
+                    if (move.selecting) {
+                        MoveSelectionActions(
+                            state = move,
+                            onStartMove = onStartMove,
+                            onCancel = onCancelSelecting,
                         )
+                    } else {
+                        // 顶栏那**一个**角标(规格 §8.1): 显示什么与按下去做什么由 [topBarBadge]
+                        // 一处决定 —— 待重试队列非空时它就是队列项数(按下去打开重试面板),
+                        // 队列为空的窗口里退回"未同步 N 张·重试"(按下去把这一页未同步的推一遍)。
+                        // 两句话**数的是同一个集合**, 所以不会出现"角标说 3、按下去重试 2 张"。
+                        val badge = state.topBadge
+                        if (badge != null) {
+                            PendingBadgeButton(
+                                badge = badge,
+                                enabled = !state.pending.busy,
+                                onOpenPanel = onOpenPending,
+                                onRetryUnsynced = { scope.launch { vm.retryUnsynced() } },
+                            )
+                        }
+                        // 滑卡筛片: **筛出来的那些**就是这一叠(队列在按下这一刻冻结, 见 GridScreen)。
+                        // 一张可滑的都没有时禁用 —— 打开一个空队列只会给出一张白屏。
+                        TextButton(onClick = onOpenCull, enabled = state.hasVisiblePhotos) { Text("筛片") }
+                        TextButton(onClick = { scope.launch { vm.loadAll() } }) { Text("刷新") }
                     }
-                    // 滑卡筛片: **筛出来的那些**就是这一叠(队列在按下这一刻冻结, 见 GridScreen)。
-                    // 一张可滑的都没有时禁用 —— 打开一个空队列只会给出一张白屏。
-                    TextButton(onClick = onOpenCull, enabled = state.hasVisiblePhotos) { Text("筛片") }
-                    TextButton(onClick = { scope.launch { vm.loadAll() } }) { Text("刷新") }
                 },
             )
         },
@@ -352,6 +447,11 @@ private fun GridContent(
                     ratingKnown = state::ratingKnown,
                     imageLoader = imageLoader,
                     onCellClick = onOpenViewer,
+                    // 多选模式: 点了是"选中/取消"而不是打开查看器(分派就在 PhotoGrid 里一处)
+                    selecting = move.selecting,
+                    selected = move.selected,
+                    onCellSelect = onCellSelect,
+                    onCellLongPress = onCellEnsureSelected,
                 )
 
                 // 失败且一张都没有: 上面那张错误卡就是全部内容, 这里不再画第二句话
@@ -370,6 +470,10 @@ private fun GridContent(
  * `onCellClick` 收的是**下标**(不是格子): 查看器需要"从第几张开始", 而格子本身的数据
  * 它自己会从同一个 `items` 里取 —— 那个下标因此是**筛出来的列表**里的下标, 与查看器拿到
  * 的列表是同一个, 这正是"筛选后切图不会切到被筛掉的照片"的实现方式。
+ *
+ * 多选(移动)那三件事在这里**只分派一次**: [selecting] 为 true 时"点"= 选中/取消,
+ * 否则"点"= 打开查看器; 长按一律是"进入多选并选中"。分派散在调用方就会出现
+ * "多选里点一下却打开了查看器"这种谁都没写、但一定会发生的事。
  */
 @Composable
 private fun ColumnScope.PhotoGrid(
@@ -379,6 +483,14 @@ private fun ColumnScope.PhotoGrid(
     ratingKnown: (String) -> Boolean,
     imageLoader: ImageLoader,
     onCellClick: (Int) -> Unit,
+    /** 多选模式开着吗。 */
+    selecting: Boolean = false,
+    /** 选中的路径。 */
+    selected: Set<String> = emptySet(),
+    /** 多选里点一格(切换选中)。 */
+    onCellSelect: (String) -> Unit = {},
+    /** 长按一格(进入多选并选中)。 */
+    onCellLongPress: (String) -> Unit = {},
 ) {
     LazyVerticalGrid(
         // Adaptive(96.dp): 窄屏两列、平板多列 —— 列数不写死, 但每格是正方形
@@ -398,7 +510,10 @@ private fun ColumnScope.PhotoGrid(
                 // "不知道"必须画得出来(它**不是**"没有星级") —— 判据只有一处。
                 ratingKnown = ratingKnown(item.path),
                 imageLoader = imageLoader,
-                onClick = { onCellClick(index) },
+                selecting = selecting,
+                selected = item.path in selected,
+                onClick = { if (selecting) onCellSelect(item.path) else onCellClick(index) },
+                onLongClick = { onCellLongPress(item.path) },
             )
         }
     }

@@ -2,9 +2,11 @@
 // SPDX-License-Identifier: MIT
 package com.imagefilter.mobile.ui
 
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -57,6 +59,7 @@ import com.imagefilter.mobile.data.ReadAction
  * material-icons; 具体在 96dp 的格子里挤不挤、边框/未知角标在深色主题下够不够显眼, 只能真机看
  * (报告的 UNVERIFIED 清单)。
  */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 internal fun GridCell(
     item: GridItem,
@@ -69,7 +72,18 @@ internal fun GridCell(
      */
     ratingKnown: Boolean,
     imageLoader: ImageLoader,
+    /**
+     * 多选模式开着吗(M3′ Task 4 的移动入口): 开着时**点 = 选中/取消**, 而不是打开查看器。
+     *
+     * 这条必须在格子上、而不是在网格里用 if 包一层: 两种模式下"点一下会发生什么"完全不同,
+     * 而用户看到的必须是同一种格子(否则选择模式下点开查看器会让选中的那一批消失)。
+     */
+    selecting: Boolean = false,
+    /** 这一格被选中了吗(只在 [selecting] 为 true 时有意义)。 */
+    selected: Boolean = false,
     onClick: () -> Unit,
+    /** 长按 = 进入多选模式并选中这一格。 */
+    onLongClick: () -> Unit = {},
 ) {
     val unsynced = decision?.sync == SyncState.UNSYNCED
     Box(
@@ -84,13 +98,23 @@ internal fun GridCell(
                     Modifier
                 },
             )
-            .clickable(onClick = onClick),
+            // 已选中: 一圈更粗的主色边框 —— 与"未同步"那圈**不同色也不同粗细**, 免得两种状态分不开
+            .then(
+                if (selected) {
+                    Modifier.border(4.dp, MaterialTheme.colorScheme.primary, RoundedCornerShape(6.dp))
+                } else {
+                    Modifier
+                },
+            )
+            .combinedClickable(onClick = onClick, onLongClick = onLongClick),
     ) {
         AsyncImage(
             model = item.thumbnailUrl,
             imageLoader = imageLoader,
-            // 读屏要能听懂"这是哪一张 + 几星 + 什么色标 + 有没有没写成"(纯函数, 有单测)
-            contentDescription = cellDescription(item, decision, ratingKnown),
+            // 读屏要能听懂"这是哪一张 + 几星 + 什么色标 + 有没有没写成"(纯函数, 有单测);
+            // 多选模式下再补一句"选中了没有" —— 那个粗边框色弱/读屏用户看不见。
+            contentDescription = cellDescription(item, decision, ratingKnown) +
+                if (selecting) (if (selected) "，已选中" else "，未选中") else "",
             contentScale = ContentScale.Crop,
             placeholder = ColorPainter(MaterialTheme.colorScheme.surfaceVariant),
             error = ColorPainter(MaterialTheme.colorScheme.errorContainer),
@@ -100,6 +124,14 @@ internal fun GridCell(
         val label = decision?.label
         if (label != null) {
             LabelDotBadge(label = label, modifier = Modifier.align(Alignment.TopStart).padding(4.dp))
+        }
+
+        // 选中勾: 画在**右上角**(色标在左上、星级在右下, 三个角各司其职)
+        if (selecting) {
+            StarBadge(
+                text = if (selected) "✓" else "○",
+                modifier = Modifier.align(Alignment.TopEnd).padding(4.dp),
+            )
         }
 
         val rating = decision?.rating
