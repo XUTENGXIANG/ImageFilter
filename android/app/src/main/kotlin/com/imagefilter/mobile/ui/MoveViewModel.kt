@@ -47,7 +47,7 @@ data class MoveState(
     val sourceDir: String? = null,
     /** 多选模式开着吗(长按进入, 与查看器/滑卡页互斥)。 */
     val selecting: Boolean = false,
-    /** 选中的路径(**顺序不在这里** —— 请求的顺序由调用方按网格顺序给, 见 [selectedPaths])。 */
+    /** 选中的路径(**顺序不在这里** —— 请求的顺序由调用方按网格顺序给, 见 [requestedPaths])。 */
     val selected: Set<String> = emptySet(),
     val stage: MoveStage = MoveStage.Idle,
     /** 挑好的目标目录(逐字发回服务端; 绝不自己拼)。 */
@@ -80,10 +80,28 @@ data class MoveState(
     val retryableCount: Int get() = rows.count { it.canRetry }
 
     /**
-     * 选中的路径, **按调用方给的顺序**(网格顺序 = 电脑上的顺序)——
-     * 用点击顺序会让"移到同一个文件夹里的几张"在电脑上的先后随手指次序变。
+     * **要发出去的路径** = 用户选中的**全部**, 顺序按调用方给的 [order](网格顺序)。
+     *
+     * ⚠️ **这里曾经是 `order.filter { it in selected }`** —— 而 [order] 在生产路径上是**筛过之后**
+     * 的网格([GridState.visibleItems]), 于是"选 10 张 → 点一个筛选词条挡住 3 张 → 移动"会让确认句
+     * 说"把这 10 张移到…"而请求里只有 7 条。什么都没丢, 但用户相信有 10 张搬走了, 其中 3 张其实还
+     * 躺在原文件夹里 —— 正是本项目最怕的那种"看起来成了"。而且筛选栏在多选期间是**活的**
+     * ([FilterBar] 一直在, 只有顶栏那几个动作会换成移动的), 所以这不是一个边角时序。
+     *
+     * 取舍:**选谁, 是用户在网格上点出来的** —— 顶栏那句"已选 N 张"([selectionLabel])、
+     * [canStartMove]、确认句([confirmText]) 数的都是这个集合, 用户按「移动到…」时的意图就是它。
+     * 筛选只是**看**的方式, 它没有资格替用户减掉照片。所以 [order] **只提供顺序**(在它里面出现的
+     * 那些按它的次序排, 也就是电脑上的次序), 选中的、但不在 [order] 里的那些接在后面按路径排。
+     *
+     * 这样 `requestedPaths(order).size == selected.size` 是**构造上的恒等式** ——
+     * "说的"与"发的"不可能是两个数, 不靠调用点记得改过来(读代码的人也不必先确认 GridScreen
+     * 传的是 visibleItems 还是 items)。
      */
-    fun selectedPaths(order: List<String>): List<String> = order.filter { it in selected }
+    fun requestedPaths(order: List<String>): List<String> {
+        val inOrder = order.filter { it in selected }.distinct()
+        val seen = inOrder.toSet()
+        return inOrder + selected.filterNot { it in seen }.sorted()
+    }
 
     /** 确认句(挑好目标之后才有)。 */
     val confirmText: String?
@@ -226,12 +244,15 @@ class MoveViewModel(
      * [order] 由调用方给(网格顺序): 请求里的 `paths` 逐字按它排 —— 服务端的逐项结果与请求顺序
      * 一一对应, 所以顺序稳定下来, 结果面板才对得上眼睛看到的那一叠。
      *
+     * ⚠️ **[order] 只决定顺序, 不决定"发哪几张"**: 发出去的是**选中项全体**
+     * (见 [MoveState.requestedPaths], FIX 1 —— 被当前筛选挡住的那几张照发)。
+     *
      * 返回批次结果(`null` = 一个请求都没发, 或者批次级失败)。
      */
     suspend fun move(order: List<String>): MoveSummaryDto? {
         val st = _state.value
         val destDir = st.destDir ?: return null
-        val paths = st.selectedPaths(order)
+        val paths = st.requestedPaths(order)
         // 空批次在服务端是 badRequest(与 readDecisions 同一条), 本地先挡 —— 白跑一趟只会多等一次超时
         if (paths.isEmpty()) return null
 

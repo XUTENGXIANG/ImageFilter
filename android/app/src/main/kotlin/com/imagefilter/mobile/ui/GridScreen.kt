@@ -248,8 +248,12 @@ fun GridScreen(
                         pickerState.selected?.let { p -> moveVm.pickFolder(pickerState.entryFor(p)) }
                     },
                     onBackToPicker = { moveVm.backToPicker() },
-                    // 顺序 = 网格顺序(与电脑上看到的一致); 服务端的逐项结果与请求一一对应
-                    onConfirm = { scope.launch { moveVm.move(state.visibleItems.map { it.path }) } },
+                    // 顺序 = 网格顺序(与电脑上看到的一致); 服务端的逐项结果与请求一一对应。
+                    // ⚠️ 给的是**这个文件夹的全部照片**的顺序, 不是筛出来的那些([GridState.visibleItems]):
+                    // 筛选只是"看"的方式, 它没有资格把用户选中的照片从批次里减掉。发出去的是选中项
+                    // **全体**(见 [MoveState.requestedPaths], FIX 1), 所以这里给全量顺序, 好让被筛选
+                    // 挡住的那几张也按电脑上的次序排在请求里。
+                    onConfirm = { scope.launch { moveVm.move(state.items.map { it.path }) } },
                     onRetryOne = { src -> scope.launch { moveVm.retryOne(src) } },
                     onRetryAll = { scope.launch { moveVm.retryAll() } },
                     onClose = { closeMove() },

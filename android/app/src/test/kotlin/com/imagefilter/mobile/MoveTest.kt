@@ -7,6 +7,7 @@ import com.imagefilter.mobile.data.ApiErrorCodes
 import com.imagefilter.mobile.data.FailureSource
 import com.imagefilter.mobile.data.FolderEntryDto
 import com.imagefilter.mobile.data.Json
+import com.imagefilter.mobile.data.MoveReqDto
 import com.imagefilter.mobile.data.MoveStatus
 import com.imagefilter.mobile.data.MoveSummaryDto
 import com.imagefilter.mobile.data.Pairing
@@ -15,8 +16,13 @@ import com.imagefilter.mobile.data.WriteFailure
 import com.imagefilter.mobile.data.WriteMessages
 import com.imagefilter.mobile.data.buildHttpClient
 import com.imagefilter.mobile.ui.BrowseViewModel
+import com.imagefilter.mobile.ui.Decision
+import com.imagefilter.mobile.ui.Filters
+import com.imagefilter.mobile.ui.GridItem
 import com.imagefilter.mobile.ui.MoveStage
+import com.imagefilter.mobile.ui.MoveState
 import com.imagefilter.mobile.ui.MoveViewModel
+import com.imagefilter.mobile.ui.applyFilters
 import com.imagefilter.mobile.ui.folderPickerModel
 import com.imagefilter.mobile.ui.moveRetryPlan
 import com.imagefilter.mobile.ui.summarizeMove
@@ -64,6 +70,7 @@ class MoveTest {
 
     private val photoA = "D:\\照片\\a.jpg"
     private val photoB = "D:\\照片\\b.jpg"
+    private val photoC = "D:\\照片\\c.jpg"
     private val destDir = "D:\\照片\\精修"
     private val sidecarA = "D:\\照片\\a.xmp"
 
@@ -126,6 +133,20 @@ class MoveTest {
         vm.pickFolder(FolderEntryDto(path = destDir, name = "精修"))
     }
 
+    /**
+     * 一个网格格子 —— 只用得到 [GridItem.path](筛选就是按它做的), 所以缩略图 URL 给空串。
+     * **走真的 [GridItem] 构造器**而不是另造一个只有 path 的哑类型: 筛选那条链路([applyFilters])
+     * 在界面上吃的就是它, 换一个类型就等于把这条用例挪到了一条生产上不存在的路上。
+     */
+    private fun gridItem(path: String) = GridItem(
+        path = path,
+        fileName = path.substringAfterLast('\\'),
+        isRaw = false,
+        isVideo = false,
+        modifiedAt = 0L,
+        thumbnailUrl = "",
+    )
+
     // ── ① 请求体形状 ─────────────────────────────────────────────────────────
 
     @Test
@@ -168,6 +189,82 @@ class MoveTest {
             vm.move(order = listOf(photoA)),
         )
         assertEquals(0, server.requestCount)
+    }
+
+    // ── ①′ FIX 1: 界面上说的张数 == 真的发出去的张数 ─────────────────────────
+    //
+    // 复现路径逐字是评审给的那一条: 选 10 张 → 点一个筛选词条挡住 3 张 → 移动。
+    // 旧写法 `order.filter { it in selected }` 下确认句说"把这 10 张移到…"而请求只有 7 条 ——
+    // 什么都没丢, 但用户相信有 10 张搬走了, 另外 3 张其实还躺在原文件夹里。
+
+    @Test
+    fun a_filter_chip_that_hides_selected_photos_never_shrinks_the_batch() = runTest {
+        server.enqueue(
+            MockResponse().setResponseCode(200).setBody(
+                moveBody(
+                    moved = 3,
+                    items = listOf(
+                        item(photoA, "$destDir\\a.jpg", "moved"),
+                        item(photoB, "$destDir\\b.jpg", "moved"),
+                        item(photoC, "$destDir\\c.jpg", "moved"),
+                    ).joinToString(","),
+                ),
+            ),
+        )
+
+        val vm = vm()
+        selectAndConfirm(vm, photoA, photoB, photoC)
+
+        // 走**真的筛选链路**(生产那两个函数: [applyFilters] + [Filters]): ≥4★ 把 a、c 挡住,
+        // 只有 b 还看得见。手写一个子列表替代它, 这条用例就测不出"筛选与选择不一致"这件事。
+        val items = listOf(photoA, photoB, photoC).map { gridItem(it) }
+        val decisions = mapOf(
+            photoA to Decision(photoA).withRating(2),
+            photoB to Decision(photoB).withRating(5),
+            photoC to Decision(photoC).withRating(1),
+        )
+        val visible = applyFilters(items, decisions, Filters(minStars = 4)) { it.path }.map { it.path }
+        assertEquals("夹具: 筛选真的挡住了两张(否则这一条测的是别的东西)", listOf(photoB), visible)
+
+        val shown = vm.state.value.selectedCount
+        assertEquals("顶栏与确认句数的是**整个选择**", 3, shown)
+        assertTrue(
+            "确认句说的张数必须与界面上那个数一致: ${vm.state.value.confirmText}",
+            vm.state.value.confirmText.orEmpty().contains("把这 3 张"),
+        )
+
+        // 刻意给**筛出来的那些**当顺序(旧调用点就是这么传的): 张数由选择决定, 与 order 无关。
+        vm.move(order = visible)
+
+        val requested = Json.decodeFromString<MoveReqDto>(server.takeRequest().body.readUtf8()).paths
+        assertEquals(
+            "说几张就发几张 —— 界面上说的数与请求里的条数必须是**同一个数**",
+            shown,
+            requested.size,
+        )
+        assertEquals(3, requested.size)
+        assertEquals("选中的一个都不许少", setOf(photoA, photoB, photoC), requested.toSet())
+    }
+
+    @Test
+    fun requested_paths_is_the_whole_selection_and_order_only_decides_the_sequence() {
+        // 恒等式的**纯函数**形态(与上面那条集成用例互补: 这条钉顺序与对称支, 那条钉真的发出去
+        // 了什么)。少了一条, "把 order 当成集合用"这种改坏就有机会蒙过去。
+        val state = MoveState(selecting = true, selected = setOf(photoA, photoB, photoC))
+
+        // order 里出现的按 order 排; 被筛选挡住的接在后面(稳定: 按路径), 不是丢掉
+        assertEquals(listOf(photoB, photoA, photoC), state.requestedPaths(listOf(photoB)))
+        // 一张都不在 order 里(全被筛掉)也照样是**整个选择**
+        assertEquals(state.selectedCount, state.requestedPaths(emptyList()).size)
+        assertEquals(3, state.requestedPaths(emptyList()).size)
+
+        // 对称的一支: order 里出现、但**没选中**的照片一个都不许被带进去
+        val notSelected = "D:\\照片\\z.jpg"
+        val mixed = state.requestedPaths(listOf(photoB, notSelected))
+        assertFalse("没选中的照片不许混进请求: $mixed", mixed.contains(notSelected))
+        assertEquals("而选中的仍然一个不少", 3, mixed.size)
+        // 一张都没选: 空批次(调用方据此不发请求)
+        assertEquals(emptyList<String>(), MoveState().requestedPaths(listOf(photoA)))
     }
 
     // ── ② 五字段解析(含空的 pendingSidecars 数组) ───────────────────────────
