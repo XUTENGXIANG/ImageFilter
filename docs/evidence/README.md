@@ -46,6 +46,7 @@
 | `lrc-logic.test.ts` | `src/lightroom.ts` 的纯逻辑断言（17 条） | 两行见文件头注释（esbuild + node，不引 vitest —— 项目既有约定） |
 | `lrc-logic.mjs` | 上面那份转译后的产物 | `node lrc-logic.mjs` |
 | `i18n-parity.cjs` | 校验 zh/en 叶子 key 完全对齐 | `node i18n-parity.cjs` |
+| `desktop-key-map.cjs` | `src/xmp.ts` 的「服务端路径 → 桌面端键空间」映射 + 「未落盘不放行」判据（33 条：verbatim 盘符 / `\?\UNC\` / 必须**不**匹配的反例 / 待落盘键被挡 / 用真实 `mergeRemoteRatings` 跑的修复前后对照） | `node docs/evidence/scripts/desktop-key-map.cjs`（纯 Node；自己用仓库自带 esbuild 转译，路径按 `__dirname` 解析） |
 | `tree-motion.test.ts` | `src/components/folder-tree-motion.ts` 的阶段判定断言（10 条） | 见 `folder-tree-motion/EVIDENCE.md` §9 |
 | `verify-tree-motion.mjs` | 文件夹树展开的**容器高度轨迹**（判据：台阶数 > 3 且单帧跨度 ≤ 总行程 35%；退出码 0/1） | `node verify-tree-motion.mjs <卡速ms>`，需先跑 `npm run tauri dev` |
 | `verify-tree-inert.mjs` | 收起后的子树是否真的不可 Tab 到，以及嵌套展开有没有被裁 | 同上 |

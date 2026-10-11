@@ -18,7 +18,7 @@ import {
 } from "./import-rules";
 import {
   XMP_MODE_STORAGE_KEY, XMP_QUEUE_LIMIT, buildDecisionWrite, dirOfPath, isDowngradeCandidate,
-  mergeRemoteLabels, mergeRemoteRatings, readXmpMode,
+  mergeRemoteLabels, mergeRemoteRatings, readXmpMode, remapRemoteDecisions,
   type XmpField, type XmpMode, type XmpNotice, type XmpStatus,
 } from "./xmp";
 import {
@@ -124,6 +124,12 @@ export function useScanner() {
   const xmpQueueRef = useRef<Map<string, Set<XmpField>>>(new Map());
   const xmpTimerRef = useRef<number | undefined>(undefined);
   const xmpInFlightRef = useRef(false);
+  /**
+   * 在途路径(已发 IPC、还没回执)。为什么队列之外还要这一份: `flushXmpQueue` 是在
+   * **await 之前** `q.clear()` 的, 所以"发出去到回执"这段窗口里队列是空的 ——
+   * 而手机的事件恰好可能落在里面(见 isXmpPending 与 src/xmp.ts::remapRemoteDecisions)。
+   */
+  const xmpInFlightPathsRef = useRef<Set<string>>(new Set());
   // 代次: 切文件夹后旧读盘结果必须整体丢弃(与 countGenRef 同款纪律)
   const xmpGenRef = useRef(0);
   const xmpSeqRef = useRef(0);
@@ -257,6 +263,9 @@ export function useScanner() {
     }
 
     xmpInFlightRef.current = true;
+    // 在途期间也要挡住事件合并(队列这时已经空了): 见 xmpInFlightPathsRef 的注释
+    const inFlight = xmpInFlightPathsRef.current;
+    for (const it of items) inFlight.add(it.path);
     try {
       const summary = await invoke<WriteSummary>("write_decisions", { items });
       const failures = summary?.failures ?? [];
@@ -288,6 +297,7 @@ export function useScanner() {
       console.error("write_decisions:", err);
       notifyXmp("failed", "unknown", 0);
     } finally {
+      for (const it of items) inFlight.delete(it.path);
       xmpInFlightRef.current = false;
       if (xmpModeRef.current === "on" && xmpQueueRef.current.size > 0) scheduleXmpFlush(0);
     }
@@ -1063,6 +1073,25 @@ export function useScanner() {
     if (xmpModeRef.current === "on") void probeXmpTarget(folderPath);
   }, [applyMergedLabels, applyMergedRatings, probeXmpTarget]);
 
+  /**
+   * 「这个**桌面键**还有没落盘的本地改动?」—— 事件合并的跳过判据。
+   *
+   * 两份都要算: `xmpQueueRef`(还在 600ms 防抖里, 没发 IPC)与 `xmpInFlightPathsRef`
+   * (已经发出去、还没回执 —— flush 在 await **之前**就 `q.clear()` 了, 只看队列漏这一段)。
+   * 两者都是 ref, 所以这个回调引用稳定, 不会让 listen 反复重订阅。
+   *
+   * 为什么值得单独挡: 桌面端的合并契约是"边车有值就覆盖本地"(src/xmp.ts 不变式 2),
+   * 而这里的事件来自**别的设备**。用户在电脑上改了 4★、手机上同一秒改成 2★, 若直接合并,
+   * 电脑上会先显示 2★, 而 flush 随后又把 4★ 写回卡 —— 界面与卡不一致, 且没有任何东西
+   * 会把它改回来。跳过之后: 用户看到的是自己的 4★, 卡上也是 4★(本地意图赢, 与手机端
+   * "本地意图永远赢"的取向一致)。
+   */
+  const isXmpPending = useCallback(
+    (desktopKey: string) =>
+      xmpQueueRef.current.has(desktopKey) || xmpInFlightPathsRef.current.has(desktopKey),
+    []
+  );
+
   // 手机端改了评分/色标 → 服务端发事件(`decisions-changed`, 见 src-tauri/src/lib.rs 的
   // `decisions_notifier`)→ 这里读回那几条边车并合并到本机 map。
   //
@@ -1070,6 +1099,11 @@ export function useScanner() {
   // 影响(**不许**逐个 path 调 setRating: 2000 张会把 100 深的撤销栈冲爆 —— 这条理由原样写在
   // `applyMergedRatings` 的注释里)。事件里只带 paths, 决策值仍然由 `read_decisions` 从边车读,
   // 与手机端写下去的是同一份真值。
+  //
+  // 与 loadFolder 的两处**刻意对齐**(原先都漏了, 见 desktop-key-map 的说明):
+  //   ① 档位闸门: 只有 on 档才读卡/落地;
+  //   ② 键空间: 事件里的路径是服务端 canonicalize 过的 `\\?\...`, 必须先映射回桌面端
+  //      自己的朴素键再合并, 并跳过还有未落盘改动的键。
   //
   // `listen` 走动态 import: `@tauri-apps/api/event` 只在真实 Tauri 上下文里可用, 而
   // 浏览器探针(vite dev)里 `window.__TAURI_INTERNALS__` 不存在 —— 那里必须安静地不订阅,
@@ -1080,13 +1114,29 @@ export function useScanner() {
     void (async () => {
       const { listen } = await import("@tauri-apps/api/event");
       const off = await listen<{ paths: string[] }>("decisions-changed", async (e) => {
+        // ① 档位闸门(与 loadFolder 的 `xmpModeRef.current === "on"` 同一条): 事件是
+        // "手机往卡里写了字节", 而 off/ask 未答的语义是"这台电脑不读写边车"。少了这一条,
+        // off 档下也会去读卡并把卡上的值搬进本地 map。
+        if (xmpModeRef.current !== "on") return;
         const paths = e.payload?.paths ?? [];
         if (paths.length === 0) return;
         const remotes = await invoke<DecisionRead[]>("read_decisions", { filePaths: paths });
         if (remotes.length === 0) return;
-        const r = mergeRemoteRatings(ratingsRef.current, remotes);
+        // 读盘是 await 的: 期间用户可能已经把档位切到 off(含探测失败后的自动降级) ——
+        // 那时整体丢弃, 与 loadFolder 的代次纪律同款(下次开文件夹会重新校准)。
+        if (xmpModeRef.current !== "on") return;
+        // ② 键空间 + 未落盘保护。`read_decisions` 是**回声**语义(路径原样回传), 所以
+        // remotes 的 path 就是事件里那些 `\\?\...`; 直接 merge 会写进一个谁也不会再读到
+        // 的新键 —— 手机上打了分、电脑上界面还是旧的(用起来像 bug), 而且 localStorage
+        // 里会为每张照片攒一个 `\\?\...` 重复键。映射方向必须是**事件 → 桌面键**,
+        // 不能反过来把桌面键 canonicalize 去"对上"事件(那会让事件覆盖掉用户刚改、
+        // 还没落盘的本地值: 桌面端的合并契约是"边车有值就覆盖本地", 见 src/xmp.ts 不变式 2)。
+        // 见 src/xmp.ts::toDesktopKey / remapRemoteDecisions。
+        const local = remapRemoteDecisions(remotes, isXmpPending);
+        if (local.length === 0) return;
+        const r = mergeRemoteRatings(ratingsRef.current, local);
         if (r.changed.length > 0) applyMergedRatings(r.map);
-        const l = mergeRemoteLabels(labelsRef.current, remotes);
+        const l = mergeRemoteLabels(labelsRef.current, local);
         if (l.changed.length > 0) applyMergedLabels(l.map);
       });
       // 订阅是异步建好的: 组件在 await 期间卸载的话, 立刻退订而不是把监听器漏在事件总线上。
@@ -1099,7 +1149,7 @@ export function useScanner() {
       alive = false;
       unlisten?.();
     };
-  }, [applyMergedLabels, applyMergedRatings]);
+  }, [applyMergedLabels, applyMergedRatings, isXmpPending]);
 
   /** Load EXIF on demand when user selects a photo */
   /** Pick destination folder */

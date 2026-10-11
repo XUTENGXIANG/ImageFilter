@@ -114,6 +114,80 @@ export function dirOfPath(path: string): string {
   return i > 0 ? path.slice(0, i) : "";
 }
 
+// ── Windows verbatim(`\\?\`)路径 → 桌面端键空间 ──────────────────────
+// 为什么需要这一层: 服务端每个端点都先过 `ensure_within`(内部 canonicalize)再回话
+// (src-tauri/src/server/paths.rs:16-19), 而 Windows 的 `canonicalize` 返回带 verbatim
+// 前缀的路径。实测(rustc 1.97.1, 本机): `A:\tenent` → `\\?\A:\tenent`, 连小写盘符
+// 都会被规范化成大写。桌面端自己的键空间却是**朴素路径**: 根是 `format!("{}:\\", letter)`
+// (src-tauri/src/scanner/drives.rs:159, 只有大写盘符), 子项是 `entry.path()`
+// (src-tauri/src/scanner/browse.rs:26-34 / 46-52)。两边字面不等, 所以
+// `decisions-changed` 事件里的路径**必须先映射回来再合并** —— 直接合并不报错, 只是
+// 写进一个谁也不会再读到的新键: 手机改了分、电脑上不刷新(而这个通道存在的唯一理由
+// 就是这一次刷新), 而 imagefilter-ratings / imagefilter-labels 会为手机碰过的每张
+// 照片攒下一个 `\\?\...` 重复键。
+
+/** 扩展长度(verbatim)前缀 */
+const VERBATIM = "\\\\?\\";
+/** verbatim 形态的 UNC 前缀: `\\?\UNC\server\share\...` ↔ `\\server\share\...` */
+const VERBATIM_UNC = "\\\\?\\UNC\\";
+
+/**
+ * 服务端路径 → 桌面端键。**纯函数**(无 IO、无环境依赖, 可机械断言:
+ * `node docs/evidence/scripts/desktop-key-map.cjs`)。
+ *
+ *  · `\\?\C:\a\b.jpg`            → `C:\a\b.jpg`
+ *  · `\\?\UNC\nas\share\a.jpg`   → `\\nas\share\a.jpg`
+ *  · 本来就没有 verbatim 前缀(朴素路径) → **原样返回**: 绝不"顺手规范化", 那只会把
+ *    一条本来能对上的键改坏。
+ *  · 前缀后面既不是盘符也不是 UNC(空串 / `\\?\Volume{...}` / `\\?\UNC\server` 少一级 /
+ *    `\\?\C:/a` 这种正斜杠写法) → **原样返回**: 宁可映射不上(退化成修复前的行为),
+ *    也不要把一条路径截成错的。
+ *
+ * 刻意不引 path 库: WebView 里没有 Node 的 `path`, 而且这里只动**前缀** ——
+ * 拆成组件再拼回来反而可能把 `\` 与 `/` 的写法改坏。
+ *
+ * ⚠️ **不要反过来做**(把桌面端的键 canonicalize 成 `\\?\...` 去"对上"事件):
+ * 桌面端的合并契约是"边车有值就覆盖本地"(不变式 2), 事件因此会覆盖掉用户刚改、
+ * 还没落盘的本地值 —— 方向必须是"事件进桌面键空间", 不是"桌面键进服务端空间"。
+ */
+export function toDesktopKey(path: string): string {
+  if (!path.startsWith(VERBATIM)) return path;
+  if (path.startsWith(VERBATIM_UNC)) {
+    const tail = path.slice(VERBATIM_UNC.length);
+    // UNC 至少要有 `server\share` 两级; 不够就不认(原样退回)
+    return tail.includes("\\") ? "\\\\" + tail : path;
+  }
+  const rest = path.slice(VERBATIM.length);
+  // 只认 `\\?\X:\` 形态的盘符路径。刻意**不**接受 `\\?\C:/a` 这种正斜杠写法:
+  // verbatim 前缀的语义就是"关掉字符串解析、原样交给文件系统", 那里 `/` 是文件名的一部分 ——
+  // 认了它只会把一条本来就畸形的路径截成一条更错的键。认不出的一律原样退回。
+  return /^[A-Za-z]:\\/.test(rest) ? rest : path;
+}
+
+/**
+ * 事件批次 → 桌面键空间, 并丢掉**本机还有未落盘改动**的那些键。
+ *
+ * 为什么必须丢(这一步最危险的地方): 桌面端的合并是"边车有值就覆盖本地", 与手机端
+ * "本地意图永远赢"**刻意相反**。用户在电脑上刚改完星级、flush 还在 600ms 防抖里
+ * (或已发 IPC 还没回执)时, 手机那边恰好也报了这张照片 —— 直接合并就会把用户还没
+ * 写下去的值抹掉, 而且此后没有任何东西会把它改回来。所以"待落盘"由调用方给出,
+ * 这里只负责挡(判据见 useScanner 的 isXmpPending = 队列 ∪ 在途)。
+ *
+ * @param isPending 桌面键空间上的判定; 缺省不挡(纯映射)
+ */
+export function remapRemoteDecisions(
+  remote: readonly DecisionRead[],
+  isPending: (desktopKey: string) => boolean = () => false,
+): DecisionRead[] {
+  const out: DecisionRead[] = [];
+  for (const r of remote) {
+    const key = toDesktopKey(r.path);
+    if (isPending(key)) continue;
+    out.push({ ...r, path: key });
+  }
+  return out;
+}
+
 // ── 合并(边车 → 本机 map) ──────────────────────────────────────────
 
 /** 给 App 的一次性提示(文案在 App 里用 i18n 拼: hook 不依赖 i18n, 会话 ② 定纪律) */
