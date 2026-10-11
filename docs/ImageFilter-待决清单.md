@@ -89,3 +89,20 @@
 ### 4. 唯一的硬卡点（需要你动手）
 
 **真机验收**：插上手机、开启 USB 调试。已在 `docs/ImageFilter-待决清单.md` 顶部记为待办。模拟器路线不可用（本机 `HypervisorPresent=False`，装 AEHD 需管理员）。
+
+
+---
+
+## 最终成品（2026-10-11 完成）
+
+| | |
+|---|---|
+| **安装包** | `release\ImageFilter-Mobile-1.1.2.apk`（7.95 MB，真签名 CN=ImageFilter Mobile）|
+| **说明页** | `release\START-HERE-成品说明.md`（安装/配对/9 条真机清单/已知限制/重打命令）|
+| **签名密钥** | `%USERPROFILE%\ImageFilter-keys\imagefilter-release.jks` + README.txt（**请备份**）|
+| 桌面端 | M0′ 10/10 · M4′ 全部；`cargo test --lib` **165/0/4** · `server_contract` **59/0/0** |
+| 安卓 | M1′–M4′ 全部；**475 个 JVM 测试全绿** |
+| 契约脚本 | `docs\evidence\scripts\verify-server.ps1`（51 项，自动还原配置）|
+| 未做 | **真机验收**（本机无手机/模拟器）· **未推送 origin**（未授权）|
+
+**明天第一件事**：插手机开 USB 调试，然后按说明页第四节那 9 条清单走一遍。第 4 条（手机打分后电脑端 1 秒内同步）与第 7 条（撤销真的撤回）是本轮最后修好的两处，值得优先看。
