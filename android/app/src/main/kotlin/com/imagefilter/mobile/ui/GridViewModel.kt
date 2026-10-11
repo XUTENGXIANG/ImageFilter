@@ -108,6 +108,38 @@ fun allRawNotice(items: List<GridItem>): String? =
 // ── 状态 ─────────────────────────────────────────────────────────────────────
 
 /**
+ * 网格页里那一份**待重试队列**的界面状态(M3′ Task 3)。
+ *
+ * 数出来的每一张都是"电脑还没确认过的"([PendingStore] 里真的有的那些), **不是猜的**:
+ * 重启之后本地镜像是空的, 而队列里还躺着昨晚关着电脑打的那三张 —— 角标必须以队列为准。
+ */
+data class PendingState(
+    val items: List<Decision> = emptyList(),
+    /**
+     * true = 队列**没能读回来**(解析不了 / 读不动)。面板必须把这件事说出来 ——
+     * 一次读失败不许被当成"没有待重试的改动"(见 [PendingSnapshot.corrupted])。
+     */
+    val corrupted: Boolean = false,
+    /**
+     * 「放弃本地改动」武装在哪一张上([AbandonConfirm])。武装 ≠ 丢弃: 第一次点只是把按钮变成
+     * 「确认放弃」, 真正丢掉用户的决定要第二次点在同一张上。
+     */
+    val abandonArmed: String? = null,
+    /** 正在重试(串行, 一次一项): 期间不许再点, 免得自己制造乱序。 */
+    val busy: Boolean = false,
+    /** 上一次重试/放弃的结论(如实转述电脑说了什么)。 */
+    val note: String? = null,
+) {
+    /** **待重试的项数** —— 角标与面板数的是同一个数。 */
+    val count: Int get() = items.size
+
+    val badge: String? get() = pendingBadgeText(count)
+
+    /** 面板的每一行(文案全来自 [com.imagefilter.mobile.data.WriteMessages])。 */
+    val rows: List<PendingRow> get() = toPendingRows(items)
+}
+
+/**
  * 网格页的全部状态。**不含任何安卓/Compose 类型** —— 所以它能在 JVM 单测里被真的走一遍。
  *
  * 三个"空"必须分得清(这一页最容易犯的错就是把它们混成一个转圈或一张空白网格):
@@ -158,6 +190,8 @@ data class GridState(
      * 「N 张未同步」那个角标按下去之后的**批次级**结论(半成功必须说出来, 纪律②)。
      */
     val lastBatchNote: String? = null,
+    /** **待重试队列**(持久的那一份, 规格 §9)的界面镜像。 */
+    val pending: PendingState = PendingState(),
 ) {
     /** 顶部的张数 —— 来自 `scan` 的返回长度(失败且没有格子时说 [GRID_COUNT_UNKNOWN])。 */
     val countLabel: String
@@ -179,6 +213,24 @@ data class GridState(
     /** 顶栏的**待重试角标**(规格 §8.1); 没有未同步项时为 null。文案与查看器共用一处。 */
     val unsyncedLabel: String?
         get() = if (unsyncedCount > 0) WriteMessages.unsyncedLabel(unsyncedCount) else null
+
+    /**
+     * 顶栏那一个角标(显示什么 + 按下去做什么, 见 [topBarBadge]): 待重试队列优先,
+     * 队列为空的窗口里退回"未同步 N 张·重试"。
+     */
+    val topBadge: TopBarBadge?
+        get() = topBarBadge(pendingCount = pending.count, unsyncedLabel = unsyncedLabel)
+
+    /** 待重试的项数 —— **队列里真的有的那些**(不是本地看起来改过的)。 */
+    val pendingCount: Int get() = pending.count
+
+    /**
+     * 待重试记录**读不回来**时页面上那句话(读得到时是 null)。
+     *
+     * 它与角标上的 0 是两件必须分开的事: 0 是"没有待重试的改动", 而读不回来是"**不知道**有多少,
+     * 而且可能已经丢了一部分"。少了这一句, 用户在数据可能已经丢失的时候只会看到一个安静的 0。
+     */
+    val pendingCorruptedNotice: String? get() = if (pending.corrupted) PENDING_CORRUPT_NOTICE else null
 
     val isEmpty: Boolean get() = !loading && error == null && items.isEmpty()
 
@@ -227,6 +279,15 @@ class GridViewModel(
     /** 要看的文件夹。 */
     private val folder: FolderEntryDto,
     /**
+     * **持久化的待重试队列**(M3′ Task 3)。生产路径**必须**传
+     * `PendingStore.create(context)`(见 [GridScreen]) —— 它是"用户已经做出的决定"落盘的那一份,
+     * 也是顶栏角标数出来的那个数。
+     *
+     * 刻意**没有默认值**: 一个"默认不落盘"的 GridViewModel 会让"关着电脑打的分重启后还在"
+     * 这条承诺**静默失效**, 而那正是本任务唯一的价值点。
+     */
+    private val pending: PendingStore,
+    /**
      * 注入点: 生产路径就是默认值 —— [ApiClient] 内部的 client 走
      * [com.imagefilter.mobile.data.SharedHttpClient.forToken], 与 Coil 是**同一个实例**
      * (缩略图网格的硬要求)。覆盖它时必须同样以 `buildHttpClient` 为底, 否则
@@ -250,20 +311,68 @@ class GridViewModel(
      *
      * 它用的 `api` 与 `scan`/`thumb` 是**同一个** OkHttpClient(生产路径上就是
      * `SharedHttpClient.forToken(token)` 那一枚), 所以"JSON 通、图片 401"那种分裂在结构上不成立。
+     *
+     * ⚠️ 传进去的 [pending] **就是**这个网格读角标用的那一个实例: 每一次推送落定之后由 store
+     * 把队列对齐(确认了的出队列、没确认的留在里面)。两处必须是同一个对象, 否则"电脑确认了"
+     * 这件事没人把它从队列里去掉 —— 角标会一直挂着一个早就写成了的项。
      */
-    val decisions: DecisionStore by lazy { DecisionStore(api) }
+    val decisions: DecisionStore by lazy { DecisionStore(api, pending) }
 
     /**
-     * 进这个文件夹(或点「刷新」)时要读的**全部**东西: 文件列表 + 文件夹级的决策。
+     * 进这个文件夹(或点「刷新」)时要读的**全部**东西: 文件列表 + **持久待重试队列** +
+     * 文件夹级的决策。
      *
-     * 做成一个入口是刻意的: 分成两步让界面自己记得调两次, 迟早有一处只调了第一步 ——
+     * 做成一个入口是刻意的: 分成几步让界面自己记得调几次, 迟早有一处只调了第一步 ——
      * 那时筛选栏会安静地拿着"未统计"过完这一页(或者更糟: 拿上一次的决策筛新列表)。
+     *
+     * ⚠️ **顺序也是刻意的**(M3′ Task 3): 队列**先**装回本地镜像, 再去读电脑上的值。
+     * 反过来的话, 电脑上的旧值会先落进 `remote`, 而装回来的本地意图要等下一次刷新才看得见 ——
+     * 用户会先看到星星"变回旧的"再变回来。
      */
     suspend fun loadAll() {
         load()
         // 文件列表本身没读到(例如 404/断网)时**不去读决策**: 那些路径是旧的, 读回来的值对应的是
         // 一个我们已经在说"没读到"的目录 —— 读它只会让张数看起来可信, 而它并不可信。
-        if (_state.value.error == null) loadDecisions()
+        if (_state.value.error == null) {
+            // 队列里的意图只装回**这个文件夹里**的那些: 别的文件夹的待重试项由面板列出来
+            // (它们照样能重试), 但不该混进这一页的张数与角标里。
+            loadPending()
+            loadDecisions()
+        } else {
+            refreshPending()
+        }
+    }
+
+    /**
+     * 读持久队列: 一条条装回本地镜像(网格上"你昨晚关着电脑打的分"就是这么回来的),
+     * 并刷新角标数。
+     *
+     * 装回的动作只有一处实现([rehydratePending]): 本地**已经有更新的一版意图时不动它**
+     * (队列里那条是旧的失败版本, 覆盖新版就是丢掉用户最新的决定)。
+     */
+    suspend fun loadPending() {
+        refreshPending()
+        val restored = rehydratePending(pending, decisions, _state.value.items.map { it.path })
+        if (restored > 0) {
+            // 装回来的意图立刻进界面(角标、格子上那颗星、筛选): 不许等到下一次刷新才出现。
+            _state.update { it.withDecisions() }
+        }
+    }
+
+    /**
+     * 只把队列**数**一遍并抄进界面状态(不装回本地镜像、不碰网络)。
+     *
+     * 从查看器/滑卡页回到网格那一刻调它: 那期间用户可能已经打出好几分(其中一些没写成),
+     * 队列是那时候变的。
+     */
+    suspend fun refreshPending(): PendingSnapshot {
+        val snap = pending.snapshot()
+        _state.update {
+            it.copy(
+                pending = it.pending.copy(items = snap.items.values.toList(), corrupted = snap.corrupted),
+            )
+        }
+        return snap
     }
 
     /**
@@ -371,6 +480,94 @@ class GridViewModel(
         _state.update { it.copy(lastBatchNote = null).withDecisions() }
     }
 
+    // ── 待重试队列: 重试 / 全部重试 / 放弃本地改动(M3′ Task 3) ────────────────
+
+    /**
+     * 重试**某一项**(面板上那一行的「重试」)。
+     *
+     * **一次一项**([retryPending] 是串行的): 一批里有半成功/已经不存在的路径时, 整批会被
+     * 404 掉(M0′ Task 7 实测的坑)—— 一次一项, 一个坏路径毒不到别的项。
+     */
+    suspend fun retryPendingOne(path: String): RetryReport = runRetry(listOf(path))
+
+    /** 「全部重试」: `null` = 队列里**此刻**仍然待重试的全部(已经不在里面的一个请求都不发)。 */
+    suspend fun retryAllPending(): RetryReport = runRetry(paths = null)
+
+    /**
+     * 真的跑一轮(界面状态的前后处理都在这里)。
+     *
+     * 名字刻意**不叫** `retryPending`: 那样会与 [retryPending] 那个顶层纯逻辑同名, 读代码的人
+     * 得先看清是成员还是顶层才知道走的是哪一条 —— 这正是本项目一直在避免的那种"两个实现互相
+     * 掩盖"的形状。
+     */
+    private suspend fun runRetry(paths: List<String>?): RetryReport {
+        _state.update {
+            it.copy(pending = it.pending.copy(busy = true, note = null, abandonArmed = null))
+        }
+        val report = retryPending(pending, decisions, paths) {
+            // **一项一项地**把最新事实抄进界面: 串行重试期间, 成的那项要立刻从列表里消失、
+            // 失败的那项要立刻还在 —— 不许等全部跑完才更新一次(用户会以为卡住了)。
+            // 列表以**队列本身**为准(不拿这一项的结论去猜), 所以别的项的变化也不会被漏掉。
+            _state.update { st ->
+                st.copy(pending = st.pending.copy(items = pending.snapshot().items.values.toList()))
+                    .withDecisions()
+            }
+        }
+        val snap = pending.snapshot()
+        _state.update {
+            it.copy(
+                pending = it.pending.copy(
+                    items = snap.items.values.toList(),
+                    corrupted = snap.corrupted,
+                    busy = false,
+                    // 如实转述电脑确认了什么(没确认的一个字都不说成"已同步")
+                    note = retryNote(report),
+                ),
+            ).withDecisions()
+        }
+        return report
+    }
+
+    /**
+     * 「放弃本地改动」按下去的那**一下**。
+     *
+     * 两次确认的执法点就在这一行([AbandonConfirm.confirms]): 第一次调用**只武装**(返回 `null`,
+     * 队列与本地意图一个字节都不动), 第二次必须点在**同一张**上才真的丢。放在这里而不是
+     * Composable 里, 是因为"按一次会不会丢东西"必须有 JVM 用例钉住 —— 那是一条数据损失。
+     *
+     * 放弃**一个请求都不发**(电脑上从来没有过这份改动), 所以它不走 [DecisionStore.push]。
+     */
+    suspend fun requestAbandon(path: String): AbandonResult? {
+        if (!AbandonConfirm(_state.value.pending.abandonArmed).confirms(path)) {
+            // 第一次(或点了别的一张): 只武装。**什么都不丢** —— 连队列都不碰。
+            _state.update { it.copy(pending = it.pending.copy(abandonArmed = path, note = null)) }
+            return null
+        }
+        val result = abandonPending(pending, decisions, path)
+        val snap = pending.snapshot()
+        _state.update {
+            it.copy(
+                pending = it.pending.copy(
+                    items = snap.items.values.toList(),
+                    corrupted = snap.corrupted,
+                    abandonArmed = null,
+                    note = abandonNote(result),
+                ),
+            ).withDecisions()
+        }
+        return result
+    }
+
+    /** 关面板 / 去重试 / 点「取消」时解除武装(免得下次进来一按就丢)。 */
+    fun cancelAbandon() {
+        _state.update { it.copy(pending = it.pending.copy(abandonArmed = null)) }
+    }
+
+    /** 用户看过了那条结论。 */
+    fun clearPendingNote() {
+        _state.update { it.copy(pending = it.pending.copy(note = null)) }
+    }
+
     /**
      * 「N 张未同步」那个角标按下去做的事: 把 store 里所有未同步的再推一遍(与查看器同一个入口)。
      *
@@ -389,6 +586,8 @@ class GridViewModel(
                     ?.let { f -> WriteMessages.batchHead(f.requested, f.failures) },
             ).withDecisions()
         }
+        // 这一批里成了的那些已经出队列、没成的留在里面 —— 角标必须跟着动。
+        refreshPending()
         return result
     }
 

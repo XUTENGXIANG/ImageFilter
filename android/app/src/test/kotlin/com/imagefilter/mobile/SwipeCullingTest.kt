@@ -15,6 +15,7 @@ import com.imagefilter.mobile.ui.Filters
 import com.imagefilter.mobile.ui.GridItem
 import com.imagefilter.mobile.ui.GridViewModel
 import com.imagefilter.mobile.ui.KEEP_BLIND_MESSAGE
+import com.imagefilter.mobile.ui.PendingStore
 import com.imagefilter.mobile.ui.PushResult
 import com.imagefilter.mobile.ui.RemotePull
 import com.imagefilter.mobile.ui.SWIPE_PREFETCH_AHEAD
@@ -570,7 +571,12 @@ class SwipeCullingTest {
         )
         enqueueSummary(written = 1)
 
-        val grid = GridViewModel(pairing = pairing, folder = folder, clientFactory = factory)
+        val grid = GridViewModel(
+            pairing = pairing,
+            folder = folder,
+            pending = PendingStore(FakePendingQueue()),
+            clientFactory = factory,
+        )
         grid.loadAll()
         grid.setFilters(Filters(labels = setOf("green")))
 

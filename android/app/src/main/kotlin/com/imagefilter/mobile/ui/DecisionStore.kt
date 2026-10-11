@@ -271,15 +271,27 @@ sealed class RemotePull {
  * 3. **同一时刻只有一次推送在飞**(Mutex): 连点星级不该产生多个乱序请求, 否则服务端可能按
  *    乱序落盘(最终值取决于谁后到)。
  *
- * 这个类**不做重试队列的持久化**(那是 M3′ 的待重试面板): 它只保证"这一次改动有没有落盘"
- * 在同一会话里可见、可重试。
+ * 这个类**不做重试队列的持久化** —— 那是 [PendingStore](M3′ Task 3): 它只保证"这一次改动有没有
+ * 落盘"在同一会话里可见、可重试, 而**队列**负责"重启之后还在"。两者由 [pending] 这一根线连起来,
+ * 连接点只有一处([persistPending]): 它们是同一件事的两半, 不是两套账。
  *
  * ⚠️ 本类里**有两个镜像**, 它们的分工是本任务最容易出错的地方:
  *   · [local] —— **这台手机上的意图**(只有 `applyLocal` 与推送回报写它);
  *   · [remote] —— 电脑上**上一次读到的**值(只有 [mergeRemote] 写它, 且只在本地没动过时)。
  *   [get] 把两者合成一份"界面该看到什么", 顺序是 [local] 优先 —— 见 [mergeRemote] 的 KDoc。
  */
-class DecisionStore(private val api: ApiClient) {
+class DecisionStore(
+    private val api: ApiClient,
+    /**
+     * **持久化的待重试队列**(M3′ Task 3)。它把"用户已经做出的决定"从"这个进程的内存"里
+     * 搬到了磁盘上: 关着电脑打的分, 明天重启 App 还在。
+     *
+     * 默认 `null` 只是给**不需要落盘的单测**留的口子(那些用例测的是"这一次写成了没有",
+     * 与磁盘无关)。⚠️ 生产路径**必须**传(见 [GridViewModel]): 少了它, 队列永远是空的,
+     * 而界面上那个角标会显示 0 —— 一句安静的假话。
+     */
+    private val pending: PendingStore? = null,
+) {
     private val mutex = Mutex()
 
     /**
@@ -505,6 +517,20 @@ class DecisionStore(private val api: ApiClient) {
     }
 
     /**
+     * **放弃**这一张的本地意图(M3′ Task 3 的「放弃本地改动」, 界面上必须**二次确认**)。
+     *
+     * 一个请求都不发: 电脑上从来没有过这份改动(它还待在待重试里就说明没写成), 所以"放弃"就是
+     * 把它从这台手机上抹掉。与 [undo] 的差别是**相反**的两种动作: 撤销恢复**之前那一份**意图,
+     * 放弃是"这一张在这台手机上没有意图"。
+     *
+     * ⚠️ 正在飞的写入落定时会发现 `local[path]` 已经不在了([afterAck] 对 `null` 直接跳过),
+     * 所以它**绝不会**把刚刚被放弃的东西复活 —— 那条路径上不会留下任何"半个意图"。
+     */
+    fun discardLocal(path: String) {
+        local.remove(path)
+    }
+
+    /**
      * **撤销一步**: 把"改动之前那份本地意图"恢复回去(规格 §8.2 的多步撤销)。
      *
      * 三条纪律, 每一条都对应一种会撒谎的实现:
@@ -532,6 +558,9 @@ class DecisionStore(private val api: ApiClient) {
         // 逐字比对**要发出去的那一份**, 而不是"值看起来差不多"。
         if (!desktopHoldsChange || now.toDto() == e.before.toDto()) {
             if (e.before.hasLocalIntent) local[e.path] = e.before else local.remove(e.path)
+            // 本地意图刚变了(可能是"恢复成之前那份未同步的", 也可能是"这一张没有本地意图了")
+            // ⇒ 持久队列跟着对齐。少了这一行, 撤销之后的队列会与屏幕上看到的对不上。
+            persistPending()
             return@withLock UndoResult.LocalOnly
         }
         // 电脑上已经是改动后的值 ⇒ 必须把 before 送回去。`before` 当时不是本地意图时, 它得先
@@ -552,22 +581,46 @@ class DecisionStore(private val api: ApiClient) {
         if (requested.isEmpty()) return@withLock PushResult.NothingToPush(0)
         val items = requested.mapNotNull { local[it] }
         if (items.isEmpty()) return@withLock PushResult.NothingToPush(requested.size)
+        // 请求**发出去之前**先把意图落盘: 请求还在飞的时候进程被系统杀掉, 用户的决定也不该丢
+        // (这是"半离线承诺"的落点 —— 决定一做出就有一份持久的副本)。
+        persistPending()
         send(requested, items)
+    }
+
+    /**
+     * 把**持久待重试队列**与这里的本地意图对齐 —— 队列唯一的写入口(实现在
+     * [PendingStore.reconcile])。
+     *
+     * 为什么放在这个类里: 只有它知道"电脑确认了什么"([applyAck] 是唯一改同步状态的地方)。
+     * 放在界面那一层就意味着每一条写入链路(打星 / 标色 / 滑卡 / 撤销 / 重试)都得自己记得调一次
+     * —— 漏一处就是"那一种操作在离线时不被持久化", 而且**看不出来**。
+     *
+     * 调用点三处, 覆盖全部写入链路: [push] 发请求之前、[send] 落定之后、[undo] 的"没发请求"
+     * 那一支。没有接队列时(pending = null, 只给单测)整段是空操作。
+     */
+    private suspend fun persistPending() {
+        pending?.reconcile(local.values)
     }
 
     private suspend fun send(requested: List<String>, items: List<Decision>): PushResult {
         // 发出去的那一份**逐字留档**: 回报回来时要拿它比对本地有没有又改过(见 afterAck)。
         val sent = items.map { it.path to it.toDto() }
-        return try {
+        val result = try {
             settle(requested, sent, api.writeDecisions(sent.map { it.second }))
         } catch (e: ApiException) {
             // HTTP 错误体的 code 查 §5.3 那张表(由 FailureSource.HTTP 指定, 不靠猜)。
             wholeBatchFailed(requested, sent, e.code, FailureSource.HTTP)
         } catch (e: IOException) {
             // 协程被取消时 OkHttp 抛的也是 IOException —— 别把"用户退出了这一页"说成网络故障。
+            // (注意 ensureActive 会**往外抛**: 取消时下面那次对齐不会跑, 而那是**对的** ——
+            //  这次写入没有结论, 队列里那一份必须留着。)
             currentCoroutineContext().ensureActive()
             wholeBatchFailed(requested, sent, apiCodeFor(e), FailureSource.CLIENT)
         }
+        // 服务端说了什么之后, 队列跟着本地意图走: **确认了的出队列, 没确认的留在里面**
+        // (留在里面的是用户还没落到电脑上的决定 —— 它必须活过一次重启)。
+        persistPending()
+        return result
     }
 
     /**

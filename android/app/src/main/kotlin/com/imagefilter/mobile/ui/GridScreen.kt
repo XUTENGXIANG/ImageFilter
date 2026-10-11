@@ -31,6 +31,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -71,8 +72,17 @@ fun GridScreen(
     folder: FolderEntryDto,
     onBack: () -> Unit,
 ) {
+    val context = LocalContext.current
+    /**
+     * **持久待重试队列**(M3′ Task 3) —— 与 [GridViewModel.decisions] 用的是**同一个实例**
+     * (少了这一条, "电脑确认了"就没人把它从队列里去掉, 角标会一直挂着一个早就写成了的项)。
+     *
+     * `remember` 不带 key: DataStore 本来就是进程级单例, 换文件夹不该重建它 —— 重建只会多绕
+     * 一圈读盘, 而且会让两页看到的队列不再是同一份。
+     */
+    val pending = remember { PendingStore.create(context) }
     // key 里带 folder.path: 换文件夹就是换一份状态, 不许把上一个文件夹的格子留在屏幕上
-    val vm = remember(pairing, folder.path) { GridViewModel(pairing, folder) }
+    val vm = remember(pairing, folder.path) { GridViewModel(pairing, folder, pending) }
     val state by vm.state.collectAsState()
     val scope = rememberCoroutineScope()
     // ImageLoader 与 ViewModel 共用同一枚 token 的**同一个** OkHttpClient(见它的 KDoc)
@@ -80,6 +90,8 @@ fun GridScreen(
     // null = 没开查看器; 非 null = 正在看第几张。**不用任何文案判断查看器开没开**
     // (桌面端为此误判过两次: 文案是给人看的, 不能当状态)。
     var viewerIndex by remember { mutableStateOf<Int?>(null) }
+    /** 待重试面板开着吗。它盖在网格**与**查看器/滑卡页之上([Box] 里的顺序)。 */
+    var pendingOpen by remember { mutableStateOf(false) }
     /**
      * 滑卡那一批(**打开那一刻**筛出来的那些), null = 没开滑卡页。
      *
@@ -112,7 +124,12 @@ fun GridScreen(
     // 关掉查看器/滑卡页回到网格那一刻: store 里可能刚多了"改了但没写成"或"已同步"的条目,
     // 抄一份进来(不碰网络) —— 否则角标与未同步边框会缺一块, 而那正是纪律③最怕的静默。
     LaunchedEffect(viewerIndex, cullQueue) {
-        if (viewerIndex == null && cullQueue == null) vm.refreshDecisions()
+        if (viewerIndex == null && cullQueue == null) {
+            vm.refreshDecisions()
+            // 那期间用户可能已经打出好几分(其中一些没写成、进了持久队列):
+            // 角标数的必须是**那一刻**的事实, 不许拿进这一页时的旧数糊弄。
+            vm.refreshPending()
+        }
     }
 
     // Box 是为了让查看器盖在网格之上(而不是替换掉网格 —— 替换会把滚动位置丢掉)
@@ -127,6 +144,8 @@ fun GridScreen(
             onOpenViewer = { index -> viewerIndex = index },
             // 筛片队列 = **此刻**筛出来的那些(见 cullQueue 的 KDoc); 一张都没有时按钮是禁用的
             onOpenCull = { cullQueue = state.visibleItems },
+            // 打开面板那一刻先解除武装(见 PendingPanel 的 KDoc)
+            onOpenPending = { vm.cancelAbandon(); pendingOpen = true },
         )
 
         val index = viewerIndex
@@ -154,8 +173,23 @@ fun GridScreen(
                 items = queue,
                 startIndex = 0,
                 decisions = decisions,
+                // 滑卡页那个角标数的是**持久队列**里真的有的那些(它自己会一项一项地重数):
+                // 关着电脑滑了三张, 角标必须当场变成 3 —— 而不是等关掉这一页才更新。
+                pending = pending,
+                onOpenPending = { vm.cancelAbandon(); pendingOpen = true },
                 onClose = { cullQueue = null },
                 onReloadFolder = { scope.launch { vm.loadAll() } },
+            )
+        }
+
+        // 待重试面板: **最上面一层**(它盖住网格、查看器与滑卡页)。放在最后画, 顺序就是层级。
+        if (pendingOpen) {
+            PendingSheet(
+                panel = pendingPanel(state, vm, scope) {
+                    // 关面板 = 解除武装(**下一次点「放弃本地改动」必须重新确认一次**)+ 真的收起来
+                    vm.cancelAbandon()
+                    pendingOpen = false
+                },
             )
         }
     }
@@ -174,6 +208,8 @@ private fun GridContent(
     onOpenViewer: (Int) -> Unit,
     /** 打开**滑卡筛片**(M3′ 的主动作): 队列是此刻筛出来的那些, 由调用方冻结。 */
     onOpenCull: () -> Unit,
+    /** 打开**待重试面板**([PendingSheet])。 */
+    onOpenPending: () -> Unit,
 ) {
     Scaffold(
         topBar = {
@@ -192,13 +228,18 @@ private fun GridContent(
                 },
                 navigationIcon = { TextButton(onClick = onBack) { Text("返回") } },
                 actions = {
-                    // 顶栏的**待重试角标**(规格 §8.1), 与查看器同一个入口、同一句文案。
-                    // 它本身是按钮: 没有动作的角标等于让用户知道出事了却做不了什么。
-                    val unsynced = state.unsyncedLabel
-                    if (unsynced != null) {
-                        TextButton(onClick = { scope.launch { vm.retryUnsynced() } }) {
-                            Text(unsynced, color = MaterialTheme.colorScheme.error)
-                        }
+                    // 顶栏那**一个**角标(规格 §8.1): 显示什么与按下去做什么由 [topBarBadge]
+                    // 一处决定 —— 待重试队列非空时它就是队列项数(按下去打开重试面板),
+                    // 队列为空的窗口里退回"未同步 N 张·重试"(按下去把这一页未同步的推一遍)。
+                    // 两句话**数的是同一个集合**, 所以不会出现"角标说 3、按下去重试 2 张"。
+                    val badge = state.topBadge
+                    if (badge != null) {
+                        PendingBadgeButton(
+                            badge = badge,
+                            enabled = !state.pending.busy,
+                            onOpenPanel = onOpenPending,
+                            onRetryUnsynced = { scope.launch { vm.retryUnsynced() } },
+                        )
                     }
                     // 滑卡筛片: **筛出来的那些**就是这一叠(队列在按下这一刻冻结, 见 GridScreen)。
                     // 一张可滑的都没有时禁用 —— 打开一个空队列只会给出一张白屏。
@@ -267,6 +308,16 @@ private fun GridContent(
             if (batchNote != null) {
                 Box(modifier = Modifier.padding(horizontal = 12.dp)) {
                     HintCard(body = batchNote)
+                }
+                Spacer(Modifier.height(8.dp))
+            }
+
+            // **待重试记录读不回来**: 必须在页面上说出来。角标这时候是 0(读不到项), 而 0 会让
+            // 用户以为"没有待重试的改动" —— 那是一句在数据可能已经丢了的时候最坏的安静。
+            val pendingCorrupt = state.pendingCorruptedNotice
+            if (pendingCorrupt != null) {
+                Box(modifier = Modifier.padding(horizontal = 12.dp)) {
+                    HintCard(body = pendingCorrupt)
                 }
                 Spacer(Modifier.height(8.dp))
             }

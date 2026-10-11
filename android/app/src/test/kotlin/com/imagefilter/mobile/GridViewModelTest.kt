@@ -13,6 +13,7 @@ import com.imagefilter.mobile.data.buildHttpClient
 import com.imagefilter.mobile.ui.GRID_COUNT_UNKNOWN
 import com.imagefilter.mobile.ui.GRID_EMPTY
 import com.imagefilter.mobile.ui.GridViewModel
+import com.imagefilter.mobile.ui.PendingStore
 import com.imagefilter.mobile.ui.gridCountLabel
 import kotlinx.coroutines.test.runTest
 import okhttp3.HttpUrl.Companion.toHttpUrl
@@ -75,6 +76,9 @@ class GridViewModelTest {
     private fun viewModel(noRetry: Boolean = false, readTimeoutMs: Long = 10_000) = GridViewModel(
         pairing = Pairing(baseUrl(), token, note = "家里的台式机"),
         folder = folder,
+        // 待重试队列: 内存版(这些用例测的是"读到了什么", 与落盘无关; 落盘那条链路的用例在
+        // PendingStoreTest 里, 用同一个 fake 走同一份编解码)。
+        pending = PendingStore(FakePendingQueue()),
         clientFactory = { url, tkn ->
             ApiClient(
                 url,
@@ -336,6 +340,7 @@ class GridViewModelTest {
         val vm = GridViewModel(
             pairing = Pairing(baseUrl(), prodToken, note = "家里的台式机"),
             folder = folder,
+            pending = PendingStore(FakePendingQueue()),
         )
         vm.load()
 

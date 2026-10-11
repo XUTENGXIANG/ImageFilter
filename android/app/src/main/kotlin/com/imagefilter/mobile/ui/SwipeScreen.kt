@@ -92,6 +92,16 @@ fun SwipeScreen(
     startIndex: Int = 0,
     /** 星级/色标的本地镜像。**由网格建、由网格持有**(它必须活得比这一页久)。 */
     decisions: DecisionStore,
+    /**
+     * **持久待重试队列**(M3′ Task 3)—— 由网格建、与 [decisions] 用的是**同一个实例**。
+     *
+     * 这一页**自己**用它数角标: 关着电脑滑三张, 角标必须当场从 0 变成 3(`LaunchedEffect` 挂在
+     * "这一次写入落定了没有"上)。等回到网格才更新的话, 用户在这一页就看不到"刚才那些没写进去",
+     * 而那正是本任务要消灭的那种"打完分才发现白打"。
+     */
+    pending: PendingStore,
+    /** 打开待重试面板(面板本身由网格画在最上层 —— 它只有一个, 不许各页各画一个)。 */
+    onOpenPending: () -> Unit,
     onClose: () -> Unit,
     /**
      * 「回网格刷新」这个动作 —— 由网格提供(它有 `GridViewModel`)。这一页自己刷新不了目录。
@@ -135,6 +145,20 @@ fun SwipeScreen(
     }
     val state by vm.state.collectAsState()
 
+    /**
+     * 待重试的项数(角标画的数)。
+     *
+     * 它的来源是**队列本身**([PendingStore.snapshot]), 不是"这一页看起来改了几张" ——
+     * 重启之后本地镜像是空的, 而队列里还躺着昨晚那三张。
+     *
+     * 刷新时机挂在 [ViewerState.writing] 上: 那正是"这一次写入落定了没有"的那条边沿
+     * (true → false), 所以关着电脑滑一张, 角标当场 +1, 不必等退出这一页。
+     */
+    var pendingCount by remember { mutableStateOf(0) }
+    LaunchedEffect(state.writing) {
+        if (!state.writing) pendingCount = pending.snapshot().count
+    }
+
     // 系统返回键 = 关掉滑卡页(它比网格那个 BackHandler 后注册, 所以先吃到返回键)
     BackHandler { onClose() }
 
@@ -146,6 +170,11 @@ fun SwipeScreen(
             SwipeTopBar(
                 title = state.title,
                 unsyncedLabel = state.unsyncedLabel,
+                // 顶栏那**一个**角标: 待重试队列优先(按下去打开重试面板), 队列为空的窗口里退回
+                // "未同步 N 张·重试"(按下去把这一批未同步的推一遍)。显示什么与按下去做什么
+                // 由 [topBarBadge] 一处决定, 两句话数的是同一个集合。
+                pendingCount = pendingCount,
+                onOpenPending = onOpenPending,
                 undoCount = state.undoCount,
                 // 撤销 = 把上一步决策恢复回去(多步, 内存栈上限 UNDO_LIMIT, 见 UndoStack)。
                 // ⚠️ 写入在飞时它会被禁用([SwipeTopBar] 里判 writing): 撤销与写入并发会让
@@ -454,11 +483,14 @@ private fun BoxScope.SwipeBadge(direction: SwipeDirection, action: SwipeAction, 
     }
 }
 
-/** 顶部: 文件名 · (i/N) + 「撤销 N」+「未同步 N 张」+「关闭」。 */
+/** 顶部: 文件名 · (i/N) + 「撤销 N」+「待重试 N」/「未同步 N 张」+「关闭」。 */
 @Composable
 private fun SwipeTopBar(
     title: String,
     unsyncedLabel: String?,
+    /** 持久队列里真的待重试的项数(角标画的数, 见 [SwipeScreen])。 */
+    pendingCount: Int,
+    onOpenPending: () -> Unit,
     undoCount: Int,
     onUndo: () -> Unit,
     writing: Boolean,
@@ -482,11 +514,16 @@ private fun SwipeTopBar(
             TextButton(onClick = onUndo, enabled = undoCount > 0 && !writing) {
                 Text(if (undoCount > 0) "撤销 $undoCount" else "撤销")
             }
-            // 未同步角标**本身就是按钮**: 点一下把这一批重试一遍(没有动作的警告等于没警告)
-            if (unsyncedLabel != null) {
-                TextButton(onClick = onRetryUnsynced) {
-                    Text(unsyncedLabel, color = MaterialTheme.colorScheme.error)
-                }
+            // 角标**本身就是按钮**: 点一下打开重试面板(那里能逐项看原因、逐项重试、放弃);
+            // 没有动作的警告等于没警告。显示什么就按什么 —— 判定在 [topBarBadge] 一处。
+            val badge = topBarBadge(pendingCount = pendingCount, unsyncedLabel = unsyncedLabel)
+            if (badge != null) {
+                PendingBadgeButton(
+                    badge = badge,
+                    enabled = !writing,
+                    onOpenPanel = onOpenPending,
+                    onRetryUnsynced = onRetryUnsynced,
+                )
             }
             TextButton(onClick = onClose) { Text("关闭") }
         }

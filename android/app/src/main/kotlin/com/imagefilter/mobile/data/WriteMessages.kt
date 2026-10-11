@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 package com.imagefilter.mobile.data
 
+import kotlinx.serialization.Serializable
+
 /**
  * 一条写入失败里的 `code` **来自哪张表** —— 决定查哪张本地化表(规格 §5.3 的接口细节)。
  *
@@ -29,7 +31,12 @@ enum class FailureSource {
  *
  * [path] 是服务端回报的路径(逐字, 可能是规范化后的形态); [detail] 是服务端的中文诊断,
  * **只用于排查, 不进 UI 文案**(文案纪律: 文案在手机端按 [code] 本地化)。
+ *
+ * `@Serializable` 是 M3′ Task 3 加的: 待重试队列要把它**落盘**(重启之后面板还得说得出
+ * "为什么"与"下一步做什么")。**`source` 必须一起存** —— 它决定查哪张码表, 靠码本身猜
+ * 会在两张表的交集(`notXmp` / `unsupportedForm` / `tooLarge` / `busy` / `diskFull`)上分错。
  */
+@Serializable
 data class WriteFailure(
     val path: String,
     val code: String,
@@ -290,7 +297,7 @@ object WriteMessages {
     fun batchHead(requested: Int, failures: List<WriteFailure>): String? {
         // 只有一项**有话说**时不重复: 那张卡的逐项文案就是全部(与原来 `failed <= 1` 同一条)。
         if (failures.size <= 1) return null
-        val unconfirmed = failures.count { it.source == FailureSource.CLIENT && it.code == UNCONFIRMED }
+        val unconfirmed = failures.count { isUnconfirmed(it) }
         val failed = failures.size - unconfirmed
         val parts = buildList {
             if (failed > 0) add("$failed 张没写进电脑")
@@ -298,6 +305,19 @@ object WriteMessages {
         }
         return "这一批 $requested 张里有 " + parts.joinToString("，") + "。"
     }
+
+    /**
+     * 这一项是**"没有结论"**还是**"确实失败了"** —— [batchHead] 与待重试面板的总结句
+     * (`ui/PendingStore.kt::retryNote`)共用这**一个**判据。
+     *
+     * 抽出来不是为了省几行: 两处各写一遍的话, 改一处就会让"同一批失败"在批次句里说成
+     * "17 张没写进电脑"、在重试面板里说成"17 张没能确认" —— 用户拿到的两句话互相矛盾,
+     * 而且**任何单点修改都测不出来**(两个实现互相掩盖)。判据只看 `source`/`code` 这两件
+     * **逐字**的事实(**不猜**): 只有手机合成的 [UNCONFIRMED] 算"结果不明"; 传输层失败
+     * (没连上/超时/断线)照旧算"没写进电脑" —— 它们的逐项文案本来就是这么说的。
+     */
+    fun isUnconfirmed(f: WriteFailure): Boolean =
+        f.source == FailureSource.CLIENT && f.code == UNCONFIRMED
 
     /**
      * "改过但电脑还没确认"的角标文案(纪律③: 未同步 ≠ 已同步)。

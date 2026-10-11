@@ -16,6 +16,7 @@ import com.imagefilter.mobile.ui.Filters
 import com.imagefilter.mobile.ui.GRID_COUNT_UNKNOWN
 import com.imagefilter.mobile.ui.GRID_EMPTY
 import com.imagefilter.mobile.ui.GridViewModel
+import com.imagefilter.mobile.ui.PendingStore
 import com.imagefilter.mobile.ui.PushResult
 import com.imagefilter.mobile.ui.SyncState
 import com.imagefilter.mobile.ui.filteredOutMessage
@@ -77,6 +78,8 @@ class GridFilterTest {
     private fun viewModel() = GridViewModel(
         pairing = Pairing(baseUrl(), token, note = "家里的台式机"),
         folder = folder,
+        // 待重试队列: 内存版(与 GridViewModelTest 同一条理由 —— 落盘那条链路的用例在 PendingStoreTest)
+        pending = PendingStore(FakePendingQueue()),
         clientFactory = { url, tkn ->
             ApiClient(
                 url,
