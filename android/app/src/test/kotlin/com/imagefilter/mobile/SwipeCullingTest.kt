@@ -14,7 +14,9 @@ import com.imagefilter.mobile.ui.DecisionStore
 import com.imagefilter.mobile.ui.Filters
 import com.imagefilter.mobile.ui.GridItem
 import com.imagefilter.mobile.ui.GridViewModel
+import com.imagefilter.mobile.ui.KEEP_BLIND_MESSAGE
 import com.imagefilter.mobile.ui.PushResult
+import com.imagefilter.mobile.ui.RemotePull
 import com.imagefilter.mobile.ui.SWIPE_PREFETCH_AHEAD
 import com.imagefilter.mobile.ui.SwipeConfig
 import com.imagefilter.mobile.ui.SwipeDirection
@@ -114,17 +116,43 @@ class SwipeCullingTest {
         )
     }
 
+    /** 一次文件夹级决策读取的响应体(逐字拼 JSON, 与线上拼写一致)。 */
+    private fun enqueueRead(vararg items: String) = server.enqueue(
+        MockResponse().setResponseCode(200).setBody("[${items.joinToString(",")}]"),
+    )
+
+    /**
+     * 取走 `consumedBefore` 之后**新收到**的那些请求, 并逐条说清"方法 + 路径 + 请求体"。
+     *
+     * 用在"**一个请求都不该发**"的断言上: 只断言请求数的话, 红的时候只看到一句
+     * "expected 1 but was 2", 还得回去猜它到底发了什么 —— 而这里要证明的恰恰是
+     * "它发了一次**降级写入**"。正确实现下这里返回空列表(所以它不会阻塞)。
+     */
+    private fun newRequests(consumedBefore: Int): List<String> =
+        (0 until (server.requestCount - consumedBefore)).map {
+            val r = server.takeRequest()
+            "${r.method} ${r.path} ${r.body.readUtf8()}"
+        }
+
     /**
      * 这一份 store 就是网格手里那一份(滑卡页与网格**共用**它)。
      *
      * [seed] 是"电脑上已经有的值"(走真的 `mergeRemote` 那条本地/远端优先级入口), 不是
      * `applyLocal` —— 那一条差别很要紧: 远端值**不是**这台手机上的意图, 也不该带"未同步"。
+     *
+     * ⚠️ 它同时决定"这台手机**知不知道**电脑上是什么"([DecisionStore.knows]): 右滑(保留)
+     * 只在"知道"时才写 3 星, 所以**"没评过 ⇒ 写 3 星"这种用例必须先让服务端回报过它**
+     * (传一条 `DecisionReadDto(path = …)` 就行 —— 两个 null 也是服务端的明确回答)。
+     * 少了这一步的夹具测的是"读取失败"那种情形, 而它**不该**写(见下面 ①·2 那一组)。
      */
     private fun store(seed: List<DecisionReadDto> = emptyList()): DecisionStore {
         val s = DecisionStore(factory(base, token))
         if (seed.isNotEmpty()) s.mergeRemote(seed)
         return s
     }
+
+    /** 服务端明确回报"这一张没有星级/色标"的种子 —— "没评过 ⇒ 右滑给 3 星"那条的前提。 */
+    private fun unrated(vararg paths: String) = paths.map { DecisionReadDto(path = it) }
 
     /**
      * 滑卡页的那份状态机 —— **走生产同一份工厂**([swipeViewModel]), 所以这里断言的是
@@ -199,12 +227,119 @@ class SwipeCullingTest {
         assertEquals(1, vm.state.value.index)
     }
 
+    // ── ①·2 读取失败 / 部分回报: 保留**一个字节都不许写**(本轮修的静默降级口子) ──────
+
+    @Test
+    fun a_keep_swipe_writes_nothing_when_the_decisions_read_failed() = runTest {
+        // 电脑上这张是 4 星 —— 下面那次**成功**的读取会把它逐字读回来, 那就是"真值"。
+        // 但这一次进这个文件夹, 决策读取**失败**了: 这台手机不知道电脑上是几星。
+        // 老实现这里会发 `rating: 3`, 把电脑上的 4 星**静默降级**(本任务最贵的一种失败)。
+        server.enqueue(MockResponse().setResponseCode(500).setBody("""{"code":"internal"}"""))
+        // 后面这条 summary 是给"**万一**真的发了写入"准备的(修复前就会发一次): 有了它, 那一次
+        // 写入会拿到响应, 于是本用例红在下面那条**没有新请求**的断言上(一句看得懂的话, 而且带着
+        // 那一次请求的方法/路径/请求体), 而不是因为没人应答挂到超时。
+        enqueueSummary(written = 1)
+        val store = store()
+        assertTrue(store.pullRemote(paths) is RemotePull.Failed)
+        assertFalse("失败的读取没有让手机知道任何一张是什么", store.knows(paths[0]))
+        val read = server.takeRequest()          // 把那次失败的读走, 下面只对账**新**请求
+        assertEquals("GET", read.method)
+        assertEquals("/api/v1/decisions", read.requestUrl!!.encodedPath)
+        val consumed = server.requestCount
+        val vm = culler(store)
+
+        val result = vm.swipe(SwipeDirection.Right)
+
+        val stray = newRequests(consumed)
+        assertEquals(
+            "不知道电脑上是几星 ⇒ 保留**一个请求都不发**(否则桌面端的 4 星会被降成 3 星)",
+            emptyList<String>(),
+            stray,
+        )
+        assertEquals(PushResult.NothingToPush(1), result)
+        assertTrue("本地也不许凭空多一条意图 —— 那会让'未同步 N 张'这个角标撒谎", store.all().isEmpty())
+        assertEquals(KEEP_BLIND_MESSAGE, vm.state.value.swipeNote)
+        assertEquals("被拦住时**不前进**: 前进会让用户以为这一下记下了", 0, vm.state.value.index)
+        assertNull("下一张还没打过分", vm.state.value.rating)
+        // 注: 队列里那次 summary 一直没被用掉 —— 正确实现下这一滑一个请求都不发。
+    }
+
+    @Test
+    fun a_successful_read_of_a_four_star_photo_also_writes_nothing() = runTest {
+        // 上面那条的**对照**, 而且这里的"4 星"是**服务端读回来的真值**(不是测试自己塞进去的
+        // 一句声明): 同一张、同一次右滑, 只是这次**知道** ⇒ 一个请求都不发, 但说的话不一样、
+        // 而且**要前进**(规格 §8.2: 命中"不降级"那一支时不写也要前进)。
+        enqueueRead(decision(paths[0], rating = 4))
+        val store = store()
+        assertTrue(store.pullRemote(listOf(paths[0])) is RemotePull.Merged)
+        assertEquals("电脑上就是 4 星 —— 读取失败那条用例里的那一滑本来会把它毁掉", 4, store.get(paths[0]).rating)
+        val vm = culler(store)
+        val reads = server.requestCount
+
+        vm.swipe(SwipeDirection.Right)
+
+        assertEquals("知道是 4 星 ⇒ 同样一个请求都不发(不降级)", reads, server.requestCount)
+        assertEquals("已保留 · 保持 4★", vm.state.value.swipeNote)
+        assertEquals("这一支要前进", 1, vm.state.value.index)
+        assertEquals("电脑上那份 4 星原封不动", 4, store.get(paths[0]).rating)
+    }
+
+    @Test
+    fun a_keep_swipe_writes_nothing_for_a_path_the_partial_read_did_not_report() = runTest {
+        // 问了两张, 回来的只有第 2 张(服务端**明确**回报它没有星级)。第 1 张在电脑上是 4 星
+        // —— 它没被回报, 这台手机就**不知道**; 老实现会把它降成 3 星。
+        enqueueRead(decision(paths[1]))
+        // 同上: 后面这次 summary 在**修复后**的代码里会被下面那次"对照"的写入用掉; 在修复前
+        // 的代码里它会被"没被回报那张"误发的那次写入用掉, 于是本用例红在请求数断言上。
+        enqueueSummary(written = 1)
+        val store = store()
+
+        val pull = store.pullRemote(listOf(paths[0], paths[1]))
+
+        assertTrue("少回报一条 ⇒ 没有结论", pull is RemotePull.Partial)
+        assertFalse("没回报的那张: 不知道(它在电脑上是 4 星)", store.knows(paths[0]))
+        assertTrue("回报了的那张: 知道", store.knows(paths[1]))
+        val read = server.takeRequest()                  // 把那次读走, 下面只对账**新**请求
+        assertEquals("/api/v1/decisions", read.requestUrl!!.encodedPath)
+        val consumed = server.requestCount
+
+        val vm = culler(store)
+        val blocked = vm.swipe(SwipeDirection.Right)      // 第 0 张 = 没被回报的那张
+
+        val stray = newRequests(consumed)
+        assertEquals(
+            "没被回报 ⇒ 一个请求都不发" +
+                if (stray.isEmpty()) "" else "；实际发了: $stray",
+            emptyList<String>(),
+            stray,
+        )
+        assertEquals(PushResult.NothingToPush(1), blocked)
+        assertEquals(KEEP_BLIND_MESSAGE, vm.state.value.swipeNote)
+        assertEquals(0, vm.state.value.index)
+
+        // **对照**(同一份读回来的东西): 第 2 张是服务端明确说"没有星级"的 ⇒ 右滑照写 3 星。
+        // 两张的差别**只有**"被回报了没有", 于是这一组用例把"知道/不知道"钉成了可断言的事实。
+        // (上面那次 summary 一直排在队列里没被用过 —— 正确实现下这一滑一个请求都不发。)
+        vm.go(+1)
+        val result = vm.swipe(SwipeDirection.Right)
+
+        assertTrue(result is PushResult.Ok)
+        val put = server.takeRequest()      // 读已经被取走了, 这里第一个就是这一次写入
+        assertEquals("PUT", put.method)
+        val body = put.body.readUtf8()
+        assertTrue(body, body.contains(jq(paths[1])))
+        assertTrue("明确回报'没有星级' ⇒ 照写 3 星: $body", body.contains("\"rating\":3"))
+        assertEquals(3, store.get(paths[1]).rating)
+    }
+
     // ── ② 右滑没评过的 = 3 星, 而且只写星级 ──────────────────────────────────
 
     @Test
     fun right_swipe_on_an_unrated_photo_writes_exactly_three_stars_and_nothing_else() = runTest {
         enqueueSummary(written = 1)
-        val store = store()
+        // 前提: 服务端**回报过**这一张(两个 null = "电脑上确实没有星级")。少了这一步,
+        // 这台手机就是"不知道", 而"不知道"那一支**不许**写 3 —— 那是本轮修的降级口子。
+        val store = store(unrated(paths[0]))
         val vm = culler(store)
 
         val result = vm.swipe(SwipeDirection.Right)
@@ -381,7 +516,9 @@ class SwipeCullingTest {
     @Test
     fun a_network_failure_keeps_the_decision_and_does_not_advance() = runTest {
         // 电脑睡了 / 服务没开: 也是失败, 也必须留着决定且不前进。
-        val store = store()
+        // (前提同上: 先把"电脑上没有星级"读回来 —— 否则这一滑会被"不知道"那道闸拦住,
+        //  测到的就不是"写失败"这条链路了。)
+        val store = store(unrated(paths[0]))
         val vm = culler(store)
         server.shutdown()
 
@@ -504,7 +641,8 @@ class SwipeCullingTest {
         """{"path":${jq(path)},"fileName":${jq(name)},"fileSize":4096,""" +
             """"isRaw":false,"isVideo":false,"modifiedAt":$mtime,"exif":{}}"""
 
-    private fun decision(path: String, rating: Int?, label: String?) =
+    /** `xmp.rs::DecisionRead` 的一项, 逐字按线上拼写写 JSON(不拿 DTO 反向编码)。 */
+    private fun decision(path: String, rating: Int? = null, label: String? = null) =
         """{"path":${jq(path)},"rating":${rating ?: "null"},""" +
             """"label":${if (label == null) "null" else jq(label)},"sidecar":null}"""
 }

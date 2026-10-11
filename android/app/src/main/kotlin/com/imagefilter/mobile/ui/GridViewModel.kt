@@ -383,8 +383,10 @@ class GridViewModel(
         val result = decisions.push(paths)
         _state.update {
             it.copy(
+                // 逐条转述**每一项自己的结论**: 「没能确认」的那些不许被数成"没写进电脑"
+                // (它们的逐项文案说的是"没有结论" —— 批次句必须与它一致)。
                 lastBatchNote = (result as? PushResult.Failed)
-                    ?.let { f -> WriteMessages.batchHead(f.requested, f.failures.size) },
+                    ?.let { f -> WriteMessages.batchHead(f.requested, f.failures) },
             ).withDecisions()
         }
         return result

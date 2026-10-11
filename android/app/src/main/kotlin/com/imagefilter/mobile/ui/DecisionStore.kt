@@ -41,6 +41,32 @@ fun labelName(label: String?): String = when (label) {
 }
 
 /**
+ * **电脑上**这一张的星级 —— 三个状态, 不是一个 `Int?`。
+ *
+ * 这是本文件里最贵的一条教训: `rating = null` 把**两种截然不同的事实**混成了一个值 ——
+ *   · 服务端明确回报"这一张没有星级"([Unrated]);
+ *   · 这台手机**不知道**(读取失败 / 这一张没被回报 / 从来没读过)([Unknown])。
+ *
+ * 为什么非分不可: 右滑(保留)的语义是"维持现状, 没有星级才给 3 星", 而写出去的
+ * `rating: 3` 是一次**绝对赋值** —— 在 [Unknown] 下执行它, 就是拿"不知道"去赌电脑上
+ * 没有 4/5 星; 赌输的代价是把用户在电脑上给的星级**静默降级**成 3(数据损失)。
+ * 所以在 [Unknown] 下保留那一支**一个字节都不许写**(判据在 `decideSwipe`)。
+ *
+ * 注意它描述的是**电脑**, 不是这台手机上的意图: 只有 [DecisionStore] 读回来的东西才能让它
+ * 不是 [Unknown](本地打分/标色与它无关, 见 [Decision.desktopRating])。
+ */
+sealed interface DesktopRating {
+    /** 服务端明确回报了这一张**没有**星级(读过, 而且读了它)。 */
+    data object Unrated : DesktopRating
+
+    /** **不知道**: 读失败 / 这一张没被回报 / 从来没读过。 */
+    data object Unknown : DesktopRating
+
+    /** 服务端明确回报了这一张的星级(`0` = 废弃)。 */
+    data class Rated(val stars: Int) : DesktopRating
+}
+
+/**
  * 一张照片在**这台手机上**的决策意图。
  *
  * 两个"不动"必须分得清(与服务端 `DecisionWrite` 逐字对应):
@@ -64,7 +90,25 @@ data class Decision(
     val sync: SyncState = SyncState.UNTOUCHED,
     /** 最近一次写入失败(逐项)。非 null 时界面**必须**画出来 + 给重试。 */
     val lastError: WriteFailure? = null,
+    /**
+     * 电脑上这一张的星级([DesktopRating])。
+     *
+     * 默认 [DesktopRating.Unknown] = **不知道**, 而不是"没有星级" —— 这样"忘了带上这个信息"
+     * 的后果是"少写一次"(保守), 而不是"静默降级"(数据损失)。
+     * [DecisionStore.get] 每次都会按它**唯一**的那份知识重算这一个字段(见那里的 KDoc)。
+     */
+    val desktopRating: DesktopRating = DesktopRating.Unknown,
 ) {
+    /**
+     * 这一份是不是**用户在这台手机上明确说过的意图**。
+     *
+     * 判据是同步状态: 远端读回来的那份永远是 [SyncState.UNTOUCHED], 而本地意图只可能是
+     * [SyncState.UNSYNCED] / [SyncState.SYNCED](由 [DecisionStore.applyLocal] 与回报落定)。
+     * 撤销要恢复的是"之前那份本地意图" —— 之前**没有**本地意图与之前有一份(哪怕它是
+     * [SyncState.SYNCED])是两种不同的恢复动作(见 [DecisionStore.undo])。
+     */
+    val hasLocalIntent: Boolean get() = sync != SyncState.UNTOUCHED
+
     /** 打星(0..=5)。`0` 是"废弃", 与服务端 `xmp:Rating` 的取值一致。 */
     fun withRating(stars: Int): Decision {
         require(stars in 0..5) { "星级只能是 0..5(0 = 废弃), 收到的是 $stars" }
@@ -258,8 +302,46 @@ class DecisionStore(private val api: ApiClient) {
      */
     private val remote = LinkedHashMap<String, Decision>()
 
-    /** 没动过的路径也要能回答(**不是** null): 界面拿到的永远是一份完整的意图。 */
-    fun get(path: String): Decision = local[path] ?: remote[path] ?: Decision(path)
+    /**
+     * **服务端确认过**的路径(回报里有它, 哪怕它没有星级/色标)。
+     *
+     * 这是"电脑上这一张是什么"的知识本身, 而 [remote] 只是那份知识**有值时**的镜像 ——
+     * 两者必须分开, 否则"服务端回报了这一张没有星级"与"这台手机没读到这一张"又会混成一个
+     * "查不到"([remote] 里两者都没有条目):
+     *   · [mergeRemote] 把回报到的路径**加进来**(有值没值都算知道);
+     *   · [forget] 把"读取没被确认"的路径**去掉**(失败 / 部分回报里没回报的那些)——
+     *     没被确认就不许继续拿上一次的结论充数(与纪律③"未同步 ≠ 已同步"同一条)。
+     *
+     * [remote] 里的值**照旧不因为 [forget] 被抹掉**(把已知的东西抹掉比留在那儿更坏):
+     * 界面照样显示上一次读到的值, 但 [Decision.desktopRating] 会如实变成
+     * [DesktopRating.Unknown] —— "显示上一次的值"与"知道现在是什么"是两件事。
+     */
+    private val known = LinkedHashSet<String>()
+
+    /**
+     * 没动过的路径也要能回答(**不是** null): 界面拿到的永远是一份完整的意图。
+     *
+     * ⚠️ 优先级仍然**只在这一行**: `local[path] ?: remote[path]`。这里只多做一件事 —— 把
+     * [Decision.desktopRating] 如实算出来(它描述的是**电脑**, 与本地意图无关, 所以不能沿用
+     * 传进来的那一份: 那是别人构造 Decision 时的默认值, 不是事实)。
+     */
+    fun get(path: String): Decision =
+        (local[path] ?: remote[path] ?: Decision(path)).copy(desktopRating = desktopRatingOf(path))
+
+    /** 电脑上这一张的星级 —— 只有**被服务端确认过**的路径才有资格给出结论(见 [known])。 */
+    private fun desktopRatingOf(path: String): DesktopRating = when {
+        path !in known -> DesktopRating.Unknown
+        // `known` 里有它但 `remote` 里没有值 = 服务端**明确回报**了这一张没有星级。
+        else -> remote[path]?.rating?.let { DesktopRating.Rated(it) } ?: DesktopRating.Unrated
+    }
+
+    /**
+     * 这一张在电脑上是什么, **知道不知道**。
+     *
+     * 与 [get] 的 `rating == null` 是两件事: `null` 既可能是"服务端说没有"也可能是"不知道"。
+     * 滑卡那一层就是靠它把两者分开的(见 `decideSwipe` 的保留那一支)。
+     */
+    fun knows(path: String): Boolean = path in known
 
     fun all(): List<Decision> = local.values.toList()
 
@@ -320,6 +402,9 @@ class DecisionStore(private val api: ApiClient) {
             // 本地对这张有没有意图 —— 只用来**数**, 不用来决定存不存(见类 KDoc 与 resolved()):
             // 优先级只在 get 那一处执法, 这里再挡一道就会变成"两个实现互相掩盖"。
             val localWins = local.containsKey(path)
+            // 服务端回报了这一张 ⇒ 不管它有没有值, "电脑上这张是什么"从此刻起是**知道**的。
+            // (少写这一行会让下面"两个 null"的那条分支变回"不知道", 降级口子就回来了。)
+            known.add(path)
             if (dto.rating == null && dto.label == null) {
                 if (remote.remove(path) != null) cleared++
                 continue
@@ -353,6 +438,9 @@ class DecisionStore(private val api: ApiClient) {
         return try {
             merge(requested, api.readDecisions(requested))
         } catch (e: ApiException) {
+            // 整个请求没被确认 ⇒ 这些路径**重新变成"不知道"**(上一次读到的值照旧留着显示,
+            // 但不再冒充"现在是什么" —— 保留那一支就是靠这条不许写)。
+            forget(requested)
             RemotePull.Failed(
                 requested = requested.size,
                 // HTTP 层的码查 §5.3 那张表(由 ReadSource.HTTP 指定, 不靠猜)。
@@ -365,6 +453,7 @@ class DecisionStore(private val api: ApiClient) {
         } catch (e: IOException) {
             // 协程被取消时 OkHttp 抛的也是 IOException —— 别把"用户退出了这一页"说成网络故障。
             currentCoroutineContext().ensureActive()
+            forget(requested)
             RemotePull.Failed(
                 requested = requested.size,
                 failure = DecisionReadFailure(
@@ -383,7 +472,21 @@ class DecisionStore(private val api: ApiClient) {
         // "没对上" —— 这一份读回来的东西是我们对"电脑上这个文件夹现在是什么样"的**全部**依据。
         val mismatched = requested.count { it !in got } + got.count { it !in asked }
         if (mismatched == 0) return RemotePull.Merged(requested.size, outcome)
+        // 没回报到的那些路径同样**重新变成"不知道"**: 问了两张只回来一张时, 没回来的那张在
+        // 电脑上是几星谁也不知道 —— 正是这种"部分回报"最容易让保留那一支赌输。
+        forget(requested.filter { it !in got })
         return RemotePull.Partial(requested.size, outcome, mismatched)
+    }
+
+    /**
+     * 这些路径**重新变成"不知道"**(这次读取没被确认)。
+     *
+     * 刻意只动知识([known]), **不动**本地意图、也**不动**上一次读到的远端值([remote]):
+     * 读取失败没有资格改动用户的评分, 把已知的东西抹掉比留在那儿更坏 —— 只是"这是现在的事实"
+     * 这句话不许再说了(见 [desktopRatingOf])。
+     */
+    private fun forget(paths: Collection<String>) {
+        for (p in paths) known.remove(p)
     }
 
     /**

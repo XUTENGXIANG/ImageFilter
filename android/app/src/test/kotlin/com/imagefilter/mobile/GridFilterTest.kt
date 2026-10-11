@@ -345,6 +345,12 @@ class GridFilterTest {
         assertEquals(ReadMessages.INCOMPLETE, f!!.code)
         assertEquals(ReadSource.CLIENT, f.source)
         assertFalse(s.decisionsKnown)
+        // 同一件事的**另一个粒度**: 网格说"这个文件夹的张数不可信", store 说"这两张知道、
+        // 那一张不知道" —— 两者都由同一次回报决定, 所以在这里一起断言(只钉一边的话,
+        // 改坏另一边不会有任何测试红)。
+        assertTrue("回报了的那张: 手机知道电脑上是什么", vm.decisions.knows(a))
+        assertTrue(vm.decisions.knows(b))
+        assertFalse("没回报的那张: 不知道 —— 保留那一支就是靠这条不写", vm.decisions.knows(c))
         // 只数已知的那两张会得到 "1"(≥5 星) —— 那是**偏小的下界**, 不许当成答案
         assertEquals(COUNT_UNKNOWN, s.counts.starText(5))
         assertNotEquals("1", s.counts.starText(5))

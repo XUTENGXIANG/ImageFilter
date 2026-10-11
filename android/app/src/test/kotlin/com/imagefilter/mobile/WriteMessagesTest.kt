@@ -189,9 +189,57 @@ class WriteMessagesTest {
     @Test
     fun the_batch_line_only_speaks_when_more_than_one_item_failed() {
         // 半成功态要显式, 但一条失败不需要"1 张里有 1 张"这种废话。
-        assertNull(WriteMessages.batchHead(requested = 1, failed = 1))
-        assertNull(WriteMessages.batchHead(requested = 3, failed = 0))
-        assertEquals("这一批 3 张里有 2 张没写进电脑。", WriteMessages.batchHead(requested = 3, failed = 2))
+        assertNull(WriteMessages.batchHead(requested = 1, failures = listOf(xmp(XmpErrorCodes.READ_ONLY))))
+        assertNull(WriteMessages.batchHead(requested = 3, failures = emptyList()))
+        assertEquals(
+            "这一批 3 张里有 2 张没写进电脑。",
+            WriteMessages.batchHead(
+                requested = 3,
+                failures = listOf(xmp(XmpErrorCodes.READ_ONLY), xmp(XmpErrorCodes.BUSY)),
+            ),
+        )
+    }
+
+    @Test
+    fun the_batch_line_never_counts_an_unconfirmed_item_as_not_written() {
+        // ⚠️ 本条钉的是一个**会撒谎的句子**: 逐项码 `unconfirmed` 的意思是"服务端没回报这一项的
+        // 写入结果"(**没有结论**), 它的逐项文案就是这么说的; 批次句把它数进"没写进电脑"
+        // 就是替服务端保证了一件它没说过的事 —— 与纪律③"未同步 ≠ 已同步"同一条。
+        val a = xmp(XmpErrorCodes.READ_ONLY)                 // 确认失败
+        val u1 = client(WriteMessages.UNCONFIRMED)           // 结果不明
+        val u2 = client(WriteMessages.UNCONFIRMED)
+
+        // 两种混在一批: 分开数、分开说(3 张里 1 张确认没写成、1 张没有结论)
+        assertEquals(
+            "这一批 3 张里有 1 张没写进电脑，1 张没能确认（结果不明）。",
+            WriteMessages.batchHead(requested = 3, failures = listOf(a, u1)),
+        )
+        // 全是"没有结论"时**一个字都不许提"没写进电脑"**(那正是老句子的谎话)
+        val allUnknown = WriteMessages.batchHead(requested = 4, failures = listOf(u1, u2))!!
+        assertFalse("不许说'没写进电脑': $allUnknown", allUnknown.contains("没写进电脑"))
+        assertTrue(allUnknown, allUnknown.contains("2 张没能确认"))
+        assertTrue(allUnknown, allUnknown.contains("4 张里"))
+
+        // 传输层失败(没连上/超时/断线)照旧算"没写进电脑" —— 它们的逐项文案本来就是这么说的,
+        // 两处必须一致(判据只看 source/code 这两件逐字的事实, 不靠猜)。
+        assertEquals(
+            "这一批 2 张里有 2 张没写进电脑。",
+            WriteMessages.batchHead(
+                requested = 2,
+                failures = listOf(
+                    client(ApiErrorCodes.SERVICE_OFF),
+                    client(ApiErrorCodes.TIMEOUT),
+                ),
+            ),
+        )
+    }
+
+    @Test
+    fun every_unconfirmed_sentence_agrees_that_there_is_no_conclusion() {
+        // 批次句与逐项句必须说同一件事 —— 一边"没有结论"、另一边"没写进去"就是自相矛盾。
+        val text = WriteMessages.forFailure(client(WriteMessages.UNCONFIRMED))
+        assertTrue(text, text.contains("没有回报"))
+        assertFalse("不许替服务端保证'没写进去': $text", text.contains("没有落到电脑上"))
     }
 
     @Test

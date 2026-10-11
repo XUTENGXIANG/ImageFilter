@@ -11,6 +11,7 @@ import com.imagefilter.mobile.data.UnauthorizedCause
 import com.imagefilter.mobile.data.buildHttpClient
 import com.imagefilter.mobile.ui.Decision
 import com.imagefilter.mobile.ui.DecisionStore
+import com.imagefilter.mobile.ui.DesktopRating
 import com.imagefilter.mobile.ui.MergeOutcome
 import com.imagefilter.mobile.ui.PushResult
 import com.imagefilter.mobile.ui.RemotePull
@@ -20,6 +21,7 @@ import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
@@ -392,5 +394,83 @@ class DecisionMergeTest {
         assertEquals(ApiErrorCodes.TIMEOUT, pull.failure.code)
         assertEquals(4, s.get(path).rating)
         assertEquals(SyncState.UNSYNCED, s.get(path).sync)
+    }
+
+    // ── ⑥ "知道 / 不知道"必须分得开(静默降级那个口子的**知识**本身) ─────────────
+    //
+    // `Decision.rating == null` 混了两种事实: "服务端明确说没有"与"这台手机没读到"。
+    // 保留(右滑)只在**知道**时才允许写 3 星(否则可能把电脑上的 4/5 星降级), 所以这一组
+    // 把"知道"这件事本身钉住 —— 它不依赖滑卡那一层, 于是两边不会互相掩盖。
+
+    @Test
+    fun a_reported_path_is_known_even_when_the_server_says_it_has_nothing() = runTest {
+        enqueueRead(readJson(path), readJson(other, rating = 3))
+        val s = store()
+        assertFalse("还没读过 ⇒ 不知道", s.knows(path))
+
+        s.pullRemote(listOf(path, other))
+
+        assertTrue("服务端明确回报了这一张(哪怕没有星级)⇒ 知道", s.knows(path))
+        assertEquals(
+            "而且是'确实没有', 不是'不知道' —— 这两个状态必须分得开",
+            DesktopRating.Unrated,
+            s.get(path).desktopRating,
+        )
+        assertTrue(s.knows(other))
+        assertEquals(DesktopRating.Rated(3), s.get(other).desktopRating)
+    }
+
+    @Test
+    fun a_partial_read_only_makes_the_paths_it_reported_known() = runTest {
+        // 问了两张, 只回来一张: 没回来的那张**回到不知道**(不许拿"上一次读到过"继续充数),
+        // 而回来的那张照旧是真值。
+        enqueueRead(readJson(path, rating = 4))
+        enqueueRead(readJson(path, rating = 3))
+        val s = store()
+        s.pullRemote(listOf(path))
+        assertTrue(s.knows(path))
+        assertFalse(s.knows(other))
+
+        val pull = s.pullRemote(listOf(path, other))
+
+        assertTrue(pull is RemotePull.Partial)
+        assertTrue("回报了的那张: 知道", s.knows(path))
+        assertFalse("没回报的那张: 不知道", s.knows(other))
+        assertEquals(DesktopRating.Rated(3), s.get(path).desktopRating)
+        assertEquals(DesktopRating.Unknown, s.get(other).desktopRating)
+    }
+
+    @Test
+    fun a_failed_read_takes_the_knowledge_back_but_keeps_showing_the_last_value() = runTest {
+        // 刷新失败时: 屏幕上**照旧**显示上一次读到的 4 星(把已知的东西抹掉比留在那儿更坏),
+        // 但"这是电脑现在的事实"这句话不许再说了 —— 保留那一支就是靠这条不写。
+        enqueueRead(readJson(path, rating = 4))
+        server.enqueue(MockResponse().setResponseCode(500).setBody("""{"code":"internal"}"""))
+        val s = store()
+        s.pullRemote(listOf(path))
+        assertEquals(DesktopRating.Rated(4), s.get(path).desktopRating)
+
+        assertTrue(s.pullRemote(listOf(path)) is RemotePull.Failed)
+
+        assertEquals("上一次读到的值照旧显示", 4, s.get(path).rating)
+        assertFalse("但没被确认 ⇒ 不知道", s.knows(path))
+        assertEquals(
+            "不知道 ≠ 没有星级(右滑就是靠这个区别决定写不写)",
+            DesktopRating.Unknown,
+            s.get(path).desktopRating,
+        )
+    }
+
+    @Test
+    fun a_local_intent_does_not_invent_knowledge_about_the_pc() = runTest {
+        // 这台手机上打了 4 星(还没发出去)完全不说明电脑上是几星 —— 本地意图与"知道"
+        // 是两件事。混起来就会让"离线打过分"变成"可以拿 3 星去覆盖电脑"。
+        val s = store()
+        s.applyLocal(Decision(path).withRating(4))
+
+        assertEquals(4, s.get(path).rating)
+        assertEquals(SyncState.UNSYNCED, s.get(path).sync)
+        assertFalse("本地意图不许冒充「电脑上是什么」的知识", s.knows(path))
+        assertEquals(DesktopRating.Unknown, s.get(path).desktopRating)
     }
 }

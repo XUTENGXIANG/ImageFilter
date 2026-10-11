@@ -277,9 +277,27 @@ object WriteMessages {
     /**
      * 一批里有多项失败时, 先说清"**几项里错了几项**"——半成功态必须显式(纪律②)。
      * 只有一项失败时返回 `null`(那句话本身就是全部)。
+     *
+     * ⚠️ **"没能确认"的那些不许被算进"没写进电脑"**。逐项码 [UNCONFIRMED] 的意思是
+     * **没有结论**(服务端没回报这一项的写入结果), 它自己的逐项文案就是这么说的; 批次句把它
+     * 数进"没写进去"就是替服务端保证了一件它没说过的事 —— 与纪律③"未同步 ≠ 已同步"同一条。
+     * 所以两句分开数、分开说: 确认失败几张、结果不明几张。
+     *
+     * 判据只看 `source`/`code` 这两件**逐字**的事实(**不猜**): 只有手机合成的
+     * `CLIENT`+[UNCONFIRMED] 算"结果不明"; 传输层失败(没连上/超时/断线)照旧算"没写进电脑"
+     * —— 它们的逐项文案本来就是这么说的, 两处必须一致。
      */
-    fun batchHead(requested: Int, failed: Int): String? =
-        if (failed <= 1) null else "这一批 $requested 张里有 $failed 张没写进电脑。"
+    fun batchHead(requested: Int, failures: List<WriteFailure>): String? {
+        // 只有一项**有话说**时不重复: 那张卡的逐项文案就是全部(与原来 `failed <= 1` 同一条)。
+        if (failures.size <= 1) return null
+        val unconfirmed = failures.count { it.source == FailureSource.CLIENT && it.code == UNCONFIRMED }
+        val failed = failures.size - unconfirmed
+        val parts = buildList {
+            if (failed > 0) add("$failed 张没写进电脑")
+            if (unconfirmed > 0) add("$unconfirmed 张没能确认（结果不明）")
+        }
+        return "这一批 $requested 张里有 " + parts.joinToString("，") + "。"
+    }
 
     /**
      * "改过但电脑还没确认"的角标文案(纪律③: 未同步 ≠ 已同步)。

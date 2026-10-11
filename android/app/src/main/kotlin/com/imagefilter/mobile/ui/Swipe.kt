@@ -48,6 +48,14 @@ const val REJECT_LABEL = "red"
 /** 手势阈值: 水平拖过**屏宽的这个比例**松手才算一次决策(规格 §8.2 的"约屏宽 25%")。 */
 const val SWIPE_THRESHOLD_FRACTION = 0.25f
 
+/**
+ * 保留(右滑)命中"**不知道电脑上是几星**"那一支时的那句话。
+ *
+ * 它必须说清两件事: 这一下**没有写入**(否则用户以为记下了), 以及**为什么** ——
+ * 否则用户只会看到卡片不动, 然后一遍一遍地滑。
+ */
+const val KEEP_BLIND_MESSAGE = "已保留 · 电脑上的星级还没读到，这一滑没有写入"
+
 /** 按屏宽算出这一下要拖多远才算数(屏宽非正时给 0, 由 [swipeDirectionFor] 兜底成"不决策")。 */
 fun swipeThresholdPx(widthPx: Float): Float =
     if (widthPx <= 0f) 0f else widthPx * SWIPE_THRESHOLD_FRACTION
@@ -148,12 +156,19 @@ fun swipeViewModel(
  *
  * ⚠️ 变"不变"时**不要**顺手 `push` 一次: 这条路径上可能挂着一份**以前**写失败、还没重试的
  * 意图([SyncState.UNSYNCED]), 重试它是「未同步·重试」那个角标的活, 不是滑卡的活。
+ *
+ * [blocked] 是 [unchanged] 的一个**子集**, 而且是**相反**的那种"没写":
+ *   · [unchanged] 且 `blocked = false` —— "没什么要写"(本来就已经是这个值), 照样前进;
+ *   · [unchanged] 且 `blocked = true` —— **这一滑被拦住了**(这台手机不知道电脑上是什么),
+ *     所以调用方**也不许前进**: 前进会让用户以为这一下记下了, 而它什么都没记。
  */
 data class SwipeOutcome(
     val rating: Int? = null,
     val label: String? = null,
     val unchanged: Boolean = false,
     val message: String? = null,
+    /** true = 这一滑因为"不知道电脑上是什么"而**一个字节都不能写**(见 [decideSwipe])。 */
+    val blocked: Boolean = false,
 ) {
     /**
      * 把这次结论落到**这一张当前的意图**上。
@@ -174,12 +189,17 @@ data class SwipeOutcome(
  * 滑卡语义 —— 与桌面端 `J`/`X` 对齐(README: `J` = 保留(3 星)、`X` = 废弃(0 星)), 共用
  * `xmp:Rating` 这一个字段。
  *
- * 四条规矩, 每条都有测试盯着:
+ * 五条规矩, 每条都有测试盯着:
  *   1. **左滑(废弃) = [REJECT_STARS] 星, 允许降级** —— 那是用户**明确**说"我不要这张",
  *      与下面第 2 条不矛盾: 一个是明确的取舍, 一个是含糊的"留着";
- *   2. **右滑(保留)绝不降级**: 无星级(空或 0)才写 [KEEP_STARS]; **已有 ≥1 星时一个字节都不写**
- *      —— 无条件写 3 会把桌面端给的 4/5 星**静默降成** 3 星, 那是数据损失, 不是"统一口径";
+ *   2. **右滑(保留)绝不降级**: 已有 ≥1 星时一个字节都不写 —— 无条件写 3 会把桌面端给的
+ *      4/5 星**静默降成** 3 星, 那是数据损失, 不是"统一口径";
  *      (1★/2★ 同样不动: "保留"不是"改成 3 星", 只有 0 星 —— 明确的废弃 —— 才会被改回 3 星)
+ *   2′. **不知道电脑上是几星时, 保留一个字节都不写**([SwipeOutcome.blocked]): [Decision.rating]
+ *      的 `null` 混了两种事实 —— "电脑上确实没有星级"与"这台手机不知道"(读取失败 / 部分回报)。
+ *      前者给 3 星是对的, 后者写 3 星就是拿"不知道"去赌电脑上没有 4/5 星。判据是
+ *      [Decision.desktopRating]: 只有 [DesktopRating.Unrated] / [DesktopRating.Rated]`(0)`
+ *      才有资格写 3 —— **这条与第 2 条同一个理由, 都是"绝不静默降级"**;
  *   3. **什么模式写什么字段**: [SwipeMode.StarsOnly] 的结论里 `label` **必然是 null**,
  *      [SwipeMode.LabelsOnly] 的结论里 `rating` **必然是 null** —— 另一维连一个值都不带;
  *   4. **没什么要写时就不写, 但要说清为什么**: [SwipeOutcome.unchanged] +
@@ -192,6 +212,14 @@ fun decideSwipe(current: Decision, action: SwipeAction, mode: SwipeMode): SwipeO
     val writeStars = mode != SwipeMode.LabelsOnly
     val writeLabel = mode != SwipeMode.StarsOnly
 
+    // ⚠️ 规矩 2′ 的执法点, 而且**必须在算色标那一半之前**: 不知道电脑上是什么的时候,
+    // 连色标也不写 —— 一次"保留"的所有写入都建立在"我们知道要保留的是什么"之上,
+    // 只有一半知道就写另一半, 是在一个没被确认的基础上继续做决定(用户要写色标可以手点底部
+    // 的色标面板, 那条链路不受影响)。`blocked` 让调用方**也不前进**。
+    if (writeStars && action == SwipeAction.Keep && keepIsBlind(current)) {
+        return SwipeOutcome(unchanged = true, blocked = true, message = KEEP_BLIND_MESSAGE)
+    }
+
     // ── 星级那一半 ──────────────────────────────────────────────────────────
     var rating: Int? = null
     var starNote: String? = null
@@ -201,13 +229,29 @@ fun decideSwipe(current: Decision, action: SwipeAction, mode: SwipeMode): SwipeO
         when (action) {
             SwipeAction.Keep -> {
                 val r = current.rating
-                if (r == null || r == REJECT_STARS) {
-                    // 没评过 → 给 3 星; 0 星是**明确的废弃**, 用户改主意右滑就该变回"保留"。
-                    rating = KEEP_STARS
-                    starDone = false
-                } else {
-                    // ← 本任务最要紧的一行: 已有 ≥1 星就**一个字节都不写**(尤其不许写 3)。
+                if (r != null && r >= 1) {
+                    // 本地意图(或读回来的值)已经 ≥1 星: **一个字节都不写**(尤其不许写 3)。
                     starNote = "保持 $r★"
+                } else {
+                    // 走到这里: 当前星级是 `null`(没评过/不知道)或 `0`(明确的废弃)。
+                    // 0 只有在**知道**电脑上确实是 0 时才允许被抬到 3(见规矩 2′)。
+                    when (val d = current.desktopRating) {
+                        is DesktopRating.Rated -> if (d.stars >= 1) {
+                            starNote = "保持 ${d.stars}★"
+                        } else {
+                            rating = KEEP_STARS
+                            starDone = false
+                        }
+
+                        // 服务端**明确回报**了这一张没有星级 ⇒ 给 3 星(老行为, 也是对的)。
+                        DesktopRating.Unrated -> {
+                            rating = KEEP_STARS
+                            starDone = false
+                        }
+
+                        // 不知道 ⇒ 上面那道闸已经拦住了, 这里只是把"不可能"写全(编译器要求穷尽)。
+                        DesktopRating.Unknown -> Unit
+                    }
                 }
             }
 
@@ -248,6 +292,16 @@ fun decideSwipe(current: Decision, action: SwipeAction, mode: SwipeMode): SwipeO
         },
     )
 }
+
+/**
+ * 这一滑"保留"是不是**瞎写**(不知道电脑上这一张现在是什么) —— [decideSwipe] 规矩 2′ 的判据。
+ *
+ * 只在"要写星级的那两档"里用, 而且只在当前星级是 `null`/`0` 时才可能为 true:
+ * 已有 ≥1 星时保留本来就不写任何东西, 与知不知道无关(写都不写, 无从降级)。
+ */
+private fun keepIsBlind(current: Decision): Boolean =
+    (current.rating == null || current.rating == REJECT_STARS) &&
+        current.desktopRating == DesktopRating.Unknown
 
 /** 手势(方向 + 当前配置) → 结论。方向与动作的绑定只在 [SwipeConfig.actionFor] 一处。 */
 fun decideSwipe(current: Decision, direction: SwipeDirection, config: SwipeConfig): SwipeOutcome =

@@ -3,6 +3,8 @@
 package com.imagefilter.mobile
 
 import com.imagefilter.mobile.ui.Decision
+import com.imagefilter.mobile.ui.DesktopRating
+import com.imagefilter.mobile.ui.KEEP_BLIND_MESSAGE
 import com.imagefilter.mobile.ui.KEEP_LABEL
 import com.imagefilter.mobile.ui.KEEP_STARS
 import com.imagefilter.mobile.ui.LABELS
@@ -41,6 +43,11 @@ import org.junit.Test
  *   ③ **分支计数**(按模式数出 unchanged 的行数, 算术写在注释里): 这是防"假绿"的那一条 ——
  *      一个只跑得到一支的循环、或者一个空矩阵, 都会让前两层安静地通过。
  *
+ * ⚠️ **夹具必须说清"电脑上这一张是什么"**([DesktopRating]): 本文件的两层矩阵测的是**知道**的
+ * 世界里的语义(`at()` 把 `rating = null` 说成"电脑上确实没有星级"), 而"不知道"那一支有它
+ * 自己的整张矩阵([no_row_of_the_matrix_writes_anything_when_the_desktop_rating_is_unknown])。
+ * 两边混在一个夹具里, "降级"那条口子就会被另一边掩盖 —— 这正是本轮要修的 bug 的形状。
+ *
  * ⚠️ 这里测不到: 真实的手势跟手感、卡片动画、以及"双指捏合不与单指拖动抢事件"(没有设备,
  * 也不为它引 Compose UI 测试依赖) —— 见报告里的 UNVERIFIED 清单。
  */
@@ -49,9 +56,29 @@ class SwipeTest {
     /** 规范路径的典型形态: 反斜杠 + 中文(与其它测试同一份形状)。 */
     private val p = "D:\\照片\\a.jpg"
 
-    /** 一张照片当前的意图(只给语义关心的三个字段)。 */
+    /**
+     * 一张照片当前的意图(只给语义关心的三个字段), **而且声明电脑上就是这个星级**。
+     *
+     * `rating = null` 在这里的意思因此是"电脑上**确实**没有星级"([DesktopRating.Unrated]) ——
+     * 不是"这台手机不知道"。这个区别是本轮修的那个静默降级口子的全部要害。
+     */
     private fun at(rating: Int? = null, label: String? = null, clearLabel: Boolean = false) =
-        Decision(path = p, rating = rating, label = label, clearLabel = clearLabel)
+        Decision(
+            path = p,
+            rating = rating,
+            label = label,
+            clearLabel = clearLabel,
+            desktopRating = rating?.let { DesktopRating.Rated(it) } ?: DesktopRating.Unrated,
+        )
+
+    /**
+     * 同一张照片, 但这台手机**不知道**电脑上是几星(读取失败 / 部分回报 / 从来没读过)。
+     *
+     * `rating` 非 null 时表示"这台手机上有一份本地意图", 而**电脑上是什么仍然不知道** ——
+     * 这两种"知道"是两件事(见 decideSwipe 规矩 2′)。
+     */
+    private fun blind(rating: Int? = null, label: String? = null) =
+        Decision(path = p, rating = rating, label = label, desktopRating = DesktopRating.Unknown)
 
     // ── ① 逐条点名: 规格 §8.2 那张表 ────────────────────────────────────────
 
@@ -211,6 +238,89 @@ class SwipeTest {
         assertEquals("已保留 · 保持 5★、色标本来就是绿", o.message)
     }
 
+    // ── ①·2 **不知道电脑上是几星**时: 保留一个字节都不许写(本轮修的静默降级口子) ─────
+    //
+    // 这个口子的形状: `Decision.rating` 的 `null` 混了两种事实 —— "电脑上确实没有星级"与
+    // "这台手机没读到"。老实现只看 `null`, 于是**读取失败**时右滑照样发 `rating: 3`, 把电脑上的
+    // 4/5 星静默降级。下面每一条都同时给出**对照**, 否则"不写"可能只是因为"这一支本来就不写"。
+
+    @Test
+    fun keep_on_a_photo_whose_desktop_rating_is_unknown_writes_nothing() {
+        val o = decideSwipe(blind(), SwipeAction.Keep, SwipeMode.StarsOnly)
+        assertNull("不知道电脑上是几星时写 3 = 可能把桌面端的 4/5 星静默降级", o.rating)
+        assertTrue("这一滑不产生写入", o.unchanged)
+        assertTrue("而且它是**被拦住**的那一种'不写'(调用方连前进都不许)", o.blocked)
+        assertEquals(KEEP_BLIND_MESSAGE, o.message)
+        assertNotNull(o.message)
+    }
+
+    @Test
+    fun a_known_unrated_photo_is_still_given_three_stars() {
+        // 上面那条的**对照**, 也是规格 §8.2 的原文: 服务端**明确回报**没有星级 ⇒ 照写 3 星。
+        // 少了这一条, "不写"就可能是因为"未知那一支把整个保留都废掉了"而通过。
+        val o = decideSwipe(at(), SwipeAction.Keep, SwipeMode.StarsOnly)
+        assertEquals(3, o.rating)
+        assertFalse(o.unchanged)
+        assertFalse("知道 ⇒ 不是被拦住", o.blocked)
+    }
+
+    @Test
+    fun unknown_blocks_the_whole_keep_even_in_the_mode_that_writes_colours_too() {
+        // "两个都写"那一档: 星级写不得, 色标也**一起不写** —— 一次"保留"的所有写入都建立在
+        // "我们知道要保留的是什么"之上; 只写一半是在一个没被确认的基础上继续做决定。
+        for (mode in listOf(SwipeMode.StarsOnly, SwipeMode.Both)) {
+            val o = decideSwipe(blind(), SwipeAction.Keep, mode)
+            assertNull("$mode: 绝不许写星级", o.rating)
+            assertNull("$mode: 连色标也不写", o.label)
+            assertTrue("$mode: 什么都没写", o.unchanged)
+            assertTrue("$mode: 被拦住", o.blocked)
+        }
+        // "只写色标"那一档本来就不碰星级, 所以它**不是**这个口子的形状(它照样写绿标)。
+        val labelsOnly = decideSwipe(blind(), SwipeAction.Keep, SwipeMode.LabelsOnly)
+        assertEquals("green", labelsOnly.label)
+        assertFalse("只写色标那一档不涉及星级, 不该被拦", labelsOnly.blocked)
+    }
+
+    @Test
+    fun reject_still_writes_zero_when_the_desktop_rating_is_unknown() {
+        // **决定性对照**: 左滑是用户**明确**说"我不要这张"(与桌面端 X 键同义), 与知道不知道
+        // 无关 —— 把这一支也一起拦掉, "不知道"就退化成"整个筛片页都不能用"。
+        val o = decideSwipe(blind(), SwipeAction.Reject, SwipeMode.StarsOnly)
+        assertEquals(0, o.rating)
+        assertFalse(o.unchanged)
+        assertFalse(o.blocked)
+    }
+
+    @Test
+    fun unknown_never_blocks_a_keep_that_had_nothing_to_write_anyway() {
+        // 已有 ≥1 星时保留本来就不写任何东西 —— 与"知不知道"无关, 也就没有可降的级:
+        // 这时**不许**把它降级成"被拦住"(那会让用户白白停在一张不用改的照片上)。
+        val o = decideSwipe(blind(rating = 4), SwipeAction.Keep, SwipeMode.StarsOnly)
+        assertNull(o.rating)
+        assertFalse(o.blocked)
+        assertTrue(o.unchanged)
+        assertEquals("已保留 · 保持 4★", o.message)
+    }
+
+    @Test
+    fun a_known_desktop_zero_is_upgraded_even_when_the_phone_never_touched_it() {
+        // 电脑上明确是 0(废弃)⇒ 右滑抬回 3 星: 这是**知道**的世界里的老行为, 不许被新闸门误伤。
+        val current = Decision(path = p, rating = null, desktopRating = DesktopRating.Rated(0))
+        val o = decideSwipe(current, SwipeAction.Keep, SwipeMode.StarsOnly)
+        assertEquals(3, o.rating)
+        assertFalse(o.blocked)
+    }
+
+    @Test
+    fun a_local_reject_with_an_unknown_desktop_is_also_blind_because_three_would_downgrade() {
+        // 本地那份意图是 0(可能是一次**写失败**的废弃): 电脑上到底是不是 5 星没人知道。
+        // 把它抬到 3 一样是"拿不知道去赌" —— 拦下来, 本地那份意图原样留着(用户还能重试它)。
+        val o = decideSwipe(blind(rating = 0), SwipeAction.Keep, SwipeMode.StarsOnly)
+        assertNull(o.rating)
+        assertTrue(o.blocked)
+        assertEquals(KEEP_BLIND_MESSAGE, o.message)
+    }
+
     // ── ② 全矩阵不变量 ──────────────────────────────────────────────────────
 
     private data class Row(val rating: Int?, val label: String?, val action: SwipeAction, val mode: SwipeMode)
@@ -303,7 +413,92 @@ class SwipeTest {
             if (!o.unchanged) {
                 assertTrue("$where: 说要写就必须真的带了一个值出去", o.rating != null || o.label != null)
             }
+
+            // 规矩 2′ 在这张矩阵里**一次都不该触发**: 这里的每一行都声明了"电脑上是什么"
+            // (见 at())。它一旦在这里出现, 说明夹具把"知道"与"不知道"混了 —— 那正是
+            // 让降级口子躲过测试的形状(单独一条矩阵专门测"不知道"那一支)。
+            assertFalse("$where: 这张矩阵是'知道'的世界, 不该出现被拦住的保留", o.blocked)
         }
+    }
+
+    /**
+     * "**不知道**电脑上是几星"那张矩阵(同样是 168 行, 每一行都用 [blind] 构造)。
+     *
+     * 它钉两件相反的事, 缺一条另一边都能蒙混过关:
+     *   · **保留**一档都不许写星级(更不许在"两个都写"那一档顺手写色标), 而且必须被拦住
+     *     —— 写 3 就是把电脑上可能存在的 4/5 星静默降级;
+     *   · **废弃**照旧写 0(明确的取舍), **只写色标**那一档照旧写绿标 —— 它们是"这条闸门
+     *     只该拦保留"的对照: 把闸门加宽到所有动作上, 这一半立刻红。
+     */
+    @Test
+    fun no_row_of_the_matrix_writes_anything_when_the_desktop_rating_is_unknown() {
+        var keeps = 0
+        var rejects = 0
+        for (row in matrix) {
+            val current = blind(rating = row.rating, label = row.label)
+            val o = decideSwipe(current, row.action, row.mode)
+            val where = "rating=${row.rating} label=${row.label} action=${row.action} mode=${row.mode}"
+
+            if (row.action == SwipeAction.Keep) {
+                keeps++
+                assertNull("$where: 不知道电脑上是几星 ⇒ 保留绝不许写星级(可能是 4/5 星)", o.rating)
+                when {
+                    // 只写色标那一档根本不碰星级, 也就与"知不知道"无关: 绿标照写, 不该被拦。
+                    row.mode == SwipeMode.LabelsOnly -> {
+                        assertFalse("$where: 只写色标那一档不该被'不知道'拦住", o.blocked)
+                        if (row.label == KEEP_LABEL) {
+                            assertNull("$where: 本来就是绿标 ⇒ 不必再写一遍", o.label)
+                            assertTrue(o.unchanged)
+                        } else {
+                            assertEquals("$where: 色标照写", KEEP_LABEL, o.label)
+                        }
+                    }
+
+                    // 已有 ≥1 星: 保留本来就不写星级 —— 与知不知道无关, 没有可降的级,
+                    // 所以**不许**被拦(那会让用户白白停在一张不用改的照片上)。
+                    row.rating != null && row.rating >= 1 -> {
+                        assertFalse("$where: 没有可降的级, 不该被拦", o.blocked)
+                        assertTrue(
+                            "$where: 要告诉用户保持了几星",
+                            o.message!!.contains("保持 ${row.rating}★"),
+                        )
+                        if (row.mode == SwipeMode.Both && row.label != KEEP_LABEL) {
+                            assertEquals("$where: 色标那一半照旧写", KEEP_LABEL, o.label)
+                        }
+                    }
+
+                    // 空/0 星 + 不知道 ⇒ **必须被拦住**, 而且一个字节都不写(连色标也不写)。
+                    else -> {
+                        assertTrue("$where: 空/0 星 + 不知道 ⇒ 必须被拦住", o.blocked)
+                        assertEquals(KEEP_BLIND_MESSAGE, o.message)
+                        assertNull("$where: 被拦住时连色标也不许写", o.label)
+                        assertTrue("$where: 被拦住 = 什么都没写", o.unchanged)
+                        assertEquals("$where: 本地意图一个字节都不许变", current, o.applyTo(current))
+                    }
+                }
+            } else {
+                rejects++
+                when {
+                    // 只写色标那一档: 星级不碰(照旧写红标 —— 除非它本来就是红的)
+                    row.mode == SwipeMode.LabelsOnly -> {
+                        assertNull("$where: 只写色标那一档不碰星级", o.rating)
+                        if (row.label == REJECT_LABEL) {
+                            assertNull("$where: 本来就是红标 ⇒ 不必再写一遍", o.label)
+                        } else {
+                            assertEquals("$where: 色标照写", REJECT_LABEL, o.label)
+                        }
+                    }
+                    // 已经是 0 星: 不必再写一遍
+                    row.rating == REJECT_STARS -> assertNull("$where: 已经是 0 星", o.rating)
+                    // 其余: 废弃照写 0 —— 与知道不知道无关(这条是上面那道闸门的对照)
+                    else -> assertEquals("$where: 废弃必须写 0 星", REJECT_STARS, o.rating)
+                }
+                assertFalse("$where: 废弃不该被'不知道'拦住", o.blocked)
+            }
+        }
+        // 两支都要真的走到(与上一条矩阵同一条防假绿的理由)
+        assertEquals(84, keeps)
+        assertEquals(84, rejects)
     }
 
     @Test

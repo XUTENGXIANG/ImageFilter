@@ -263,7 +263,7 @@ data class ViewerState(
      *
      * 它**不随换张清空**: 说完这句话正好滑到下一张, 那句话必须还在屏幕上, 否则用户看到的
      * 只是一张卡片无声地换了。下一次滑卡会覆盖它, 用手点星级/色标([ViewerViewModel.setRating])
-     * 会清掉它(那句话不再适用)。没有话说时为 null。
+     * 或撤销([ViewerViewModel.undo])会清掉它(那句话不再适用)。没有话说时为 null。
      */
     val swipeNote: String? = null,
 ) {
@@ -603,14 +603,17 @@ class ViewerViewModel(
         config: SwipeConfig = DEFAULT_SWIPE_CONFIG,
     ): PushResult {
         val path = currentPath() ?: return PushResult.NothingToPush(0)
-        val outcome = decideSwipe(decisions.get(path), direction, config)
+        val before = decisions.get(path)
+        val outcome = decideSwipe(before, direction, config)
         if (outcome.unchanged) {
             // 不产生写入 ⇒ 不碰本地意图(凭空标一条"未同步"会让角标撒谎), 也不发请求。
             _state.update { it.copy(swipeNote = outcome.message) }
-            if (advanceOnWriteSuccess) go(+1)
+            // ⚠️ 但"被拦住"([SwipeOutcome.blocked] = 不知道电脑上是几星)**不许前进**:
+            // 前进会让用户以为这一下记下了, 而它一个字节都没记下(见 decideSwipe 规矩 2′)。
+            if (advanceOnWriteSuccess && !outcome.blocked) go(+1)
             return PushResult.NothingToPush(1)
         }
-        decisions.applyLocal(outcome.applyTo(decisions.get(path)))
+        decisions.applyLocal(outcome.applyTo(before))
         _state.update { refresh(it).copy(swipeNote = outcome.message) }
         val result = push(listOf(path))
         // 与手点星级同一条纪律(规格 §8.2): **写成功才前进**。失败留在这一张, 失败卡可见、可重试。
@@ -641,8 +644,10 @@ class ViewerViewModel(
         // 一批里的半成功必须说出来(纪律②): 当前这张可能是成的那张, 光看它的失败卡会误以为全成了。
         _state.update {
             it.copy(
+                // 逐条转述**每一项自己的结论**: 「没能确认」的那些不许被数成"没写进电脑"
+                // (它们的逐项文案说的是"没有结论" —— 批次句必须与它一致)。
                 lastBatchNote = (result as? PushResult.Failed)
-                    ?.let { f -> WriteMessages.batchHead(f.requested, f.failures.size) },
+                    ?.let { f -> WriteMessages.batchHead(f.requested, f.failures) },
             )
         }
         return result
