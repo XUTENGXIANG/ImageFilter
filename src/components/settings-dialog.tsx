@@ -280,6 +280,10 @@ function ServerPanel({ open }: { open: boolean }) {
       setBusy(false);
       void load();
       void loadHints();
+      // 二维码也要重读(Fix 1): 它就是"服务到底在不在监听"的另一面, 而**端口可能在这次动作里
+      // 变过**(被占就顺延)。不重读, 上一次那份 `qr` 会在服务重新起来之后被画出来 ——
+      // 那正好是这次要消灭的那种"图上是 8765、真正绑的是 8766"。
+      void loadQr();
       // 一次动作之后"最近连接"里多半刚多了一行(例如刚被只读拦下的那次写), 顺带读一次。
       void loadClients();
     }
@@ -624,7 +628,11 @@ function ServerPanel({ open }: { open: boolean }) {
           它与下面那两样是**同一份信息**的两种形态, 顺序也是刻意的: 先二维码(顺手的那条路),
           紧接着就是文本形式的地址与配对码(扫码失败时的退路, 计划 Step 2 明确要求保留)。
 
-          三种状态各自说实话, 不合并:
+          四种状态各自说实话, 不合并:
+            · **服务没在监听** → 不画图, 说清原因(`qrNotRunning`)。这一条必须在最前面:
+              二维码**看起来**比一句话权威, 而 `status.running` 才回答"手机到底连不连得上"。
+              没这道闸, 服务关着时面板会画一张装**配置端口**的码 —— 那个端口此刻没人听,
+              甚至可能因为端口被占而与实际绑定的端口不同(Fix 1);
             · `qr` 有值 → 画图 + 一行"用手机扫这个码" + 一行"扫不出来就手输";
             · `qrKnown` 且没有图、但**有**局域网地址 → 只可能是"还没有配对码"(新装/轮换中),
               由 `qrNoToken` 说明;**绝不**画一个空框;
@@ -633,7 +641,11 @@ function ServerPanel({ open }: { open: boolean }) {
 
           `dangerouslySetInnerHTML` 在这里是安全的: 这段 SVG 是**后端自己用 `qrcode` 编出来的**,
           内容里只有地址与配对码, 不是任何外部输入。 */}
-      {qr ? (
+      {status && !status.running ? (
+        // `status === null`(状态还没读到)时不走到这里: 那是"不知道", 不是"没在跑",
+        // 拿它当"没在跑"会在面板刚打开的那一瞬间说一句没根据的话。
+        <p className="text-xs text-muted-foreground break-words">{t("server.qrNotRunning")}</p>
+      ) : qr ? (
         <div className="space-y-1">
           <p className="text-xs text-muted-foreground">{t("server.qrTitle")}</p>
           <div

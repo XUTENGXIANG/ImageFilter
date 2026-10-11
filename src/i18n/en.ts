@@ -440,9 +440,13 @@ export default {
     // The backend never falls back to a public address or 127.0.0.1 when there is no private
     // address, so the reason must be spelled out here: an empty LAN list is explained by
     // lanEmpty above, and only "address present, pairing code missing" lands on qrNoToken.
+    // Fix 1: a QR code exists only while the service is actually listening (the backend
+    // returns null otherwise). qrNotRunning explains that state and keeps the manual path —
+    // a code for the configured port would point the phone at a port nobody is listening on.
     qrTitle: "Pairing QR code",
     qrScanHint: "Scan this with ImageFilter on your phone — the address and pairing code fill themselves in.",
     qrNoToken: "No pairing code yet — one is generated when you enable the service, and the QR code appears here right after.",
+    qrNotRunning: "The service is not listening, so there is no QR code here — the phone cannot reach the configured port. Turn the switch above on and wait until the status says it is listening; meanwhile you can pair by hand with the address and pairing code below.",
     // Scanning is an enhancement, not the only path (M4′ Task 1 Step 4, item 3: refusing the
     // camera permission must still allow pairing by hand).
     qrFallback: "If scanning does not work, that is fine: type the LAN address and pairing code below by hand — it works exactly the same.",

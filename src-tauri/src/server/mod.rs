@@ -786,16 +786,22 @@ pub fn pairing_of(hints: &network::NetHints, port: u16, token: &str) -> Option<P
     Some(PairingQr { svg, url, payload })
 }
 
-/// Tauri 命令用的那一版: 端口取与 [`ServerStatus::port`] **同一个口径**(在跑的端口优先,
-/// 没在跑时用配置里那个), token 取配置里那一枚。
+/// Tauri 命令用的那一版: 端口只取 [`running_port`] —— **真的绑上的那个**, token 取配置里那一枚。
+///
+/// **没在监听就没有二维码**(`None`), 这是硬约束而不是省事:
+///   · 配置里的端口与实际绑上的端口在被占时会**不一样**(`start` 会顺延 0..+19, 见那里的注释),
+///     所以"配置端口"根本不是"手机能连上的端口";
+///   · 服务关着时它连"可能连上"都算不上 —— 而二维码看上去**比一句话更权威**, 用户扫出
+///     "连接被拒绝"时不会有任何线索指向"服务其实没开"。
+/// 宁可不给图: 面板据此改说"服务没在跑", 手输地址与配对码那条路照旧保留。
 ///
 /// **先拿端口、再读配置**是刻意的: `start` 那条路上有一段是"持 `LIFECYCLE` 时读配置"
 /// (`wants_start`), 这里反过来"持配置读锁时拿 `LIFECYCLE`"就会凑成一对 ABBA 死锁。
 /// 锁序与 `start` 保持一致。
 pub fn pairing_qr(st: &ServerState, hints: &network::NetHints) -> Option<PairingQr> {
-    let port = running_port();
+    let port = running_port()?;
     let cfg = st.config.read().ok()?;
-    pairing_of(hints, port.unwrap_or(cfg.port), &cfg.token)
+    pairing_of(hints, port, &cfg.token)
 }
 
 /// 桌面端的 app 数据目录(`server-config.json` 就落在这儿)。
@@ -3149,29 +3155,98 @@ mod tests {
         assert!(pairing_of(&public_hints(), 8765, &token).is_some());
     }
 
-    /// `pairing_qr`(命令用那一版)取的是**状态里那个端口与 token**, 不是别的。
+    /// **Fix 1 的第一半: 配置里有端口 ≠ 手机连得上 —— 服务没在监听时就一个码都不出。**
     ///
-    /// 端口这一条特意用一个**非默认**端口: 配置里写 8123, 状态与二维码都必须是 8123 ——
-    /// 一个写死 `DEFAULT_PORT` 的实现会在这里红。
+    /// 旧实现回落到 `cfg.port`, 于是"服务关着"时面板照样画一张装 8123 的二维码: 手机扫过去
+    /// 只会得到"连接被拒绝", 而那张图看上去一切正常。二维码**比一句"服务没在跑"更有说服力**,
+    /// 所以这条谎比"没给图"贵得多。
+    ///
+    /// 现场挑的是最阴的一种: `enabled = true`(**用户以为开着**)而服务没在监听 ——
+    /// 这正是"某次开启失败后开关没回滚"留下的真实组合(见 `set_enabled` 的注释)。
+    ///
+    /// 变异靶子: 把 `pairing_qr` 里的 `running_port()?` 换回
+    /// `running_port().unwrap_or(cfg.port)` → 最后那条 `assert_eq!(…, None)` 当场红。
+    ///
+    /// **防"因为别的原因变绿"**: 同一份 hints、同一个端口、同一枚 token 在 `pairing_of`
+    /// 那一层是**能**编出码的(对照组) —— 所以上面的 `None` 只可能来自"没在监听", 不是
+    /// "地址或 token 恰好不可用"。
     #[test]
-    fn pairing_qr_reads_the_port_and_token_from_the_state() {
+    fn pairing_qr_is_not_produced_from_a_configured_but_not_bound_port() {
+        let _serialized = GLOBAL_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        reset_server_state();
+
         let token = "e".repeat(64);
         let st = config::ServerConfig {
             read_only: false,
-            enabled: false,
+            enabled: true, // 用户开着它, 但服务**没在监听**
             port: 8123,
             token: token.clone(),
             shares: Vec::new(),
         }
         .into_state();
 
-        let qr = pairing_qr(&st, &public_hints()).expect("配置里有可用的 token 与私有地址");
-        assert!(qr.url.ends_with(":8123"), "端口必须来自配置: {}", qr.url);
-        assert!(qr.payload.contains(&token));
+        assert_eq!(running_port(), None, "起点必须是'没有监听'");
+        // 对照组: 同样的三样东西在 `pairing_of` 那层是能出码的。
+        assert!(
+            pairing_of(&public_hints(), 8123, &token).is_some(),
+            "对照组失败: 那样这条用例的 None 就不能归因于'没在监听'"
+        );
+        assert_eq!(
+            pairing_qr(&st, &public_hints()),
+            None,
+            "服务没在监听 → 绝不许拿配置里的端口画二维码(那会把手机指向一个没人听的端口)"
+        );
+    }
 
-        // 配置里 token 不可用(空 = 全新的默认配置, 是**真实可达**的状态) → 没有二维码。
-        let empty = config::ServerConfig { token: String::new(), ..Default::default() }.into_state();
-        assert_eq!(pairing_qr(&empty, &public_hints()), None);
+    /// **Fix 1 的第二半: 二维码装的是真的绑上的那个端口**, 不是配置里那个。
+    ///
+    /// 用"配置端口已经被占"这个现场造出**两者不同**: 先占住一个端口, 再把它写进配置 ——
+    /// `start` 只能顺延(见那里 0..+19 的循环), 于是"配置 8765 / 实际 8766"这种真实错位就出现了。
+    /// token 一并钉住: 它也必须来自状态里的配置。
+    ///
+    /// 变异靶子: `pairing_of(hints, port, …)` 换成 `pairing_of(hints, cfg.port, …)` →
+    /// `assert_eq!(qr.url, …)` 红(装的是那个被占住的端口); 换成写死 `DEFAULT_PORT` 也红。
+    #[test]
+    fn pairing_qr_encodes_the_port_that_is_really_bound() {
+        let _serialized = GLOBAL_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        reset_server_state();
+
+        // 占位监听: 活到本用例结束, 保证配置里那个端口**真的**绑不上。
+        // 不引第三方 crate, 也不挑固定端口(那会看机器运气)。
+        let squatter = std::net::TcpListener::bind(("0.0.0.0", 0)).expect("占位监听应能建起来");
+        let taken = squatter.local_addr().expect("占位监听应有本地地址").port();
+        assert_ne!(taken, 0, "系统挑的端口不可能是 0");
+
+        let token = "f".repeat(64);
+        let st = config::ServerConfig {
+            read_only: false,
+            enabled: true,
+            port: taken, // 故意写一个**已经被占住**的端口
+            token: token.clone(),
+            shares: Vec::new(),
+        }
+        .into_state();
+
+        let port = start_on_tauri_runtime(st.clone()).expect("顺延一个端口应当起得来");
+        assert_ne!(port, taken, "配置端口被我们占着, 服务必须顺延 —— 否则这条用例什么都没证明");
+        assert_eq!(running_port(), Some(port), "状态必须报出真的那个端口");
+        assert!(accepts_connections(port), "说在跑就得真的在监听");
+
+        let qr = pairing_qr(&st, &public_hints())
+            .expect("在监听 + 有私有地址 + 有可用 token → 必须给码");
+        assert_eq!(
+            qr.url,
+            format!("http://192.168.3.10:{port}"),
+            "二维码必须装**真的绑上**的那个端口(配置里写的是 {taken})"
+        );
+        assert!(qr.payload.contains(&token), "payload 里的配对码必须来自状态: {}", qr.payload);
+        assert!(qr.svg.contains("<svg"), "给的必须是一张能画的 SVG");
+
+        stop();
+        assert!(
+            wait_until_refused(port, std::time::Duration::from_secs(10)),
+            "收尾: stop 之后端口要放开(免得漏给下一个用例)"
+        );
     }
 
     // ════════════════════════════════════════════════════════════════════════

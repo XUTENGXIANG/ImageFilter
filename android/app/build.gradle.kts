@@ -53,7 +53,16 @@ fun parseReleaseVersion(
     // 与桌面端一致: 规格要求两边同版本号, 便于对照排障。
     if (Regex("""^\d+\.\d+\.\d+$""").matches(rawName)) {
         desktopVersionFiles.forEach { (label, f) ->
-            if (f.isFile) {
+            // Fix 2: 文件**不在**也是一个问题, 不是一次"跳过"。
+            // 旧写法 `if (f.isFile) { … }` 让"删掉/改名一个桌面端版本文件"变成**悄悄放松校验**:
+            // 少比一个文件, 校验看上去仍然通过 —— 于是包照样出, 而"两边同版本号"这条不变量
+            // 已经没人守了。这比"版本号不一致"更难发现(不一致至少会红)。
+            // 所以"缺文件"与"版本号不一致"同级: 都进 problems, 由 verifyReleaseVersion
+            // 挂在 release 任务图上停下构建(debug 不看 problems, 照旧能跑)。
+            if (!f.isFile) {
+                problems += "缺少桌面端版本文件: $label (${f.absolutePath})" +
+                    " —— 无法校验版本号一致性(删掉一个对照文件不等于这条约束消失)"
+            } else {
                 val found = Regex(""""version"\s*:\s*"([^"]+)"""")
                     .find(f.readText())
                     ?.groupValues?.get(1)

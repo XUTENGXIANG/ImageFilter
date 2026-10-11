@@ -41,8 +41,12 @@ APK 内实测(aapt2 dump badging app-release.apk):
 -----------------------------------------------------------------------
 说明: 正式发布 keystore 是**人工资产**, 必须由人按 docs/ImageFilter-安卓发版与签名.md §2
 生成并备份。本次为了证明"环境变量这条路真的通", 在 **A:\tenent\.scratch\**(gitignore)
-临时生成了一把**一次性测试 keystore**(密码 m4t4-throwaway, 仅本机, 已声明作废),
-用它跑通了正式签名路径。**它不是**项目要长期使用的那把。
+临时生成了一把**一次性测试 keystore**, 用它跑通了正式签名路径。**它不是**项目要长期
+使用的那把。
+  一次性测试 keystore 的密码**不在此记录** —— 一把已声明作废的测试密钥的密码没有任何
+  用处, 而"被 git 追踪的密码"躺在一把将来可能被误当作正式密钥的 keystore 旁边, 是一个
+  迟早会付代价的组合。keystore 本体(本机 .scratch 下的临时文件)连同它的密码一并删除,
+  所以本节的事实只剩一条: 用一把一次性测试 keystore 跑通了正式签名路径。
 
 命令: keytool -genkeypair -keystore .scratch/m4t4-release-test.keystore -alias imagefilter
         -keyalg RSA -keysize 4096 -validity 10000 -storetype PKCS12
