@@ -349,9 +349,12 @@ private fun GridContent(
         },
     ) { padding ->
         Column(modifier = Modifier.padding(padding).fillMaxSize()) {
-            // 路径逐字显示(含 verbatim 前缀): 它是这个目录的**身份**, 也是排查时唯一对得上的东西。
+            // 路径显示成**普通写法**(`F:\壁纸`, 去掉 Windows 的 verbatim 前缀)。
+            // ⚠️ 只是**显示** —— 发出去/当 map 键用的永远是 folder.path 那份规范路径
+            // (见 [displayPath] 的 KDoc)。少了这一行, 用户在自己的手机上会看到
+            // 一个他只会在排障文档里见到的 `\\?\F:\壁纸`。
             Text(
-                folder.path,
+                displayPath(folder.path),
                 style = MaterialTheme.typography.bodySmall,
                 fontFamily = FontFamily.Monospace,
                 maxLines = 2,

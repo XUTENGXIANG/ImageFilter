@@ -58,6 +58,42 @@ fun displayNameOf(path: String): String {
 }
 
 /**
+ * 路径的**显示形态** —— 把 Windows 的 verbatim 前缀 `\\?\` 去掉。
+ *
+ * 为什么非要去掉那四个字符: 它是 Windows 的实现细节(长路径 / 绕过 MAX_PATH 归一化),
+ * 用户在自己的电脑上从来没见过它 —— 标题下面那行路径本来是在回答"我在看电脑上的哪个目录",
+ * 而 `\\?\F:\壁纸` 只会让人以为自己连错了机器。
+ *
+ * ⚠️ **只用于显示**。协议里的那个形态(`\\?\F:\壁纸`)是**规范路径**, 三件事都必须逐字用它,
+ * 不许用这里的返回值:
+ *   · 发出去的 `path=` 查询参数([ApiClient] 的每个端点) —— 前缀里有一个**字面问号**,
+ *     自己重新拼一遍就会把它弄丢(见 `ApiClient` 的 KDoc);
+ *   · 决策镜像的 map 键([DecisionStore] 的 local/remote/known) —— 换一个键就是**另一张照片**,
+ *     用户的评分会挂到一个谁也读不到的路径上;
+ *   · 服务端逐项回报的对账([DecisionStore.applyAck] 靠路径把失败归位)。
+ *
+ * 所以"显示"与"传输"在这条链路上是**两个函数**: 界面调 [displayPath], 网络调原样。
+ * 有一次真实教训值得写下来: 把归一化做进"路径进来时", 桌面端那座桥收到的路径就与它自己的
+ * 共享根对不上, 所有请求变成 403 —— 那正是这条纪律的来历。
+ *
+ * 只处理两种**有等价普通写法**的形态:
+ *   · `\\?\F:\壁纸` → `F:\壁纸`(盘符);
+ *   · `\\?\UNC\server\share\x` → `\\server\share\x`(UNC)。
+ * 其余(卷 GUID `\\?\Volume{…}\` 之类)没有等价的普通写法, 原样返回 —— 去掉前缀只会得到
+ * 一个看起来更像坏掉的路径。
+ */
+fun displayPath(path: String): String {
+    if (!path.startsWith(VERBATIM_PREFIX)) return path
+    val rest = path.removePrefix(VERBATIM_PREFIX)
+    if (rest.startsWith("UNC\\", ignoreCase = true)) return "\\\\" + rest.substring(4)
+    // `D:\…` / `D:`: 第二个字符是冒号、第一个是字母 —— 这才是盘符形态。
+    return if (rest.length >= 2 && rest[0].isLetter() && rest[1] == ':') rest else path
+}
+
+/** `\\?\`(verbatim 前缀) 本身。Kotlin 里要写四个反斜杠/问号, 所以给它一个名字。 */
+private const val VERBATIM_PREFIX = "\\\\?\\"
+
+/**
  * 共享根 → 根节点列表。
  *
  * **顺序逐字保留服务端的配置顺序**(用户在电脑上排的序, 手机不该替他重排);
