@@ -49,16 +49,25 @@ import com.imagefilter.mobile.data.ReadAction
  *   · **色标**(左上圆点)—— 颜色本身就是信息, 但色弱下不可靠, 所以读屏描述里也带上它;
  *   · **星级**(右下 `★4`)—— 数字比星星形状更省地方, 而且"0 星 = 废弃"能一眼读出来;
  *   · **未同步**(一圈细边框 + 描述里的"未同步")—— 规格 §11 纪律③要求它**看得见**;
- *     M3′ 会把它做成正式角标(计划里写明了"细边框"是这一轮的形态)。
+ *   · **未知**([RATING_UNKNOWN_MARK], 右下 `★?`)—— 这一次**没读到**电脑上这一张是几星。
+ *     它与"确知没有星级"(什么都不画)**必须画得不一样**: 一次失败的读取会让一张 4/5 星的
+ *     照片看起来与"没评过"完全相同, 而用户在手机上的一次打分就是一次**绝对赋值**。
  *
  * ⚠️ **真实观感没有真机验证**(本轮没有设备): 角标是文本 + Box 叠出来的, 不引入
- * material-icons; 具体在 96dp 的格子里挤不挤、边框在深色主题下够不够显眼, 只能真机看
+ * material-icons; 具体在 96dp 的格子里挤不挤、边框/未知角标在深色主题下够不够显眼, 只能真机看
  * (报告的 UNVERIFIED 清单)。
  */
 @Composable
 internal fun GridCell(
     item: GridItem,
     decision: Decision?,
+    /**
+     * 这一格的星级**知不知道**(判据在 `GridState.ratingKnown` 一处)。
+     *
+     * **刻意没有默认值**: 忘了带上它的后果是"读失败被画成没评过", 而那正是本轮要修的那种
+     * 静默 —— 编译器必须替我们记住这件事。
+     */
+    ratingKnown: Boolean,
     imageLoader: ImageLoader,
     onClick: () -> Unit,
 ) {
@@ -81,7 +90,7 @@ internal fun GridCell(
             model = item.thumbnailUrl,
             imageLoader = imageLoader,
             // 读屏要能听懂"这是哪一张 + 几星 + 什么色标 + 有没有没写成"(纯函数, 有单测)
-            contentDescription = cellDescription(item, decision),
+            contentDescription = cellDescription(item, decision, ratingKnown),
             contentScale = ContentScale.Crop,
             placeholder = ColorPainter(MaterialTheme.colorScheme.surfaceVariant),
             error = ColorPainter(MaterialTheme.colorScheme.errorContainer),
@@ -94,10 +103,16 @@ internal fun GridCell(
         }
 
         val rating = decision?.rating
-        if (rating != null) {
+        when {
             // 「0 星」是桌面端的"废弃"语义, 在角标上写 `✕` 比写 `★0` 更少歧义
-            StarBadge(
+            rating != null -> StarBadge(
                 text = if (rating == 0) "✕" else "★$rating",
+                modifier = Modifier.align(Alignment.BottomEnd).padding(4.dp),
+            )
+            // ⚠️ 「不知道」: 画成**警告色**的未知角标 —— 与"确知没有星级"(不画)分开。
+            !ratingKnown -> StarBadge(
+                text = RATING_UNKNOWN_MARK,
+                warning = true,
                 modifier = Modifier.align(Alignment.BottomEnd).padding(4.dp),
             )
         }
@@ -106,17 +121,27 @@ internal fun GridCell(
 
 /** 右下角的星级角标: 一行短文本 + 半透明底 —— 亮图暗图上都要读得出来。 */
 @Composable
-private fun StarBadge(text: String, modifier: Modifier = Modifier) {
+private fun StarBadge(text: String, modifier: Modifier = Modifier, warning: Boolean = false) {
     Box(
         modifier = modifier
             .clip(RoundedCornerShape(4.dp))
-            .background(MaterialTheme.colorScheme.scrim.copy(alpha = 0.6f))
+            .background(
+                if (warning) {
+                    MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.9f)
+                } else {
+                    MaterialTheme.colorScheme.scrim.copy(alpha = 0.6f)
+                },
+            )
             .padding(horizontal = 4.dp, vertical = 1.dp),
     ) {
         Text(
             text,
             style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.inverseOnSurface,
+            color = if (warning) {
+                MaterialTheme.colorScheme.onErrorContainer
+            } else {
+                MaterialTheme.colorScheme.inverseOnSurface
+            },
         )
     }
 }

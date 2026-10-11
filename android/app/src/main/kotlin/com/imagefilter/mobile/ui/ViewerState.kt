@@ -226,6 +226,29 @@ data class ViewerState(
     // 一旦这页自己存一份"我以为的星级", 乐观更新、失败保留、未同步标记就会各自漂移。
     /** 当前这张在这台手机上的星级; `null` = 还没定过(`0` = 明确废弃)。 */
     val rating: Int? = null,
+    /**
+     * **电脑上**这一张的星级是三态([DesktopRating]), 不是一个 `Int?` —— 与 [rating] 是两件事:
+     * [rating] 是"合并之后屏幕上显示的"(本地意图优先), 而这一个说的是"电脑上到底是什么/知不知"。
+     *
+     * 默认 [DesktopRating.Unknown] = 不知道(保守): 界面因此会把它画成"未知"并**拦下**一次
+     * 1..5 星的绝对赋值, 而不是拿一排空星星冒充"没评过"。
+     */
+    val desktopRating: DesktopRating = DesktopRating.Unknown,
+    /**
+     * 上一次**打星被拦下**时的那句说明([ratingGuardMessage])。
+     *
+     * 与 [swipeNote] / [undoNote] 同一种"最近一次操作说了什么"的格子: 被拦下也是**一次操作的结果**,
+     * 不说出来用户只会看到"点了没反应" —— 那比拒绝更坏。任何别的操作会把它清掉。
+     */
+    val ratingGuardNote: String? = null,
+    /**
+     * 用户刚刚点过、但被 [ratingGuardNote] 拦下的那颗星(`null` = 没有武装)。
+     *
+     * 这就是"明确覆盖"的执法点: 第一下**只武装**(一个字节都不写), 再点**同一颗星**才算
+     * 用户看过了那句警告并确认要覆盖(与 `AbandonConfirm` 的"两次确认"同一种形状 ——
+     * 一次误触不许造成数据损失)。换个星级会重新武装, 换张照片会清掉它。
+     */
+    val blindRatingArmed: Int? = null,
     /** 当前这张的色标(五色闭集, 见 [LABELS])。 */
     val label: String? = null,
     /** 当前这张的意图有没有被电脑确认过([SyncState])。 */
@@ -596,8 +619,34 @@ class ViewerViewModel(
      * 失败时**不回滚、不前进**: 本地值留着、标记成未同步、把服务端给的那条失败摆出来
      * (带 [WriteMessages] 的文案与动作), 用户能点「重试写入」。
      * 静默回滚会让人以为"白打了一次分"; 静默吞掉更糟 —— 那正是本项目最贵的一种失败。
+     *
+     * ⚠️ **不知道电脑上是几星时, 1..5 星这一下不写**([ratingTapIsBlind]): 它是一次**绝对赋值**,
+     * 落在一张电脑上其实是 5 星的照片上就是静默降级 —— 与滑卡"保留"那一支同一条理由。
+     * 这一下只**武装**并说清原因([ViewerState.blindRatingArmed] / [ratingGuardNote]);
+     * 用户再点**同一颗星** = 明确要求覆盖, 那时才真的写。0(废弃)不受这条管。
+     *
+     * 返回 [PushResult.NothingToPush] 表示"这一次一个请求都没发出去"(被拦下也算: 它确实是
+     * 一次没有发出的写入), 界面据此**绝不**前进到下一张。
      */
-    suspend fun setRating(stars: Int): PushResult = commit { it.withRating(stars) }
+    suspend fun setRating(stars: Int): PushResult {
+        val path = currentPath() ?: return PushResult.NothingToPush(0)
+        val blind = ratingTapIsBlind(decisions.get(path).desktopRating, stars)
+        if (blind && _state.value.blindRatingArmed != stars) {
+            // 第一下: **只武装**, 一个字节都不写。界面必须把这句话画出来(否则用户只看到"点了没反应")。
+            _state.update {
+                it.copy(
+                    blindRatingArmed = stars,
+                    ratingGuardNote = ratingGuardMessage(stars),
+                    swipeNote = null,
+                    undoNote = null,
+                )
+            }
+            return PushResult.NothingToPush(1)
+        }
+        // 第二下(同一颗星): 用户看过那句警告了 ⇒ 明确覆盖。别的动作照旧走 commit。
+        _state.update { it.copy(blindRatingArmed = null, ratingGuardNote = null) }
+        return commit { it.withRating(stars) }
+    }
 
     /**
      * 标色(`null` = 清掉)。清掉走的是显式的 `clearLabel = true`, **不是** `label = null`
@@ -631,7 +680,16 @@ class ViewerViewModel(
         val outcome = decideSwipe(before, direction, config)
         if (outcome.unchanged) {
             // 不产生写入 ⇒ 不碰本地意图(凭空标一条"未同步"会让角标撒谎), 也不发请求。
-            _state.update { it.copy(swipeNote = outcome.message, undoNote = null) }
+            // (这一支不走 refresh(), 所以那句"打星被拦下"的话要在这里自己清掉: 一次滑卡之后
+            //  它讲的已经不是刚刚发生的事了。)
+            _state.update {
+                it.copy(
+                    swipeNote = outcome.message,
+                    undoNote = null,
+                    ratingGuardNote = null,
+                    blindRatingArmed = null,
+                )
+            }
             // ⚠️ 但"被拦住"([SwipeOutcome.blocked] = 不知道电脑上是几星)**不许前进**:
             // 前进会让用户以为这一下记下了, 而它一个字节都没记下(见 decideSwipe 规矩 2′)。
             if (advanceOnWriteSuccess && !outcome.blocked) go(+1)
@@ -765,6 +823,12 @@ class ViewerViewModel(
             sync = decision?.sync ?: SyncState.UNTOUCHED,
             writeFailure = decision?.lastError,
             unsyncedCount = decisions.unsynced().size,
+            // "电脑上是几星"的**唯一**来源(本地意图与远端值的合并结论都在 store 里算)。
+            desktopRating = decision?.desktopRating ?: DesktopRating.Unknown,
+            // 换张 / 写完 / 别的操作之后, "刚刚那一下被拦下"这件事不再适用 —— 一起清掉,
+            // 否则用户会在另一张照片上看到一句讲上一张的话(与 swipeNote/undoNote 同一条)。
+            ratingGuardNote = null,
+            blindRatingArmed = null,
         )
     }
 

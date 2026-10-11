@@ -325,6 +325,7 @@ fun SwipeScreen(
             val writeFailure = state.writeFailure
             val swipeNote = state.swipeNote
             val undoNote = state.undoNote
+            val guardNote = state.ratingGuardNote
             val unsyncedNote = state.unsyncedNote
             when {
                 writeFailure != null -> WriteFailureCard(
@@ -358,6 +359,15 @@ fun SwipeScreen(
                     modifier = Modifier.padding(start = 12.dp, end = 12.dp, bottom = 4.dp),
                 )
 
+                // 一次手点星级被**拦下**了(这台手机不知道电脑上是几星) —— 与滑卡那句"瞎写被拦下"
+                // 同一类反馈: 不说出来用户只会以为点了没反应。
+                guardNote != null -> Text(
+                    guardNote,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                    modifier = Modifier.padding(start = 12.dp, end = 12.dp, bottom = 4.dp),
+                )
+
                 unsyncedNote != null -> Text(
                     unsyncedNote,
                     style = MaterialTheme.typography.bodySmall,
@@ -372,6 +382,8 @@ fun SwipeScreen(
             RatingBar(
                 rating = state.rating,
                 label = state.label,
+                // 电脑上是几星(三态): 一次 1..5 星的绝对赋值在"不知道"时会被拦下(见 setRating)。
+                desktopRating = state.desktopRating,
                 enabled = !state.writing,
                 writing = state.writing,
                 onRating = { stars -> scope.launch { vm.setRating(stars) } },

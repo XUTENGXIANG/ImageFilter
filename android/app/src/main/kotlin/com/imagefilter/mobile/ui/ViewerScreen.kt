@@ -264,10 +264,11 @@ fun ViewerScreen(
 
             // ── 决策(星级/色标)的写入结果 ───────────────────────────────────
             //
-            // 纪律③("未同步 ≠ 已同步")在查看器里的落点就在这三行: 失败要说清 + 给动作,
+            // 纪律③("未同步 ≠ 已同步")在查看器里的落点就在这几行: 失败要说清 + 给动作,
             // 批量重试的半成功要说清, 其余时候也要有一句"这台手机上的改动还没写进电脑"。
             val writeFailure = state.writeFailure
             val batchNote = state.lastBatchNote
+            val guardNote = state.ratingGuardNote
             val unsyncedNote = state.unsyncedNote
             when {
                 writeFailure != null -> WriteFailureCard(
@@ -287,6 +288,15 @@ fun ViewerScreen(
 
                 batchNote != null -> ViewerNotice(loading = false, text = batchNote)
 
+                // 一次 1..5 星的点击被**拦下**了(不知道电脑上是几星) —— 必须说出来,
+                // 否则用户只看到"点了没反应", 那比拒绝更坏。
+                guardNote != null -> Text(
+                    guardNote,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                    modifier = Modifier.padding(start = 12.dp, end = 12.dp, bottom = 4.dp),
+                )
+
                 unsyncedNote != null -> Text(
                     unsyncedNote,
                     style = MaterialTheme.typography.bodySmall,
@@ -300,6 +310,8 @@ fun ViewerScreen(
             RatingBar(
                 rating = state.rating,
                 label = state.label,
+                // 电脑上是几星(三态): 画在条上, 并且由 setRating 用来拦下一次瞎写。
+                desktopRating = state.desktopRating,
                 enabled = !state.writing,
                 writing = state.writing,
                 onRating = { stars -> scope.launch { vm.setRating(stars) } },

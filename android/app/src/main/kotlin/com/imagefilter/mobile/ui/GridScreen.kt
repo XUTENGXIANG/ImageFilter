@@ -347,6 +347,9 @@ private fun GridContent(
                 state.hasVisiblePhotos -> PhotoGrid(
                     items = state.visibleItems,
                     decisions = state.decisions,
+                    // 星级"知不知道"的判据只有一处([GridState.ratingKnown]) —— 格子与读屏描述
+                    // 都走它, 免得"读失败"在一个地方被画成"没评过"、在另一个地方被说成"未知"。
+                    ratingKnown = state::ratingKnown,
                     imageLoader = imageLoader,
                     onCellClick = onOpenViewer,
                 )
@@ -372,6 +375,8 @@ private fun GridContent(
 private fun ColumnScope.PhotoGrid(
     items: List<GridItem>,
     decisions: Map<String, Decision>,
+    /** 这一格的星级知不知道([GridState.ratingKnown]) —— 判据在状态里, 这里只透传。 */
+    ratingKnown: (String) -> Boolean,
     imageLoader: ImageLoader,
     onCellClick: (Int) -> Unit,
 ) {
@@ -390,6 +395,8 @@ private fun ColumnScope.PhotoGrid(
                 item = item,
                 // 决策来自**唯一**那份真相的快照(star/色标角标与未同步边框都靠它)
                 decision = decisions[item.path],
+                // "不知道"必须画得出来(它**不是**"没有星级") —— 判据只有一处。
+                ratingKnown = ratingKnown(item.path),
                 imageLoader = imageLoader,
                 onClick = { onCellClick(index) },
             )

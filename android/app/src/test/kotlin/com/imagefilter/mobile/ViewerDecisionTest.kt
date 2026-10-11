@@ -4,6 +4,7 @@ package com.imagefilter.mobile
 
 import com.imagefilter.mobile.data.ApiClient
 import com.imagefilter.mobile.data.ApiErrorCodes
+import com.imagefilter.mobile.data.DecisionReadDto
 import com.imagefilter.mobile.data.FailureSource
 import com.imagefilter.mobile.data.Pairing
 import com.imagefilter.mobile.data.WriteAction
@@ -41,6 +42,10 @@ import org.junit.Test
  *   ⑥ **未知的逐项码安全降级**: 不崩、不猜, 原样留着码并给一句有动作的话。
  *
  * ⚠️ 测不到的: 星星/色标的**真实观感**与点击命中区(没有设备, 也不为 M2′ 引 Compose UI 测试依赖)。
+ *
+ * ⚠️ 夹具的前提: 这一组用例的 store **都读过这个文件夹**([store]), 所以"电脑上这一张没有星级"
+ * 是**知道**的 —— 点击才会一次就写。没读过的那种状态(不知道)下, 一次 1..5 星会被拦下,
+ * 那条链路在 [ViewerRatingGuardTest] 里单独钉。
  */
 class ViewerDecisionTest {
 
@@ -88,6 +93,19 @@ class ViewerDecisionTest {
     }
 
     /**
+     * 查看器借用的那份 store。
+     *
+     * ⚠️ **生产路径上它已经读过这个文件夹**([GridViewModel.loadAll] 先读决策再进查看器), 所以
+     * "这台手机**知道**电脑上这一张没有星级"([DesktopRating.Unrated]) —— 一次点击因此可以直接写。
+     * 少了这个种子, 夹具描述的是"读取失败/还没读"那种状态: 那时的一次 1..5 星会被**拦下**
+     * (那正是本轮修的"绝不静默覆盖一个没看见过的值"), 这一组用例测的就不是写入链路了。
+     * 拦下那条链路的用例在 [ViewerRatingGuardTest]。
+     */
+    private fun store(): DecisionStore =
+        DecisionStore(ApiClient(base, token, buildHttpClient(token)))
+            .also { it.mergeRemote(paths.map { p -> DecisionReadDto(path = p) }) }
+
+    /**
      * [advanceOnSuccess] 默认 false = M2′ 的查看器(手动切图); true = M3′ 滑卡决策页的规则。
      * [decisions] 可以注入 —— 用来验证"store 活得比查看器久"这条(见下面那条用例)。
      */
@@ -101,7 +119,7 @@ class ViewerDecisionTest {
         startIndex = startIndex,
         dragThresholdPx = 160f,
         prefetch = {},
-        decisions = decisions ?: DecisionStore(ApiClient(base, token, buildHttpClient(token))),
+        decisions = decisions ?: store(),
         advanceOnWriteSuccess = advanceOnSuccess,
     )
 
@@ -303,7 +321,7 @@ class ViewerDecisionTest {
     fun a_rebuilt_view_model_on_the_same_store_still_knows_what_is_unsynced() = runTest {
         // 这条钉的是**寿命**: store 必须活得比查看器久(生产上由 GridScreen 持有)。
         // 建在查看器里的话, 用户一关掉查看器, "哪张改了没写成"就随它一起消失 —— 静默。
-        val store = DecisionStore(ApiClient(base, token, buildHttpClient(token)))
+        val store = store()
         enqueueSummary(failed = 1, failures = "[${failJson(paths[0], "diskFull")}]")
         viewModel(decisions = store).setRating(5)
 

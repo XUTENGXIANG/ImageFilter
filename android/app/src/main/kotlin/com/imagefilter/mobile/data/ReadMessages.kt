@@ -88,6 +88,16 @@ object ReadMessages {
     const val INCOMPLETE = "readIncomplete"
 
     /**
+     * 手机端合成的码: 服务端把问到的**每一张都回报了**, 但其中一些项的边车**读不动**
+     * (`sidecarReadable = false`, 最典型的是边车正被 Lightroom 之类的程序占着)。
+     *
+     * 为什么它也必须让张数降级: 那几张在电脑上是几星**不知道** —— 它们既不是"没有星级", 也没有
+     * 被数进任何一档。拿这样一个下界当"筛选栏上的数"与 [INCOMPLETE] 是同一句谎话。
+     * (已经读到的那些照常采纳: 角标、格子、滑动都按真值走, 没读到的那几张在格子上画的是"未知"。)
+     */
+    const val SIDECAR_UNREADABLE = "sidecarUnreadable"
+
+    /**
      * **每一次**读取失败都必须说清的那件事。
      *
      * 读者是"已经在这台手机上打完分、正准备看筛选栏"的用户, 他此刻最可能误解的两件事:
@@ -115,6 +125,7 @@ object ReadMessages {
         ApiErrorCodes.NETWORK,
         ApiErrorCodes.SERVICE_OFF,
         INCOMPLETE,
+        SIDECAR_UNREADABLE,
     )
 
     /** 读取这条链路**认不出来**的 HTTP 码(有动作, 但不猜原因)。 */
@@ -146,6 +157,7 @@ object ReadMessages {
         f.source == ReadSource.HTTP && f.code == ApiErrorCodes.FORBIDDEN_PATH -> "电脑不允许读这个文件夹"
         f.source == ReadSource.HTTP && f.code == ApiErrorCodes.NOT_FOUND -> "电脑上找不到这个文件夹里的照片"
         f.source == ReadSource.CLIENT && f.code == INCOMPLETE -> "这个文件夹的星级/色标只读回来一部分"
+        f.source == ReadSource.CLIENT && f.code == SIDECAR_UNREADABLE -> "有几张的边车在电脑上读不动"
         else -> "这个文件夹的星级/色标没读出来"
     }
 
@@ -207,11 +219,18 @@ object ReadMessages {
         else -> httpGeneric(f.code)
     }
 
-    /** 手机合成的码([ApiErrorCodes.CLIENT_SYNTHESIZED_CODES] + 本表自己的 [INCOMPLETE])。 */
+    /** 手机合成的码([ApiErrorCodes.CLIENT_SYNTHESIZED_CODES] + 本表自己的 [INCOMPLETE] / [SIDECAR_UNREADABLE])。 */
     private fun forClientCode(code: String): String = when (code) {
         INCOMPLETE -> line(
             "电脑只回报了问到的**一部分**照片的星级/色标——有的没回来。" +
                 "已经回来的那些照样算数（该显示的星级/色标角标都会显示），但**张数**不敢替你数",
+        )
+        SIDECAR_UNREADABLE -> line(
+            "电脑把问到的每一张都回报了，但其中**有几张的边车读不动**（最典型的是它正被别的程序" +
+                "占着，例如 Lightroom 正在写它）。那几张贴在电脑上是几星，这台手机现在**不知道**——" +
+                "它们不会被当成「没有星级」（所以「保留」那一滑不会去覆盖它们），格子上会显示成未知。" +
+                "已经读到的那些照样算数（角标照常显示），但**张数**不敢替你数；" +
+                "等那个程序松开边车之后点「重试读取」",
         )
         ApiErrorCodes.SERVICE_OFF,
         ApiErrorCodes.TIMEOUT,

@@ -165,6 +165,14 @@ data class GridState(
      */
     val decisions: Map<String, Decision> = emptyMap(),
     /**
+     * 服务端**回报过**的路径([DecisionStore.knownPaths] 的快照)。
+     *
+     * [decisions] 里"没有值"的路径有两种, 而它们必须分得开: "服务端说这一张没有星级"与
+     * "这台手机不知道"。少了这一份知识, 一次失败的读取会让一张 4/5 星的照片画成空星星
+     * (与"没评过"无法分辨), 而用户在手机上的一次打分是一次**绝对赋值**。
+     */
+    val knownPaths: Set<String> = emptySet(),
+    /**
      * 这个文件夹的决策**知不知道**。
      *
      * false 的三种情形(它们都会让筛选栏的张数说"未统计", 而不是拿已知的那些去冒充全部):
@@ -200,6 +208,15 @@ data class GridState(
     /** 筛选之后真正画出来的格子(**顺序逐字保留**)。 */
     val visibleItems: List<GridItem>
         get() = applyFilters(items, decisions, filters) { it.path }
+
+    /**
+     * 这一格的星级**知不知道** —— "确知没有星级"与"不知道"必须分得开的那条判据的**唯一**执法点。
+     *
+     * 有值就是知道(那个值就是屏幕上显示的); 没有值时才看知识: 服务端回报过这一张
+     * ([knownPaths], 两个 null 也是明确的回答)⇒ 确知没有; 否则 ⇒ **不知道**(读失败 /
+     * 这一张没被回报 / 边车读不动 / 还没读)。
+     */
+    fun ratingKnown(path: String): Boolean = decisions[path]?.rating != null || path in knownPaths
 
     /** 筛选栏上的"当前显示 N / 共 M 张"。 */
     val shownLabel: String get() = shownCountLabel(visibleItems.size, items.size)
@@ -429,11 +446,16 @@ class GridViewModel(
 
             is RemotePull.Partial -> _state.update {
                 // 已经回来的那些**照样采纳**(它们是服务端给的真值, 角标该显示就显示);
-                // 但"问到的每一张都回报了没有"这个问题的答案是"没有" ⇒ 张数只能说"未统计"。
+                // 但"问到的每一张都变成了知道"这个问题的答案是"没有" ⇒ 张数只能说"未统计"。
+                //
+                // 两种"没变成知道"的原因给**两句不同的话**(它们的下一步动作不一样):
+                //   · 少报/多报 ⇒ 有的没回来(INCOMPLETE);
+                //   · 每一项都回报了, 但有的边车**读不动** ⇒ 等那个程序松开边车再重试
+                //     (SIDECAR_UNREADABLE)。混成一句话会让用户按错的方向去修。
                 it.copy(
                     decisionsKnown = false,
                     readFailure = DecisionReadFailure(
-                        code = ReadMessages.INCOMPLETE,
+                        code = if (pull.mismatched > 0) ReadMessages.INCOMPLETE else ReadMessages.SIDECAR_UNREADABLE,
                         source = ReadSource.CLIENT,
                     ),
                 ).withDecisions()
@@ -593,7 +615,12 @@ class GridViewModel(
 
     /** 把 store 里那份**唯一**的真相抄进界面状态(网格不自己缓存第二份决策)。 */
     private fun GridState.withDecisions(): GridState =
-        copy(decisions = this@GridViewModel.decisions.resolved())
+        copy(
+            decisions = this@GridViewModel.decisions.resolved(),
+            // 知识的快照与决策的快照必须**同一次**抄过来: 分开抄会让"这一格有没有值"与
+            // "这一格知不知道"来自两个时刻, 而那正是本轮要修的那种分不清。
+            knownPaths = this@GridViewModel.decisions.knownPaths(),
+        )
 
     /** 只有 401 有资格触发消歧复探(Task 2 的纪律), 其余码一律不许猜成因。 */
     private suspend fun failure(e: ApiException): FolderError {

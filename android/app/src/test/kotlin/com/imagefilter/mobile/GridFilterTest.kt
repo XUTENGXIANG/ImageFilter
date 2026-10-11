@@ -106,6 +106,11 @@ class GridFilterTest {
     private fun decision(path: String, rating: Int? = null, label: String? = null) =
         """{"path":${jq(path)},"rating":${rating ?: "null"},"label":${label?.let { "\"$it\"" } ?: "null"},"sidecar":null}"""
 
+    /** 带可选 `sidecarReadable` 的那一项(`null` = **不发这个键**, 老服务端就是这样)。 */
+    private fun decisionWith(path: String, rating: Int? = null, sidecarReadable: Boolean? = null) =
+        """{"path":${jq(path)},"rating":${rating ?: "null"},"label":null,"sidecar":null""" +
+            if (sidecarReadable == null) "}" else ""","sidecarReadable":$sidecarReadable}"""
+
     private fun readOk(vararg items: String) =
         MockResponse().setResponseCode(200).setBody("[${items.joinToString(",")}]")
 
@@ -484,5 +489,88 @@ class GridFilterTest {
         vm.setFilters(Filters(minStars = 5))
         assertEquals(listOf(a), vm.state.value.visibleItems.map { it.path })
         assertNotNull("画出来的全是 RAW 时才提示", vm.state.value.notice)
+    }
+
+    // ── ⑦ "未知"与"确知没有"必须分得开(FIX 2 在网格那一侧的落点) ─────────────
+    //
+    // 一次失败的读取会让一张电脑上 4/5 星的照片看起来与"没评过"**一模一样**(都是没有星级角标),
+    // 而用户在手机上的一次打分(1..5 星)是一次**绝对赋值** —— 那一下会把它静默覆盖。
+    // 判据只有一处(`GridState.ratingKnown`), 格子角标与读屏描述都走它。
+
+    @Test
+    fun a_failed_read_leaves_the_cells_unknown_not_unrated() = runTest {
+        server.enqueue(scanOk(photo(a, "a.jpg"), photo(b, "b.jpg")))
+        server.enqueue(MockResponse().setResponseCode(500).setBody("""{"code":"internal"}"""))
+
+        val vm = viewModel()
+        vm.loadAll()
+
+        val s = vm.state.value
+        // ⚠️ 两张都要断言: 只钉第一张的话, "只有第一张画未知"那种改坏测不出来。
+        assertFalse("读失败 ⇒ 这一格的星级**不知道**", s.ratingKnown(a))
+        assertFalse(s.ratingKnown(b))
+        assertNull("值也确实没有(resolved 里根本没这条) —— 界面只能靠 ratingKnown 区分", s.decisions[a])
+    }
+
+    @Test
+    fun a_pc_confirmed_unrated_photo_is_known_and_has_no_unknown_mark() = runTest {
+        server.enqueue(scanOk(photo(a, "a.jpg"), photo(b, "b.jpg")))
+        // 两张都回报了: a 没有星级, b 是 4 星 —— 两种"知道"的形态
+        server.enqueue(readOk(decision(a), decision(b, rating = 4)))
+
+        val vm = viewModel()
+        vm.loadAll()
+
+        val s = vm.state.value
+        assertTrue("服务端明确说了'这一张没有星级' ⇒ **知道**(不是'不知道')", s.ratingKnown(a))
+        assertTrue("有值的那一张当然也知道(判据的另一条腿)", s.ratingKnown(b))
+        assertNull("确知没有值 ⇒ 合成结果里也没有条目(两者靠 ratingKnown 分开)", s.decisions[a])
+        assertEquals(4, s.decisions[b]?.rating)
+        assertTrue("两张都回报了 ⇒ 张数是真数", s.decisionsKnown)
+    }
+
+    @Test
+    fun a_local_rating_is_known_even_though_the_phone_never_read_that_path() = runTest {
+        // 判据的三条腿: ①有值 ②服务端回报过 ③其余=不知道。这一条钉第一条腿 ——
+        // 用户在手机上刚打的分是**知道**的(它就是要写下去的值), 不许画成未知。
+        server.enqueue(scanOk(photo(a, "a.jpg")))
+        server.enqueue(MockResponse().setResponseCode(500).setBody("""{"code":"internal"}"""))
+        val vm = viewModel()
+        vm.loadAll()
+        assertFalse("读失败 ⇒ 一开始是不知道", vm.state.value.ratingKnown(a))
+
+        vm.decisions.applyLocal(Decision(a).withRating(4))
+        vm.refreshDecisions()
+
+        assertTrue("这一格现在有值可显示 ⇒ 不再是未知", vm.state.value.ratingKnown(a))
+        assertEquals(4, vm.state.value.decisions[a]?.rating)
+    }
+
+    @Test
+    fun an_unreadable_sidecar_degrades_the_counts_and_says_why() = runTest {
+        // 边车读不动时**每一项都回报了**, 所以它不是"少报"; 但那几项的值是"不知道" ⇒
+        // 张数同样不许拿一个不含它们的下界冒充答案。这句话必须与"只读回来一部分"分开说。
+        server.enqueue(scanOk(photo(a, "a.jpg"), photo(b, "b.jpg")))
+        server.enqueue(readOk(decisionWith(a, sidecarReadable = false), decision(b, rating = 4)))
+
+        val vm = viewModel()
+        vm.loadAll()
+
+        val s = vm.state.value
+        assertEquals("已经读到的那些照常采纳(角标照常显示)", 4, s.decisions[b]?.rating)
+        assertFalse("边车读不动的那一张: 不知道(不是'没有星级')", s.ratingKnown(a))
+        assertTrue(s.ratingKnown(b))
+
+        val f = s.readFailure!!
+        assertEquals(ReadMessages.SIDECAR_UNREADABLE, f.code)
+        assertEquals(ReadSource.CLIENT, f.source)
+        assertFalse(s.decisionsKnown)
+        assertEquals(COUNT_UNKNOWN, s.counts.starText(3))
+        assertNotEquals("张数绝不许拿 0 顶上", "0", s.counts.starText(3))
+        // 那句话必须说清"这一项不是没有星级", 也不许说成"有的一张没回来"
+        val text = s.readFailureText!!
+        assertTrue(text, text.contains("读不动"))
+        assertTrue(text, text.contains("不知道"))
+        assertFalse("这不是'只回报了一部分'那种情况: $text", text.contains("有的没回来"))
     }
 }

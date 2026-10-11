@@ -55,8 +55,15 @@ internal val LABEL_COLORS: Map<String, Color> = mapOf(
  * 键位语义与桌面端对齐(README 快捷键表): 0 星用「✕ 废弃」表示 —— 与服务端
  * `xmp:Rating = 0` 是同一件事; 拖动/打分本身不触发切图(切图是手势那一层的事)。
  *
+ * ⚠️ **决定要画哪一档的判断全部在纯函数里**([ratingKnowledgeLabel]), 这里只把它画出来:
+ *   · 第一行的星星是**合并之后**的值(本地意图优先) —— 它**不代表**电脑上是几星;
+ *   · `desktopRating = Unknown` 时, 星星右边多一个 [RATING_UNKNOWN_MARK] 角标, 下面那行
+ *     写"电脑上：没读到（未知）"。**这就是"未知"与"没有星级"在屏幕上的区别** ——
+ *     少了它, 一次失败的读取会让一张 4/5 星的照片看起来与"没评过"一模一样, 而一次点击
+ *     就是一次绝对赋值(拦截在 [ViewerViewModel.setRating], 那是**执法点**, 这里只是画)。
+ *
  * ⚠️ **本组件的真实观感没有真机验证**(本轮没有设备): 星星是文本字形(★/☆)、
- * 色标是圆点, 布局在两个 Row 里, 不依赖任何新依赖(没有引入 material-icons)。
+ * 色标是圆点, 布局在三个 Row 里, 不依赖任何新依赖(没有引入 material-icons)。
  */
 @Composable
 fun RatingBar(
@@ -64,6 +71,8 @@ fun RatingBar(
     rating: Int?,
     /** 当前这张的色标([LABELS] 里的一个或 null)。 */
     label: String?,
+    /** **电脑上**这一张的星级(三态): 不知道时画未知角标并把话说清(见本函数 KDoc)。 */
+    desktopRating: DesktopRating,
     /** 写入在飞时为 false —— 禁掉连点, 免得手机这边自己制造乱序。 */
     enabled: Boolean,
     /** 正在写给电脑(显示一行进度说明)。 */
@@ -83,9 +92,32 @@ fun RatingBar(
                 TextButton(onClick = { onRating(0) }, enabled = enabled) { Text("✕ 废弃") }
                 Spacer(Modifier.weight(1f))
                 StarRow(rating = rating, enabled = enabled, onRating = onRating)
+                // 星级**未知**时的角标: 与"确知没有星级"(什么都不画)必须看得出来。
+                if (desktopRating == DesktopRating.Unknown) {
+                    Spacer(Modifier.width(6.dp))
+                    Text(
+                        RATING_UNKNOWN_MARK,
+                        fontSize = 14.sp,
+                        color = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.padding(horizontal = 2.dp),
+                    )
+                }
             }
 
             // 两行之间**用高度**隔开: 一个 width 的 Spacer 在 Column 里是零高的(等于没写)。
+            Spacer(Modifier.height(2.dp))
+
+            // 电脑上那一份知识: 三态各说各的(屏幕上那颗星星是合并之后的值, 不能代表电脑)。
+            Text(
+                ratingKnowledgeLabel(desktopRating),
+                style = MaterialTheme.typography.bodySmall,
+                color = if (desktopRating == DesktopRating.Unknown) {
+                    MaterialTheme.colorScheme.error
+                } else {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                },
+            )
+
             Spacer(Modifier.height(2.dp))
 
             Row(verticalAlignment = Alignment.CenterVertically) {

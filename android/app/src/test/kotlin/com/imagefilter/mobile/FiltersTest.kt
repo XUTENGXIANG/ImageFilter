@@ -6,6 +6,7 @@ import com.imagefilter.mobile.data.PhotoExifDto
 import com.imagefilter.mobile.data.ScannedPhotoDto
 import com.imagefilter.mobile.ui.COUNT_UNKNOWN
 import com.imagefilter.mobile.ui.Decision
+import com.imagefilter.mobile.ui.DesktopRating
 import com.imagefilter.mobile.ui.Filters
 import com.imagefilter.mobile.ui.GRID_EMPTY
 import com.imagefilter.mobile.ui.GridItem
@@ -342,19 +343,20 @@ class FiltersTest {
     @Test
     fun the_cell_description_carries_the_rating_the_colour_and_the_unsynced_marker() {
         val cell = item("a.jpg")
-        assertEquals("没有决策时只说文件名", "a.jpg", cellDescription(cell, null))
+        assertEquals("没有决策时只说文件名", "a.jpg", cellDescription(cell, null, ratingKnown = true))
         assertEquals(
             "星/色标/未同步都要能被读出来(边框对读屏完全不可见)",
             "a.jpg，4 星，红色标，未同步",
             cellDescription(
                 cell,
                 Decision("a.jpg", rating = 4, label = "red", sync = SyncState.UNSYNCED),
+                ratingKnown = true,
             ),
         )
         assertEquals(
             "0 星是桌面端的'废弃', 读屏要说人话",
             "a.jpg，已废弃",
-            cellDescription(cell, Decision("a.jpg", rating = 0, sync = SyncState.SYNCED)),
+            cellDescription(cell, Decision("a.jpg", rating = 0, sync = SyncState.SYNCED), ratingKnown = true),
         )
         assertEquals(
             "已同步/远端读到的项不许读出'未同步'",
@@ -362,7 +364,32 @@ class FiltersTest {
             cellDescription(
                 cell,
                 Decision("a.jpg", rating = 5, label = "green", sync = SyncState.UNTOUCHED),
+                ratingKnown = true,
             ),
+        )
+    }
+
+    @Test
+    fun an_unknown_desktop_rating_reads_differently_from_a_confirmed_empty_one() {
+        // ⚠️ 这一条钉的是本轮修的那个"看不见的区别": 一次失败的读取(不知道)与"电脑上确实没有星级"
+        // 在读屏里**必须分得开** —— 否则一张电脑上 4/5 星的照片会读起来像"没评过", 而用户在手机上
+        // 的一次打分(1..5 星)是一次**绝对赋值**, 会把它静默覆盖。
+        val cell = item("a.jpg")
+        val unrated = Decision("a.jpg", rating = null, desktopRating = DesktopRating.Unrated)
+        val unknown = Decision("a.jpg", rating = null, desktopRating = DesktopRating.Unknown)
+
+        val knownText = cellDescription(cell, unrated, ratingKnown = true)
+        val unknownText = cellDescription(cell, unknown, ratingKnown = false)
+
+        assertEquals("确知没有星级: 屏幕上没有星级可显示, 读屏也不额外说什么", "a.jpg", knownText)
+        assertEquals("不知道: 必须读得出来", "a.jpg，电脑上的星级没读到", unknownText)
+        assertNotEquals("'不知道'与'确实没有'绝不许说成同一句话", knownText, unknownText)
+        // 反过来也要钉住: 有值可显示时, 那条"没读到"的说明**不许**冒出来(vacuous 的假绿最容易
+        // 出在这里: 只测一面, 另一面永远绿)。
+        assertEquals(
+            "有值的时候不许混进'没读到'",
+            "a.jpg，4 星",
+            cellDescription(cell, Decision("a.jpg", rating = 4, desktopRating = DesktopRating.Rated(4)), ratingKnown = true),
         )
     }
 }

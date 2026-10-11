@@ -207,11 +207,20 @@ fun filteredOutMessage(total: Int): String =
  * 为什么要有这个纯函数: 角标是**画**出来的(右下角星级、左上角色点、未同步加一圈边框),
  * 而"画出来"这件事在读屏里等于不存在; 未同步只靠一圈边框更是完全不可见。测试钉住的是这段话,
  * 不是像素(像素只能真机看, 见报告的 UNVERIFIED)。
+ *
+ * ⚠️ [ratingKnown] **刻意没有默认值**: "这台手机不知道电脑上是几星"与"电脑上确实没有星级"
+ * 在读屏里也必须分得开 —— 一次失败的读取会让一张 4/5 星的照片读起来像"没评过", 而用户在手机上
+ * 的一次打分是一次**绝对赋值**。忘了带上这个判据的后果正是本轮要消灭的那种静默, 所以由编译器
+ * 逼着每一个调用点把它说清楚(判据只有一处: `GridState.ratingKnown`)。
  */
-fun cellDescription(item: GridItem, decision: Decision?): String {
+fun cellDescription(item: GridItem, decision: Decision?, ratingKnown: Boolean): String {
     val parts = mutableListOf(item.displayName)
     val rating = decision?.rating
-    if (rating != null) parts.add(if (rating == 0) "已废弃" else "$rating 星")
+    when {
+        rating != null -> parts.add(if (rating == 0) "已废弃" else "$rating 星")
+        // 没有值可显示时才需要区分: "没读到"(未知)与"确实没有星级"(不额外说什么)。
+        !ratingKnown -> parts.add("电脑上的星级没读到")
+    }
     decision?.label?.let { parts.add("${labelName(it)}色标") }
     if (decision?.sync == SyncState.UNSYNCED) parts.add("未同步")
     return parts.joinToString("，")
