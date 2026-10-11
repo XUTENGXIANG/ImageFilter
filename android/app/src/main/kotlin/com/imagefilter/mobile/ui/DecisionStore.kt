@@ -505,6 +505,43 @@ class DecisionStore(private val api: ApiClient) {
     }
 
     /**
+     * **撤销一步**: 把"改动之前那份本地意图"恢复回去(规格 §8.2 的多步撤销)。
+     *
+     * 三条纪律, 每一条都对应一种会撒谎的实现:
+     *
+     *   ① **恢复的是"之前那份本地意图", 而且是逐字的** —— 连同它当时的同步状态一起。
+     *      把一条 [SyncState.SYNCED] 的旧意图重新标成"未同步"就是凭空造一个待重试项;
+     *      把一条"之前根本没有本地意图"恢复成一条本地意图, 就是凭空给角标加一张。
+     *      (判据 [Decision.hasLocalIntent]: 远端读回来的那份永远是 [SyncState.UNTOUCHED]。)
+     *   ② **只有电脑上确实收到过那一次改动时, 才需要一次反向写入**。判据是那条本地意图
+     *      当前**被服务端确认过**([SyncState.SYNCED]) —— 只有那时电脑上才是"改动后的值",
+     *      不写回去就等于让界面(与角标)继续显示一个与电脑不一致的值。
+     *      否则(写失败 / 还没发出去)电脑上**本来就还是老样子**, 发一次反向写入就是一次
+     *      **服务端没有被请求过**的写入 —— 一个字节都不发。
+     *   ③ 写没写成**只由服务端说了算**: 反向写入走的是与打分同一条 [PushResult] 链路,
+     *      失败时本地值留着、标未同步、带码可见(与 [push] 逐字同一套)。
+     *
+     * 撤销**本身不再进撤销栈**(没有重做): 滑卡的场景里"再滑一次"比"撤销再撤销"快
+     * (见 [UndoStack] 的 KDoc)。
+     */
+    suspend fun undo(e: UndoEntry): UndoResult = mutex.withLock {
+        val now = local[e.path]
+        // 电脑上那份"改动后的值"被服务端确认过吗 —— 只有它才能说明"电脑上真的被改过"。
+        val desktopHoldsChange = now != null && now.sync == SyncState.SYNCED
+        // "电脑上已经是 before 这个值"时也不必写(例如在 5 星上又点了一次 5 星, 服务端判 skipped):
+        // 逐字比对**要发出去的那一份**, 而不是"值看起来差不多"。
+        if (!desktopHoldsChange || now.toDto() == e.before.toDto()) {
+            if (e.before.hasLocalIntent) local[e.path] = e.before else local.remove(e.path)
+            return@withLock UndoResult.LocalOnly
+        }
+        // 电脑上已经是改动后的值 ⇒ 必须把 before 送回去。`before` 当时不是本地意图时, 它得先
+        // 成为一条**未同步**的意图才发得出去(它是"我们现在要写的东西", 不是电脑上已有的值)。
+        val target = if (e.before.hasLocalIntent) e.before else e.before.copy(sync = SyncState.UNSYNCED)
+        local[e.path] = target
+        UndoResult.Push(send(listOf(e.path), listOf(target)))
+    }
+
+    /**
      * 把这些路径上的本地意图推给电脑。
      *
      * 返回**服务端说了什么**, 而不是"请求发出去了没有" —— 这里的每一次分支都对应一次

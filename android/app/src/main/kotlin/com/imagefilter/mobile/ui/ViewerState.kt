@@ -266,6 +266,21 @@ data class ViewerState(
      * 或撤销([ViewerViewModel.undo])会清掉它(那句话不再适用)。没有话说时为 null。
      */
     val swipeNote: String? = null,
+    /**
+     * 上一次**撤销**的结论(M3′ 规格 §8.2): "已撤销" / "撤销没能写进电脑…"([undoMessage])。
+     *
+     * 与 [swipeNote] 共用同一格"最近一次操作说了什么": 谁后发生谁在屏幕上, 另一次操作会把它清掉
+     * (撤销清 [swipeNote], 滑卡清它)—— 两句话都在讲同一张照片刚刚发生了什么, 同时显示必然
+     * 有一句是过期的。
+     */
+    val undoNote: String? = null,
+    /**
+     * 现在还能撤销几步(0 = 撤销按钮禁用)。
+     *
+     * 栈本身在 [ViewerViewModel] 里(**内存**, 不落盘): 它记的是"这一次会话里刚做的那几下",
+     * 关掉这一页就没了 —— 与"未同步"不同, 后者由 [DecisionStore] 活着(纪律③)。
+     */
+    val undoCount: Int = 0,
 ) {
     val current: ViewerPhoto? get() = photos.getOrNull(index)
     val count: Int get() = photos.size
@@ -404,6 +419,15 @@ class ViewerViewModel(
 
     /** 当前手势里累计的水平位移(决策态切图用)。**每次手势开始清零**(见 [onGestureStart])。 */
     private var dragAccum = 0f
+
+    /**
+     * 撤销栈(规格 §8.2: 多步, 内存上限 [UNDO_LIMIT])。
+     *
+     * 放在这里(而不是 [DecisionStore] 里)的理由: 它是**这一页的操作史** —— 关掉这一页、
+     * 换一批照片之后再撤销"上一批的某一张"没有意义(那张可能已经不在队列里)。而"未同步"
+     * 那件事的寿命问题由 store 负责, 两者是不同的东西, 所以不放在一起。
+     */
+    private val undoStack = UndoStack(UNDO_LIMIT)
 
     /**
      * 这一次手势**已经切过一张了**。
@@ -607,17 +631,48 @@ class ViewerViewModel(
         val outcome = decideSwipe(before, direction, config)
         if (outcome.unchanged) {
             // 不产生写入 ⇒ 不碰本地意图(凭空标一条"未同步"会让角标撒谎), 也不发请求。
-            _state.update { it.copy(swipeNote = outcome.message) }
+            _state.update { it.copy(swipeNote = outcome.message, undoNote = null) }
             // ⚠️ 但"被拦住"([SwipeOutcome.blocked] = 不知道电脑上是几星)**不许前进**:
             // 前进会让用户以为这一下记下了, 而它一个字节都没记下(见 decideSwipe 规矩 2′)。
             if (advanceOnWriteSuccess && !outcome.blocked) go(+1)
             return PushResult.NothingToPush(1)
         }
-        decisions.applyLocal(outcome.applyTo(before))
-        _state.update { refresh(it).copy(swipeNote = outcome.message) }
+        val after = outcome.applyTo(before)
+        // 真的改了什么才进撤销栈("没什么要写"的那两支持续在栈里的空步只会让用户按一次撤销
+        // 却什么都没发生)。存的是**改之前**那份意图(见 UndoEntry)。
+        undoStack.push(UndoEntry(path, before, after))
+        decisions.applyLocal(after)
+        _state.update { refresh(it).copy(swipeNote = outcome.message, undoNote = null, undoCount = undoStack.size) }
         val result = push(listOf(path))
         // 与手点星级同一条纪律(规格 §8.2): **写成功才前进**。失败留在这一张, 失败卡可见、可重试。
         if (result is PushResult.Ok && advanceOnWriteSuccess) go(+1)
+        return result
+    }
+
+    /**
+     * **撤销一步**(规格 §8.2 的多步撤销)。
+     *
+     * 语义与三条纪律全在 [DecisionStore.undo] 里(恢复"之前那份本地意图"; 只有电脑上确实收到过
+     * 那次改动时才写一次反向写入; 写没写成由服务端说)。这里只做两件界面的事:
+     *   · **回到被撤销的那一张** —— 撤销的语义就是"把刚刚那张拿回来"。写成功的那一支本来已经
+     *     自动前进了, 不回到它的话用户根本看不到自己撤销了什么(而且失败卡会长在另一张照片上);
+     *   · 把结论逐字翻成一句话([undoMessage]), 而且**绝不在没被确认时说"已撤销"**。
+     *
+     * 撤销**不产生新的撤销步**(没有重做): 栈只减不增, 所以按撤销不会自己把自己越撤越乱。
+     */
+    suspend fun undo(): UndoResult {
+        val entry = undoStack.pop() ?: run {
+            _state.update { it.copy(undoNote = undoMessage(UndoResult.Empty), undoCount = 0) }
+            return UndoResult.Empty
+        }
+        _state.update {
+            it.copy(writing = true, swipeNote = null, undoNote = null, lastBatchNote = null, undoCount = undoStack.size)
+        }
+        val result = decisions.undo(entry)
+        // 队列里还有那张就回到它(索引来自**这一页**的照片列表, 不是服务端)。
+        val idx = _state.value.photos.indexOfFirst { it.path == entry.path }
+        if (idx >= 0 && idx != _state.value.index) go(idx - _state.value.index)
+        _state.update { refresh(it).copy(writing = false, undoNote = undoMessage(result)) }
         return result
     }
 
@@ -669,9 +724,16 @@ class ViewerViewModel(
      */
     private suspend fun commit(mutate: (Decision) -> Decision): PushResult {
         val path = currentPath() ?: return PushResult.NothingToPush(0)
-        decisions.applyLocal(mutate(decisions.get(path)))
-        // 手点了星级/色标 ⇒ 上一句滑卡的结论不再适用(它说的是"这一滑没写"), 清掉。
-        _state.update { refresh(it).copy(swipeNote = null) }
+        val before = decisions.get(path)
+        val after = mutate(before)
+        // 值真的变了才进撤销栈: 又点了一次同一颗星(值没变, 只是重新标成未同步)不该占一步撤销
+        // —— 撤销它等于"什么都没发生"。判据是**逐字比对要发出去的那一份**(与 afterAck 同一条)。
+        if (after.toDto() != before.toDto()) undoStack.push(UndoEntry(path, before, after))
+        decisions.applyLocal(after)
+        // 手点了星级/色标 ⇒ 上一句滑卡/撤销的结论不再适用(它说的是"这一滑没写"), 清掉。
+        _state.update {
+            refresh(it).copy(swipeNote = null, undoNote = null, undoCount = undoStack.size)
+        }
         val result = push(listOf(path))
         // 规格 §8.2: 写成功才自动前进。失败**绝不**前进 —— 那会让用户以为打过了,
         // 而实际上那张在电脑上还是旧的(本任务最不能出的一种错)。

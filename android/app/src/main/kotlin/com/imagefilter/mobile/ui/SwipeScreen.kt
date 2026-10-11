@@ -79,6 +79,10 @@ import kotlin.math.abs
  * `awaitEachGesture` 那一段是标准用法, 但"单指不抖成捏合、双指不误触发滑卡、回弹跟手"只能
  * 在真机上确认, 见报告里的 UNVERIFIED 清单。**语义**那一段(这一滑到底写什么)有 100+ 条
  * JVM 用例钉着。
+ *
+ * M3′ Task 2 在这一页右上角加了**撤销**(多步, 内存栈上限 [UNDO_LIMIT], 见 [UndoStack]):
+ * 滑卡是高速连续操作, 误操作的代价比点星级大得多 —— 撤销的语义(恢复哪一份意图、要不要写回
+ * 电脑)全在 [ViewerViewModel.undo] 与 [DecisionStore.undo] 里, 这里只有按钮与"还剩几步"。
  */
 @Composable
 fun SwipeScreen(
@@ -142,6 +146,12 @@ fun SwipeScreen(
             SwipeTopBar(
                 title = state.title,
                 unsyncedLabel = state.unsyncedLabel,
+                undoCount = state.undoCount,
+                // 撤销 = 把上一步决策恢复回去(多步, 内存栈上限 UNDO_LIMIT, 见 UndoStack)。
+                // ⚠️ 写入在飞时它会被禁用([SwipeTopBar] 里判 writing): 撤销与写入并发会让
+                // "电脑上到底是哪一版"变成一句话说不清的事。
+                onUndo = { scope.launch { vm.undo() } },
+                writing = state.writing,
                 onRetryUnsynced = { scope.launch { vm.retryAllUnsynced() } },
                 onClose = onClose,
             )
@@ -280,9 +290,12 @@ fun SwipeScreen(
                 )
             }
 
-            // ── 写入结果: 失败卡 > 滑卡那句话 > "未同步"短提示(与查看器同一套优先级) ──
+            // ── 写入结果: 失败卡 > 滑卡那句话 > 撤销那句话 > "未同步"短提示 ──
+            // (滑卡与撤销两句话**共用同一格**: 后发生的那次操作会清掉前一句 —— 两句话都在讲
+            //  同一张照片刚刚发生了什么, 同时显示必然有一句是过期的。)
             val writeFailure = state.writeFailure
             val swipeNote = state.swipeNote
+            val undoNote = state.undoNote
             val unsyncedNote = state.unsyncedNote
             when {
                 writeFailure != null -> WriteFailureCard(
@@ -303,6 +316,14 @@ fun SwipeScreen(
                 // "已保留 · 保持 5★" —— 命中"不降级"那一支时**没有写入**, 但必须给出反馈
                 swipeNote != null -> Text(
                     swipeNote,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.padding(start = 12.dp, end = 12.dp, bottom = 4.dp),
+                )
+
+                // "已撤销" —— 只有服务端确认了才会说这句(见 UndoStack.undoMessage)
+                undoNote != null -> Text(
+                    undoNote,
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.primary,
                     modifier = Modifier.padding(start = 12.dp, end = 12.dp, bottom = 4.dp),
@@ -433,11 +454,14 @@ private fun BoxScope.SwipeBadge(direction: SwipeDirection, action: SwipeAction, 
     }
 }
 
-/** 顶部: 文件名 · (i/N) + 「未同步 N 张」+「关闭」。 */
+/** 顶部: 文件名 · (i/N) + 「撤销 N」+「未同步 N 张」+「关闭」。 */
 @Composable
 private fun SwipeTopBar(
     title: String,
     unsyncedLabel: String?,
+    undoCount: Int,
+    onUndo: () -> Unit,
+    writing: Boolean,
     onRetryUnsynced: () -> Unit,
     onClose: () -> Unit,
 ) {
@@ -453,6 +477,11 @@ private fun SwipeTopBar(
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.weight(1f).padding(start = 8.dp),
             )
+            // 撤销: **步数看得见**(为 0 / 正在写时禁用)—— 一个永远可点却什么都不做的按钮
+            // 比没有这个按钮更坏。
+            TextButton(onClick = onUndo, enabled = undoCount > 0 && !writing) {
+                Text(if (undoCount > 0) "撤销 $undoCount" else "撤销")
+            }
             // 未同步角标**本身就是按钮**: 点一下把这一批重试一遍(没有动作的警告等于没警告)
             if (unsyncedLabel != null) {
                 TextButton(onClick = onRetryUnsynced) {
