@@ -86,6 +86,17 @@ class DecisionMergeTest {
         MockResponse().setResponseCode(200).setBody("[${items.joinToString(",")}]"),
     )
 
+    /**
+     * 带**可选** `sidecarReadable` 的那一项(协议新增的信号)。
+     *
+     * `null` = **不发这个键** —— 老服务端就是这样, 而"缺字段"必须与 `true` 同义(兼容性)。
+     */
+    private fun readJsonWith(p: String, sidecarReadable: Boolean?): String {
+        val jp = jsonPath(p)
+        val signal = if (sidecarReadable == null) "" else ""","sidecarReadable":$sidecarReadable"""
+        return """{"path":"$jp","rating":null,"label":null,"sidecar":"$jp.xmp"$signal}"""
+    }
+
     private fun enqueueSummaryOk(written: Int = 1) = server.enqueue(
         MockResponse().setResponseCode(200)
             .setBody("""{"written":$written,"skipped":0,"failed":0,"failures":[],"degraded":false}"""),
@@ -472,5 +483,80 @@ class DecisionMergeTest {
         assertEquals(SyncState.UNSYNCED, s.get(path).sync)
         assertFalse("本地意图不许冒充「电脑上是什么」的知识", s.knows(path))
         assertEquals(DesktopRating.Unknown, s.get(path).desktopRating)
+    }
+
+    // ── ⑦ 边车读不动: `null` 不是"没有值"的证据(FIX 4 消费 `sidecarReadable`) ─────
+    //
+    // 服务端在读不动边车时发的**也是** `rating: null`(`xmp.rs::read_one` 的注释明写了
+    // "读失败一律当没有值"), 而"保留(右滑)"的全部判据就是"这个 null 说明电脑上没有值"。
+    // 两者的代价不对称到极点: Lightroom 占着边车的那一秒里右滑一次, 电脑上的 5 星就被静默
+    // 降成 3 星 —— 所以协议加了这一个可选的布尔信号, 手机这边必须真的按它分岔。
+
+    @Test
+    fun a_read_item_whose_sidecar_could_not_be_read_is_unknown_not_unrated() = runTest {
+        enqueueRead(readJsonWith(path, sidecarReadable = false))
+        val s = store()
+
+        val pull = s.pullRemote(listOf(path))
+
+        assertTrue("问到的都回报了, 但这一项没能变成'知道' ⇒ 没有结论", pull is RemotePull.Partial)
+        assertEquals("边车读不动的那一项要**数**出来", 1, (pull as RemotePull.Partial).unreadable)
+        assertEquals("两项都对上了(不是少报/多报)", 0, pull.mismatched)
+        assertFalse("**不知道** —— 绝不许当成'电脑上没有星级'", s.knows(path))
+        assertEquals(DesktopRating.Unknown, s.get(path).desktopRating)
+        assertNull("也不许编一个值", s.get(path).rating)
+    }
+
+    @Test
+    fun the_same_item_without_the_field_keeps_the_old_behaviour() = runTest {
+        // **对照**(兼容性): 老服务端不发这个字段 ⇒ 按"读到了"处理, 也就是本字段出现之前的全部行为。
+        // 没有这一条, "把缺字段也当成不知道"这种改坏会让每一次读取都变成"未统计"。
+        enqueueRead(readJson(path))          // 没有 sidecarReadable 这个键
+        val s = store()
+
+        val pull = s.pullRemote(listOf(path))
+
+        assertTrue("少报/多报都没有, 也没有读不动的项 ⇒ 照旧是 Merged", pull is RemotePull.Merged)
+        assertEquals(0, (pull as RemotePull.Merged).merge.unreadable)
+        assertTrue("缺字段 = 没有信号 ⇒ 按'读到了'算", s.knows(path))
+        assertEquals(DesktopRating.Unrated, s.get(path).desktopRating)
+    }
+
+    @Test
+    fun true_and_missing_are_the_same_signal_but_false_is_not() = runTest {
+        // 三档一起钉: `true` 与"缺字段"是**同一个意思**(读到了), `false` 是另一个(不知道)。
+        // 只测两档的话, "把 true 也当成不知道"这种改坏测不出来。
+        enqueueRead(readJsonWith(path, sidecarReadable = true), readJsonWith(other, sidecarReadable = false))
+        val s = store()
+
+        val pull = s.pullRemote(listOf(path, other)) as RemotePull.Partial
+
+        assertTrue("true = 读到了", s.knows(path))
+        assertEquals(DesktopRating.Unrated, s.get(path).desktopRating)
+        assertFalse("false = 不知道", s.knows(other))
+        assertEquals(DesktopRating.Unknown, s.get(other).desktopRating)
+        assertEquals(1, pull.unreadable)
+        assertEquals("两张都回报了", 0, pull.mismatched)
+    }
+
+    @Test
+    fun an_unreadable_sidecar_does_not_wipe_the_value_we_read_before() = runTest {
+        // 读不动 ≠ "电脑上没有值": 上一次读到的 4 星照旧显示(把已知的东西抹掉比留在那儿更坏),
+        // 但"这就是电脑现在的事实"这句话不许再说了 —— 于是保留那一支不会拿它当依据。
+        enqueueRead(readJson(path, rating = 4))
+        enqueueRead(readJsonWith(path, sidecarReadable = false))
+        val s = store()
+        s.pullRemote(listOf(path))
+        assertEquals(DesktopRating.Rated(4), s.get(path).desktopRating)
+
+        s.pullRemote(listOf(path))
+
+        assertEquals("上一次读到的值照旧显示", 4, s.get(path).rating)
+        assertFalse("但没被确认 ⇒ 不知道", s.knows(path))
+        assertEquals(
+            "不知道 ≠ 没有星级(保留那一支就是靠这个区别决定写不写)",
+            DesktopRating.Unknown,
+            s.get(path).desktopRating,
+        )
     }
 }

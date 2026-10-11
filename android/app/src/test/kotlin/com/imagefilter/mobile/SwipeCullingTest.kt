@@ -333,6 +333,59 @@ class SwipeCullingTest {
         assertEquals(3, store.get(paths[1]).rating)
     }
 
+    @Test
+    fun a_keep_swipe_writes_nothing_when_the_pc_could_not_read_the_sidecar() = runTest {
+        // 边车被 Lightroom 占着的那一秒: 服务端发的**也是** `rating: null`(`xmp.rs::read_one`:
+        // "读失败一律当没有值"), 而保留那一支的全部判据就是"这个 null = 电脑上没有值"。
+        // 少了 `sidecarReadable:false` 这条信号, 右滑一次就把电脑上的 5 星**静默降成** 3 星。
+        enqueueRead(decision(paths[0], sidecarReadable = false))
+        // 万一真的发了写入, 让它拿到响应 —— 于是红在"没有新请求"那条断言上(一句看得懂的话),
+        // 而不是因为没人应答挂到超时。
+        enqueueSummary(written = 1)
+        val store = store()
+        assertTrue("边车读不动 ⇒ 没有结论", store.pullRemote(listOf(paths[0])) is RemotePull.Partial)
+        assertFalse("这一张: 这台手机**不知道**电脑上是几星", store.knows(paths[0]))
+        val read = server.takeRequest()          // 把那次读走, 下面只对账**新**请求
+        assertEquals("/api/v1/decisions", read.requestUrl!!.encodedPath)
+        val consumed = server.requestCount
+        val vm = culler(store)
+
+        val result = vm.swipe(SwipeDirection.Right)
+
+        val stray = newRequests(consumed)
+        assertEquals(
+            "边车读不动 ⇒ 保留**一个请求都不发**" +
+                if (stray.isEmpty()) "" else "；实际发了: $stray",
+            emptyList<String>(),
+            stray,
+        )
+        assertEquals(PushResult.NothingToPush(1), result)
+        assertTrue("本地也不许凭空多一条意图", store.all().isEmpty())
+        assertEquals(KEEP_BLIND_MESSAGE, vm.state.value.swipeNote)
+        assertEquals("被拦住时**不前进**", 0, vm.state.value.index)
+    }
+
+    @Test
+    fun the_same_keep_swipe_writes_three_when_the_field_is_absent() = runTest {
+        // 上面那条的**对照**(同一份回报, 只差那一个字段): 老服务端不发 `sidecarReadable` ⇒
+        // 按"读到了"算, 于是右滑照写 3 星。兼容性与新语义在同一条用例里对着看 ——
+        // 少了这一半, "什么都不写"可能只是因为"这个状态机根本不会写"而通过。
+        enqueueRead(decision(paths[0]))          // 没有 sidecarReadable 这个键
+        enqueueSummary(written = 1)
+        val store = store()
+        assertTrue(store.pullRemote(listOf(paths[0])) is RemotePull.Merged)
+        assertTrue("缺字段 = 没有信号 ⇒ 按'读到了'算(本字段出现之前的全部行为)", store.knows(paths[0]))
+        val vm = culler(store)
+
+        val result = vm.swipe(SwipeDirection.Right)
+
+        assertEquals(PushResult.Ok(requested = 1, written = 1, skipped = 0, degraded = false), result)
+        server.takeRequest()                     // 读
+        val put = server.takeRequest().body.readUtf8()
+        assertTrue("明确回报'没有星级' ⇒ 照写 3 星: $put", put.contains("\"rating\":3"))
+        assertEquals(3, store.get(paths[0]).rating)
+    }
+
     // ── ② 右滑没评过的 = 3 星, 而且只写星级 ──────────────────────────────────
 
     @Test
@@ -648,7 +701,14 @@ class SwipeCullingTest {
             """"isRaw":false,"isVideo":false,"modifiedAt":$mtime,"exif":{}}"""
 
     /** `xmp.rs::DecisionRead` 的一项, 逐字按线上拼写写 JSON(不拿 DTO 反向编码)。 */
-    private fun decision(path: String, rating: Int? = null, label: String? = null) =
+    private fun decision(
+        path: String,
+        rating: Int? = null,
+        label: String? = null,
+        /** 协议新增的可选信号: `null` = **不发这个键**(老服务端), `false` = 边车读不动。 */
+        sidecarReadable: Boolean? = null,
+    ) =
         """{"path":${jq(path)},"rating":${rating ?: "null"},""" +
-            """"label":${if (label == null) "null" else jq(label)},"sidecar":null}"""
+            """"label":${if (label == null) "null" else jq(label)},"sidecar":null""" +
+            if (sidecarReadable == null) "}" else ""","sidecarReadable":$sidecarReadable}"""
 }
