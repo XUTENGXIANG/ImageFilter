@@ -20,6 +20,11 @@ serialization = "1.7.3"
 coroutines = "1.9.0"
 coil = "3.0.4"
 datastore = "1.1.1"
+# 扫码配对(M4′ Task 1 手机端): 本计划**唯一**允许的新依赖。
+# Apache-2.0、完全离线(不依赖 Google Play 服务), 只用来把二维码解成一段文本。
+# 4.3.0 是计划点名的版本; 它只带 com.google.zxing:core:3.4.1 一个传递依赖, 不需要 appcompat
+# (CaptureActivity 继承 android.app.Activity), minSdk 24 <= 我们的 26。
+zxingEmbedded = "4.3.0"
 junit = "4.13.2"
 
 [libraries]
@@ -38,6 +43,7 @@ kotlinx-coroutines-test = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-t
 coil-compose = { module = "io.coil-kt.coil3:coil-compose", version.ref = "coil" }
 coil-network-okhttp = { module = "io.coil-kt.coil3:coil-network-okhttp", version.ref = "coil" }
 datastore-preferences = { module = "androidx.datastore:datastore-preferences", version.ref = "datastore" }
+zxing-android-embedded = { module = "com.journeyapps:zxing-android-embedded", version.ref = "zxingEmbedded" }
 junit = { module = "junit:junit", version.ref = "junit" }
 
 [plugins]

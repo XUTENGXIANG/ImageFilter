@@ -2,6 +2,10 @@
 // SPDX-License-Identifier: MIT
 package com.imagefilter.mobile.ui
 
+import android.Manifest
+import android.content.pm.PackageManager
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -17,6 +21,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -33,6 +38,9 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
+import com.journeyapps.barcodescanner.ScanContract
+import com.journeyapps.barcodescanner.ScanOptions
 import com.imagefilter.mobile.data.LocalCheck
 import com.imagefilter.mobile.data.Pairing
 import com.imagefilter.mobile.data.PairingCheck
@@ -41,8 +49,10 @@ import com.imagefilter.mobile.data.PairingInput
 import com.imagefilter.mobile.data.PairingInputFormat
 import com.imagefilter.mobile.data.PairingInputProblem
 import com.imagefilter.mobile.data.PairingMessages
+import com.imagefilter.mobile.data.PairingScan
 import com.imagefilter.mobile.data.PairingStore
 import com.imagefilter.mobile.data.PairingValidator
+import com.imagefilter.mobile.data.scanPairingPayload
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 
@@ -91,6 +101,71 @@ fun PairingScreen(onPaired: (Pairing) -> Unit) {
         tokenProblem = null
         savingError = null
         busy = false
+    }
+
+    // ── 扫码(M4′ Task 1 手机端)────────────────────────────────────────────
+    //
+    // ⚠️ 扫码**不是第二条配对路径**: 它只把下面那两个框填上, 校验仍然由「测试连接」走
+    // 手输那条链路([PairingInputFormat] → [PairingValidator])。所以这里既不自己校验、
+    // 也不自己保存 —— 唯一的差别是那两份值从哪来。
+    /** 扫码的反馈(填好了 / 为什么填不了 / 权限被拒)。 */
+    var scanNote by remember { mutableStateOf<String?>(null) }
+    /** 上面那句话是不是"红的"(填不了/被拒), 还是"绿的"(填好了)。 */
+    var scanNoteIsError by remember { mutableStateOf(false) }
+
+    val scanner = rememberLauncherForActivityResult(ScanContract()) { result ->
+        val contents = result.contents
+        if (contents == null) {
+            // 用户自己退出了扫码(相机页被返回/被系统收回): 什么都不做, **不报错** ——
+            // 一次取消不是失败, 报红字会让用户以为配对出了问题。
+            scanNote = null
+        } else {
+            when (val scan = scanPairingPayload(contents)) {
+                is PairingScan.Filled -> {
+                    // 先作废旧结论, 再把两个框填上 —— 否则用户能按着"已连上"的旧结论去「开始使用」
+                    invalidate()
+                    url = scan.url
+                    token = scan.token
+                    scanNoteIsError = false
+                    scanNote = scan.notice ?: PairingMessages.SCAN_FILLED
+                }
+
+                is PairingScan.Rejected -> {
+                    // **一个框都不动**: 扫到别的二维码不该把用户已经敲好的值冲掉
+                    scanNoteIsError = true
+                    scanNote = scan.message
+                }
+            }
+        }
+    }
+
+    /** 真的拉起扫码页。拉不起来(没有相机/没有扫码组件)时给一句话, 配对照旧能手输。 */
+    val launchScanner: () -> Unit = {
+        try {
+            scanner.launch(
+                ScanOptions()
+                    // 只认二维码: 配对载荷是 JSON, 扫出条形码/别的格式只会是噪音
+                    .setDesiredBarcodeFormats(ScanOptions.QR_CODE)
+                    .setPrompt("对准电脑上「设置 → 图库服务」里的配对二维码")
+                    .setBeepEnabled(false)
+                    .setOrientationLocked(false),
+            )
+        } catch (e: Exception) {
+            scanNoteIsError = true
+            scanNote = PairingMessages.SCAN_UNAVAILABLE
+        }
+    }
+
+    /** 相机权限: **先问再开**。被拒时只少一条捷径, 手输那条路一个字节都不受影响。 */
+    val permission = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        if (granted) {
+            launchScanner()
+        } else {
+            scanNoteIsError = true
+            scanNote = PairingMessages.SCAN_CAMERA_DENIED
+        }
     }
 
     fun testConnection() {
@@ -151,6 +226,36 @@ fun PairingScreen(onPaired: (Pairing) -> Unit) {
             style = MaterialTheme.typography.bodyMedium,
         )
         Spacer(Modifier.height(16.dp))
+
+        // 扫码(M4′ Task 1): 配对码是 64 位十六进制, 手输不现实 —— 二维码是唯一顺手的通道。
+        // **手输永远在**: 拒绝相机权限、设备没有相机、扫到别的二维码时, 它都是唯一的路。
+        OutlinedButton(
+            onClick = {
+                val granted = ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) ==
+                    PackageManager.PERMISSION_GRANTED
+                if (granted) launchScanner() else permission.launch(Manifest.permission.CAMERA)
+            },
+            modifier = Modifier.fillMaxWidth(),
+        ) { Text("扫码配对（扫电脑设置页里的二维码）") }
+        Text(
+            "扫码只是把下面两个框填好，验证与保存跟手动输入走的是同一条路。",
+            style = MaterialTheme.typography.bodySmall,
+        )
+        val scanNoteText = scanNote
+        if (scanNoteText != null) {
+            Spacer(Modifier.height(4.dp))
+            Text(
+                scanNoteText,
+                // 填好了是普通色、"填不了/权限被拒"才是红的 —— 一次成功不该看着像出错
+                color = if (scanNoteIsError) {
+                    MaterialTheme.colorScheme.error
+                } else {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                },
+                style = MaterialTheme.typography.bodySmall,
+            )
+        }
+        Spacer(Modifier.height(12.dp))
 
         OutlinedTextField(
             value = url,

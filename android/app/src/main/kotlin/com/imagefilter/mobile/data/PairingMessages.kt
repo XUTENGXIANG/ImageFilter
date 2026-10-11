@@ -30,6 +30,60 @@ object PairingMessages {
         "手机与电脑连在同一个 WiFi",
     )
 
+    // ── 扫码配对(M4′ Task 1)────────────────────────────────────────────────
+    //
+    // ⚠️ 这几句**加在既有这张表里**, 不另起一张: 它们说的是同一个屏幕上的同一件事
+    // (「怎么把地址与配对码填进去」), 而另起一张表的唯一后果是"同一个词在两处各写一遍"。
+    // 相机**不可用/被拒**那两句同样属于这张表 —— 它们的存在意义就是"扫码不行, 手动输入照旧"。
+
+    /**
+     * 扫到的东西**不是**配对二维码(普通文本 / 别的二维码 / 类型不对的 JSON)。
+     *
+     * 刻意**不**说"配对码不对": 那是两件完全不同的事, 后者会把人赶到电脑上去换一枚好好的 token。
+     */
+    const val SCAN_NOT_PAIRING_QR =
+        "这不是 ImageFilter 的配对二维码（扫到的内容里读不出电脑地址与配对码）——" +
+            "请扫电脑上「设置 → 图库服务」里显示的那一个码，或者用下面的**手动输入**。"
+
+    /** 是配对载荷的形状, 但里面**没有地址** —— 多半是扫到了别的程序的码。 */
+    const val SCAN_NO_ADDRESS =
+        "这个二维码里**没有电脑地址**（可能是别的程序生成的码）——" +
+            "用下面的**手动输入**填上电脑上显示的地址与配对码。"
+
+    /** 有地址, 但**没有配对码**。 */
+    const val SCAN_NO_TOKEN =
+        "这个二维码里**没有配对码**（只有地址）——请核对是不是扫了半个码，或者用下面的**手动输入**补上配对码。"
+
+    /** 有地址, 但手机读不出来(非 http/https 的 scheme 之类)。 */
+    const val SCAN_BAD_ADDRESS =
+        "这个二维码里的**地址读不出来**（只认 `http://主机:端口` 这种形式）——" +
+            "用下面的**手动输入**，照电脑上显示的地址填。"
+
+    /** 相机权限被拒时那句 —— 说清"配对没被挡住"。 */
+    const val SCAN_CAMERA_DENIED =
+        "没有相机权限，扫码用不了。**这不影响配对**：用下面的手动输入填地址与配对码，" +
+            "和扫码填进去的是同一份东西。想用扫码就去系统设置里给 ImageFilter 打开相机权限。"
+
+    /** 这台设备上根本拉不起扫码(没有相机 / 没有扫码组件)。 */
+    const val SCAN_UNAVAILABLE =
+        "这台设备上打不开扫码（没有相机或缺少扫码组件）。**这不影响配对**：用下面的手动输入一样可以配对。"
+
+    /** 「填不了」的四种原因 → 四句**各不相同**的话(每句都以"用下面的手动输入"收尾)。 */
+    fun forScanProblem(problem: PairingScanProblem): String = when (problem) {
+        PairingScanProblem.NOT_JSON -> SCAN_NOT_PAIRING_QR
+        PairingScanProblem.NO_URL -> SCAN_NO_ADDRESS
+        PairingScanProblem.NO_TOKEN -> SCAN_NO_TOKEN
+        PairingScanProblem.BAD_URL -> SCAN_BAD_ADDRESS
+    }
+
+    /** 扫到的地址不是私有网段时那句提醒(**不阻塞**配对, 只是说出来)。 */
+    fun notLanAddress(host: String): String =
+        "扫到的地址 $host 不是局域网私有地址（规格只做同一局域网：10.x / 172.16-31.x / 192.168.x）。" +
+            "电脑端也绝不会把公网地址列进候选，所以这个码多半不是它的。已经填进去了，可以照常「测试连接」。"
+
+    /** 扫码成功填进去之后那句反馈。 */
+    const val SCAN_FILLED = "已从二维码填入地址与配对码。点「测试连接」验证。"
+
     /** 本地输入问题的文案。 */
     fun forInputProblem(problem: PairingInputProblem): String = when (problem) {
         PairingInputProblem.EMPTY_URL ->

@@ -268,6 +268,9 @@ dependencies {
     implementation(libs.coil.compose)
     implementation(libs.coil.network.okhttp)
     implementation(libs.datastore.preferences)
+    // 扫码配对(M4′ Task 1): 本计划**唯一**允许的新依赖(版本与理由见 gradle/libs.versions.toml)。
+    // 它只在配对页用来把二维码解成一段文本 —— 解析那段文本的纯逻辑在 data/PairingScan.kt, 有 JVM 单测。
+    implementation(libs.zxing.android.embedded)
 
     testImplementation(libs.junit)
     testImplementation(libs.okhttp.mockwebserver)

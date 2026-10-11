@@ -7,6 +7,13 @@
     <!-- 用于"当前是否在 WiFi 下"的判断(决定要不要预取预览图), 供 M3′ 使用 -->
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
+    <!-- 扫码配对(M4′ Task 1): **只用于扫二维码**, 不申请存储权限(不需要)。
+         它是一条**增强**路径 —— 拒绝权限时配对页照样能手输(见 PairingScreen 的说明),
+         所以 uses-feature 是 required="false"(没有相机的设备仍然装得上)。
+         zxing 的 CaptureActivity 由它自己的清单声明, 这里不用再写。 -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
+
     <application
         android:icon="@mipmap/ic_launcher"
         android:label="ImageFilter"
