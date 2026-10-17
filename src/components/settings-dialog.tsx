@@ -48,6 +48,8 @@ interface Props {
   onToggleTransparentBg: () => void;
   /** 系统不支持 Mica(Win10)时为真 */
   micaUnsupported: boolean;
+  /** 来自 Rust `get_os_capabilities` 的 platform: macOS 上要隐藏不支持的功能 */
+  platform: string;
   glassOpacity: number;
   onGlassOpacityChange: (v: number) => void;
   backgroundOpacity: number;
@@ -873,7 +875,7 @@ function OpacitySlider({
 
 export function SettingsDialog({
   open, onOpenChange, theme, onThemeChange, lang, onLangChange,
-  preloadFull, onTogglePreloadFull, transparentBg, onToggleTransparentBg, micaUnsupported,
+  preloadFull, onTogglePreloadFull, transparentBg, onToggleTransparentBg, micaUnsupported, platform,
   autoAdvance, onToggleAutoAdvance,
   labelModifier, onLabelModifierChange,
   xmpMode, onXmpModeChange, xmpStatus,
@@ -881,6 +883,8 @@ export function SettingsDialog({
   glassOpacity, onGlassOpacityChange, backgroundOpacity, onBackgroundOpacityChange,
 }: Props) {
   const { t } = useTranslation();
+  // macOS 的能力与 Windows 不同(图库服务未验证 / LrC 衔接种不了) —— 按平台分支, 不只置灰
+  const isMac = platform === "macos";
 
   // 版本号从**二进制**里读(getVersion), 不再写死在源码里 —— 原先那行字面量 "1.1.0"
   // 在 1.1.1 发布之后就变成了假话。__APP_VERSION__ 是构建期注入的兜底, 只为
@@ -1061,6 +1065,7 @@ export function SettingsDialog({
           <SettingRow
             title={t("settings.lrcMode")}
             desc={(() => {
+              if (isMac) return t("settings.lrcUnsupportedMac");
               if (!lrcProbe) return t("settings.lrcProbing");
               if (!lrcProbe.found) return t("settings.lrcNotFound");
               const where = lrcProbe.running ? t("settings.lrcRunning") : t("settings.lrcNotRunning");
@@ -1072,7 +1077,7 @@ export function SettingsDialog({
                 ["dialog", t("settings.lrcModeDialog")],
                 ["silent", t("settings.lrcModeSilent")],
               ] as [LrcSendMode, string][]).map(([m, label]) => {
-                const blocked = !isLrcModeUsable(m);
+                const blocked = isMac || !isLrcModeUsable(m);
                 return (
                   <button
                     key={m}
@@ -1106,7 +1111,7 @@ export function SettingsDialog({
               说明文案也一起换掉 —— 只置灰不解释, 用户会以为坏了。 */}
           <SettingRow
             title={t("settings.transparentBg")}
-            desc={micaUnsupported ? t("settings.transparentBgUnsupported") : t("settings.transparentBgDesc")}
+            desc={isMac ? t("settings.transparentBgDescMac") : micaUnsupported ? t("settings.transparentBgUnsupported") : t("settings.transparentBgDesc")}
           >
             <Toggle checked={transparentBg} onChange={onToggleTransparentBg} disabled={micaUnsupported} />
           </SettingRow>
@@ -1125,7 +1130,8 @@ export function SettingsDialog({
 
           {/* Phase 8 · 图库服务(手机端)。放在最下面一行分隔线之上: 它是"整块"而不是一行设置,
               所以自带 border-t 与自己的小标题(不动 App.tsx 的布局 —— 面板全部长在这里)。 */}
-          <ServerPanel open={open} />
+          {/* macOS: 图库服务(手机端)在 macOS 上没有验证过 —— 按用户要求整块隐藏 */}
+          {isMac ? null : <ServerPanel open={open} />}
 
           {/* 版本信息 + 检查更新。
               只比对版本号: 本机版本(二进制里的) vs GitHub 最新正式版的 tag。

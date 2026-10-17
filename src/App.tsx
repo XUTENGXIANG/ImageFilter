@@ -9,6 +9,7 @@ import { FloatingPanel } from "./panel";
 import { PhotoViewer } from "./viewer";
 import { useScanner } from "./useScanner";
 import { TitleBar } from "./components/title-bar";
+import { MacPermissionGuide } from "./components/macos-permission-guide";
 import { ExifPanel } from "./components/exif-panel";
 import { WelcomeGuide } from "./components/welcome-guide";
 import { ScrollFadeZone } from "./components/scroll-fade-zone";
@@ -528,8 +529,15 @@ function App({ osCapabilities }: { osCapabilities: OsCapabilities }) {
 
   // 浮窗后面整块背景毛玻璃的透明度: 默认 0% 完全透明
   const [backgroundOpacity, setBackgroundOpacity] = useState<number>(() => {
-    const v = Number(localStorage.getItem("imagefilter-background-opacity"));
-    return Number.isFinite(v) ? Math.min(100, Math.max(0, v)) : 0;
+    const raw = localStorage.getItem("imagefilter-background-opacity");
+    if (raw !== null) {
+      const v = Number(raw);
+      return Number.isFinite(v) ? Math.min(100, Math.max(0, v)) : 0;
+    }
+    // macOS 默认 70(用户要求): 那边窗口是透明的, 纯透明会显得空。Windows 保持 0。
+    // 注意 Number(null) === 0 且是有限数 —— "没存过"必须先用 raw !== null 判掉,
+    // 否则这个按平台分支的默认值永远走不到。
+    return osCapabilities.platform === "macos" ? 70 : 0;
   });
 
   // "扫描目录结构..." 只在真的等了一会儿之后才出现。
@@ -651,6 +659,7 @@ function App({ osCapabilities }: { osCapabilities: OsCapabilities }) {
       className={`flex flex-col h-screen w-screen overflow-hidden text-zinc-100 transition-colors duration-200 ${isMac ? "rounded-xl" : ""} ${transparentBg ? "" : "bg-zinc-950"}`}
       style={transparentBg ? { backgroundColor: backgroundOpacity > 0 ? "var(--background-bg)" : "transparent" } : undefined}
     >
+      <MacPermissionGuide isMac={isMac} />
       {/* Custom title bar */}
       <TitleBar
         platform={osCapabilities.platform}

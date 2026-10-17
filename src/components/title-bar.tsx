@@ -15,14 +15,11 @@ import { Setting, Sun, Moon, Close, Help } from "@icon-park/react";
 import { Tip } from "./tip";
 
 // ── 标题栏 ──────────────────────────────────
-// 高度: h-9 (36px)  背景: bg-zinc-900  底部边框: border-zinc-800
-// 拖拽: data-tauri-drag-region  禁止选中: select-none
-//
-// ── 平台外观(macOS) ─────────────────────────
-// Windows: 右侧三键(最小化/最大化/关闭) + 左侧产品名 —— 就是 Windows 的窗口按钮语义。
-// macOS:   窗口控件在**左上**、是三个圆点(红=关闭, 黄=最小化, 绿=缩放), 右侧不该出现
-//          Windows 那套按钮。这里按 platform 分支自绘三个圆点(系统那套只在
-//          原生标题栏存在时才有, 而本项目是 decorations:false 的自绘窗口)。
+// Windows: 左侧产品名, 右侧 [帮助][设置][主题] + [最小化][最大化][关闭]。
+// macOS:   窗口控件是左上三个圆点(自绘, 因为窗口是 decorations:false); 右侧**不放**
+//          Windows 那套按钮。按用户要求, [帮助][设置][主题] 也移到**左边**,
+//          顺序是: 三个圆点 → 产品名 → 三个图标按钮。
+//          「不要压住三个圆点」靠分组间距与左侧留白保证(圆点组 ml-3.5, 图标组再隔开)。
 // 圆角不在这里做 —— 由 App.tsx 的外壳在 macOS 上裁(见那边的注释)。
 export function TitleBar({
   preloadFull,
@@ -71,7 +68,7 @@ export function TitleBar({
 }) {
   const { t } = useTranslation();
   const win = getCurrentWindow();
-  // 只有确认是 macOS 才切外观 —— 探测失败("unknown")保持 Windows 外观(今天的行为)。
+  // 只有确认是 macOS 才换外观 —— 探测失败("unknown")保持 Windows 外观(今天的行为)。
   const isMac = platform === "macos";
   const [showSettings, setShowSettings] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
@@ -95,6 +92,31 @@ export function TitleBar({
     document.documentElement.style.setProperty("--glass-opacity", `${glassOpacity}%`);
   }, [glassOpacity]);
 
+  // macOS 一次性把玻璃默认值纠正到 70(用户要求)。
+  // 为什么需要"迁移"而不只是改默认值: 1.2.0 在 macOS 上已经跑过, 它当时把 0 写进了这两个键
+  // (0 就是当时的默认值), 于是"没存过才用新默认"的分支永远走不到 —— 用户看到的就是 0%。
+  // 所以只在 macOS、且这个标记还没写过时, 把仍然是 0 的那两个键纠到 70;
+  // 标记写完之后, 用户自己拖过的值一律优先, 不再介入。
+  useEffect(() => {
+    if (!isMac) return;
+    try {
+      if (localStorage.getItem("imagefilter-mac-defaults-v1") !== null) return;
+      const bump = (key: string) => {
+        const raw = localStorage.getItem(key);
+        if (raw === null || Number(raw) === 0) {
+          localStorage.setItem(key, "70");
+        }
+      };
+      bump("imagefilter-glass-opacity");
+      bump("imagefilter-background-opacity");
+      localStorage.setItem("imagefilter-mac-defaults-v1", "1");
+      setGlassOpacity(70);
+      onBackgroundOpacityChange(70);
+    } catch {
+      /* 隐私模式下 localStorage 不可用: 忽略, 下次再试 */
+    }
+  }, []);
+
   // 一律使用 Mica(失焦时系统自动回退为纯色), 仅在开关/主题变化时应用
   useEffect(() => {
     invoke("set_glass_bg", {
@@ -108,6 +130,34 @@ export function TitleBar({
     setLanguage(l);
   };
 
+  // 三个图标按钮(帮助/设置/主题)在 Windows 上放右边、在 macOS 上放左边 ——
+  // 同一份 JSX, 只换它被摆在哪一组里, 避免两个平台各写一遍(它会漂)。
+  const iconButtons = (
+    <>
+      <Tip label={t("titlebar.help")} className="h-full flex items-center">
+      <button type="button" onClick={() => setShowHelp(true)}
+        className="w-8 h-full flex items-center justify-center text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800 rounded-md"
+      >
+        <Help theme="filled" size="15" strokeWidth={3} />
+      </button>
+      </Tip>
+      <Tip label={t("titlebar.settings")} className="h-full flex items-center">
+      <button type="button" onClick={() => setShowSettings(true)}
+        className="w-8 h-full flex items-center justify-center text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800 rounded-md"
+      >
+        <Setting theme="filled" size="15" strokeWidth={3} />
+      </button>
+      </Tip>
+      <Tip label={theme === "dark" ? t("titlebar.themeLight") : t("titlebar.themeDark")} className="h-full flex items-center">
+      <button type="button" onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
+        className="w-8 h-full flex items-center justify-center text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800 rounded-md"
+      >
+        {theme === "dark" ? <Sun theme="filled" size="15" strokeWidth={3} /> : <Moon theme="filled" size="15" strokeWidth={3} />}
+      </button>
+      </Tip>
+    </>
+  );
+
   return (
     <div
       data-tauri-drag-region
@@ -115,57 +165,40 @@ export function TitleBar({
       style={transparentBg ? { backgroundColor: "var(--glass-bg)" } : undefined}
     >
       {isMac ? (
-        // macOS: 左上三个窗口圆点(自绘, 因为窗口是 decorations:false)。
-        // 顺序与颜色照系统: 红关 / 黄最小化 / 绿缩放; 直径 12px、间距 8px。
-        <div className="flex items-center gap-2 ml-3.5 h-full">
-          <button
-            type="button"
-            aria-label={t("titlebar.close")}
-            title={t("titlebar.close")}
-            onClick={() => { win.close().catch(() => {}); }}
-            className="w-3 h-3 rounded-full bg-[#ff5f57] hover:brightness-110 active:brightness-90 transition-[filter]"
-          />
-          <button
-            type="button"
-            aria-label={t("titlebar.min")}
-            title={t("titlebar.min")}
-            onClick={() => { win.minimize().catch(() => {}); }}
-            className="w-3 h-3 rounded-full bg-[#febc2e] hover:brightness-110 active:brightness-90 transition-[filter]"
-          />
-          <button
-            type="button"
-            aria-label={t("titlebar.max")}
-            title={t("titlebar.max")}
-            onClick={() => { win.toggleMaximize().catch(() => {}); }}
-            className="w-3 h-3 rounded-full bg-[#28c840] hover:brightness-110 active:brightness-90 transition-[filter]"
-          />
-          <span className="text-[11px] text-zinc-500 ml-2">ImageFilter</span>
+        // macOS: 圆点 → 产品名 → 图标按钮, 全部靠左。右半边留空(没有 Windows 那套按钮)。
+        <div className="flex items-center h-full">
+          <div className="flex items-center gap-2 ml-3.5">
+            <button
+              type="button"
+              aria-label={t("titlebar.close")}
+              title={t("titlebar.close")}
+              onClick={() => { win.close().catch(() => {}); }}
+              className="w-3 h-3 rounded-full bg-[#ff5f57] hover:brightness-110 active:brightness-90 transition-[filter]"
+            />
+            <button
+              type="button"
+              aria-label={t("titlebar.min")}
+              title={t("titlebar.min")}
+              onClick={() => { win.minimize().catch(() => {}); }}
+              className="w-3 h-3 rounded-full bg-[#febc2e] hover:brightness-110 active:brightness-90 transition-[filter]"
+            />
+            <button
+              type="button"
+              aria-label={t("titlebar.max")}
+              title={t("titlebar.max")}
+              onClick={() => { win.toggleMaximize().catch(() => {}); }}
+              className="w-3 h-3 rounded-full bg-[#28c840] hover:brightness-110 active:brightness-90 transition-[filter]"
+            />
+          </div>
+          <span className="text-[11px] text-zinc-500 ml-3">ImageFilter</span>
+          {/* ml-2 是圆点组与图标组之间的额外间距 —— 让两者读起来是两组, 不是挤在一起 */}
+          <div className="flex items-center h-7.5 ml-2">{iconButtons}</div>
         </div>
       ) : (
         <span className="text-[11px] text-zinc-500 ml-3">ImageFilter</span>
       )}
       <div className="flex items-center h-7.5">
-        <Tip label={t("titlebar.help")} className="h-full flex items-center">
-        <button type="button" onClick={() => setShowHelp(true)}
-          className="w-8 h-full flex items-center justify-center text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800 rounded-md"
-        >
-          <Help theme="filled" size="15" strokeWidth={3} />
-        </button>
-        </Tip>
-        <Tip label={t("titlebar.settings")} className="h-full flex items-center">
-        <button type="button" onClick={() => setShowSettings(true)}
-          className="w-8 h-full flex items-center justify-center text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800 rounded-md"
-        >
-          <Setting theme="filled" size="15" strokeWidth={3} />
-        </button>
-        </Tip>
-        <Tip label={theme === "dark" ? t("titlebar.themeLight") : t("titlebar.themeDark")} className="h-full flex items-center">
-        <button type="button" onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
-          className="w-8 h-full flex items-center justify-center text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800 rounded-md"
-        >
-          {theme === "dark" ? <Sun theme="filled" size="15" strokeWidth={3} /> : <Moon theme="filled" size="15" strokeWidth={3} />}
-        </button>
-        </Tip>
+        {!isMac && iconButtons}
         {/* Windows 的窗口三键只在非 macOS 出现 —— macOS 用左上的圆点, 不再重复一套 */}
         {!isMac && (
           <>
@@ -186,7 +219,7 @@ export function TitleBar({
             <Tip label={t("titlebar.close")} className="h-full flex items-center">
             <button type="button" onClick={() => { win.close().catch(() => {}); }}
               className="w-10 h-full flex items-center justify-center text-zinc-500 hover:text-red-400 hover:bg-red-400/10 rounded-md">
-              <Close theme="filled" size="14" strokeWidth={4} />
+              <Close theme="filled" size={14} strokeWidth={4} />
             </button>
             </Tip>
           </>
@@ -216,6 +249,7 @@ export function TitleBar({
         transparentBg={transparentBg}
         onToggleTransparentBg={onToggleTransparentBg}
         micaUnsupported={micaUnsupported}
+        platform={platform}
         glassOpacity={glassOpacity}
         onGlassOpacityChange={setGlassOpacity}
         backgroundOpacity={backgroundOpacity}

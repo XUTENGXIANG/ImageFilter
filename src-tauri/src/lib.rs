@@ -74,6 +74,27 @@ pub struct OsCapabilities {
     supports_mica: bool,
 }
 
+/// 把用户送到 macOS 的「完全磁盘访问权限」页面。
+///
+/// 为什么用一条命令而不是前端开 URL: `x-apple.systempreferences:` 是自定义 scheme,
+/// Tauri 的 opener 插件要单独配 allow-list; 一条 `open` 更小也更好解释。
+/// 非 macOS 直接返回错误 —— 前端已 catch, 不影响其他平台。
+#[tauri::command]
+fn open_macos_privacy_settings() -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg("x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles")
+            .status()
+            .map_err(|e| format!("无法打开系统设置: {e}"))?;
+        Ok(())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Err("该命令只在 macOS 上有意义".to_string())
+    }
+}
+
 /// 启动时问一次: 这台机器的系统支持 Mica 吗?
 ///
 /// 判据必须用**构建号**, 不能用 `ProductName`: Win11 出于兼容性不更新 ProductName
@@ -366,6 +387,7 @@ pub fn run() {
             allow_asset_dir,
             set_glass_bg,
             get_os_capabilities,
+            open_macos_privacy_settings,
             db::get_import_history,
             db::count_import_history,
             db::get_rules,
