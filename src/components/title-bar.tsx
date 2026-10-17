@@ -17,6 +17,13 @@ import { Tip } from "./tip";
 // ── 标题栏 ──────────────────────────────────
 // 高度: h-9 (36px)  背景: bg-zinc-900  底部边框: border-zinc-800
 // 拖拽: data-tauri-drag-region  禁止选中: select-none
+//
+// ── 平台外观(macOS) ─────────────────────────
+// Windows: 右侧三键(最小化/最大化/关闭) + 左侧产品名 —— 就是 Windows 的窗口按钮语义。
+// macOS:   窗口控件在**左上**、是三个圆点(红=关闭, 黄=最小化, 绿=缩放), 右侧不该出现
+//          Windows 那套按钮。这里按 platform 分支自绘三个圆点(系统那套只在
+//          原生标题栏存在时才有, 而本项目是 decorations:false 的自绘窗口)。
+// 圆角不在这里做 —— 由 App.tsx 的外壳在 macOS 上裁(见那边的注释)。
 export function TitleBar({
   preloadFull,
   onTogglePreloadFull,
@@ -34,6 +41,7 @@ export function TitleBar({
   transparentBg,
   onToggleTransparentBg,
   micaUnsupported,
+  platform,
   backgroundOpacity,
   onBackgroundOpacityChange,
 }: {
@@ -56,11 +64,15 @@ export function TitleBar({
   onToggleTransparentBg: () => void;
   /** 系统不支持 Mica(Win10)时为真: 设置里把玻璃开关置灰并换掉说明文案 */
   micaUnsupported: boolean;
+  /** 来自 Rust `get_os_capabilities` 的 platform: "windows" / "macos" / "linux" / "unknown" */
+  platform: string;
   backgroundOpacity: number;
   onBackgroundOpacityChange: (v: number) => void;
 }) {
   const { t } = useTranslation();
   const win = getCurrentWindow();
+  // 只有确认是 macOS 才切外观 —— 探测失败("unknown")保持 Windows 外观(今天的行为)。
+  const isMac = platform === "macos";
   const [showSettings, setShowSettings] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
   // 主题/语言/玻璃透明度 — key 与 index.html 防闪脚本一致(imagefilter-*)
@@ -102,7 +114,36 @@ export function TitleBar({
       className={`h-9 flex items-center justify-between px-1 select-none flex-shrink-0 transition-colors duration-200 ${transparentBg ? "" : "bg-zinc-900"}`}
       style={transparentBg ? { backgroundColor: "var(--glass-bg)" } : undefined}
     >
-      <span className="text-[11px] text-zinc-500 ml-3">ImageFilter</span>
+      {isMac ? (
+        // macOS: 左上三个窗口圆点(自绘, 因为窗口是 decorations:false)。
+        // 顺序与颜色照系统: 红关 / 黄最小化 / 绿缩放; 直径 12px、间距 8px。
+        <div className="flex items-center gap-2 ml-3.5 h-full">
+          <button
+            type="button"
+            aria-label={t("titlebar.close")}
+            title={t("titlebar.close")}
+            onClick={() => { win.close().catch(() => {}); }}
+            className="w-3 h-3 rounded-full bg-[#ff5f57] hover:brightness-110 active:brightness-90 transition-[filter]"
+          />
+          <button
+            type="button"
+            aria-label={t("titlebar.min")}
+            title={t("titlebar.min")}
+            onClick={() => { win.minimize().catch(() => {}); }}
+            className="w-3 h-3 rounded-full bg-[#febc2e] hover:brightness-110 active:brightness-90 transition-[filter]"
+          />
+          <button
+            type="button"
+            aria-label={t("titlebar.max")}
+            title={t("titlebar.max")}
+            onClick={() => { win.toggleMaximize().catch(() => {}); }}
+            className="w-3 h-3 rounded-full bg-[#28c840] hover:brightness-110 active:brightness-90 transition-[filter]"
+          />
+          <span className="text-[11px] text-zinc-500 ml-2">ImageFilter</span>
+        </div>
+      ) : (
+        <span className="text-[11px] text-zinc-500 ml-3">ImageFilter</span>
+      )}
       <div className="flex items-center h-7.5">
         <Tip label={t("titlebar.help")} className="h-full flex items-center">
         <button type="button" onClick={() => setShowHelp(true)}
@@ -125,26 +166,31 @@ export function TitleBar({
           {theme === "dark" ? <Sun theme="filled" size="15" strokeWidth={3} /> : <Moon theme="filled" size="15" strokeWidth={3} />}
         </button>
         </Tip>
-        <Tip label={t("titlebar.min")} className="h-full flex items-center">
-        <button type="button" onClick={() => { win.minimize().catch(() => {}); }}
-          className="w-10 h-full flex items-center justify-center text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800 rounded-md">
-          <svg width="10" height="1"><rect width="10" height="1" fill="currentColor"/></svg>
-        </button>
-        </Tip>
-        <Tip label={t("titlebar.max")} className="h-full flex items-center">
-        <button type="button" onClick={() => { win.toggleMaximize().catch(() => {}); }}
-          className="w-10 h-full flex items-center justify-center text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800 rounded-md">
-          <svg width="10" height="10" viewBox="0 0 10 10">
-            <rect x="0.5" y="0.5" width="9" height="9" fill="none" stroke="currentColor" strokeWidth="1"/>
-          </svg>
-        </button>
-        </Tip>
-        <Tip label={t("titlebar.close")} className="h-full flex items-center">
-        <button type="button" onClick={() => { win.close().catch(() => {}); }}
-          className="w-10 h-full flex items-center justify-center text-zinc-500 hover:text-red-400 hover:bg-red-400/10 rounded-md">
-          <Close theme="filled" size="14" strokeWidth={4} />
-        </button>
-        </Tip>
+        {/* Windows 的窗口三键只在非 macOS 出现 —— macOS 用左上的圆点, 不再重复一套 */}
+        {!isMac && (
+          <>
+            <Tip label={t("titlebar.min")} className="h-full flex items-center">
+            <button type="button" onClick={() => { win.minimize().catch(() => {}); }}
+              className="w-10 h-full flex items-center justify-center text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800 rounded-md">
+              <svg width="10" height="1"><rect width="10" height="1" fill="currentColor"/></svg>
+            </button>
+            </Tip>
+            <Tip label={t("titlebar.max")} className="h-full flex items-center">
+            <button type="button" onClick={() => { win.toggleMaximize().catch(() => {}); }}
+              className="w-10 h-full flex items-center justify-center text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800 rounded-md">
+              <svg width="10" height="10" viewBox="0 0 10 10">
+                <rect x="0.5" y="0.5" width="9" height="9" fill="none" stroke="currentColor" strokeWidth="1"/>
+              </svg>
+            </button>
+            </Tip>
+            <Tip label={t("titlebar.close")} className="h-full flex items-center">
+            <button type="button" onClick={() => { win.close().catch(() => {}); }}
+              className="w-10 h-full flex items-center justify-center text-zinc-500 hover:text-red-400 hover:bg-red-400/10 rounded-md">
+              <Close theme="filled" size="14" strokeWidth={4} />
+            </button>
+            </Tip>
+          </>
+        )}
       </div>
 
       <SettingsDialog

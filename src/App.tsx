@@ -514,6 +514,14 @@ function App({ osCapabilities }: { osCapabilities: OsCapabilities }) {
   // 不能只看 platform —— 否则一次注册表读取失败就会把 Win11 用户的开关置灰。
   const micaUnsupported = isMicaUnsupported(osCapabilities);
 
+  // ── macOS 的窗口外观必须单独处理 ────────────────────────────────────────────
+  // Windows 11 的 DWM 会给无边框窗口**自动**加圆角, 所以这套自绘窗口在 Windows 上
+  // 看起来是有圆角的; macOS 不会给无边框(且透明)窗口任何圆角, 于是四角是方的。
+  // 因此: 确认是 macOS 时, 由外壳自己把窗口裁成圆角(窗口本身透明, 见 tauri.conf.json
+  // 的 macOSPrivateApi —— 没有它 macOS 上 transparent 不生效, 圆角裁了也看不见)。
+  // 探测失败("unknown")一律走 Windows 路径, 不改动未知平台的行为。
+  const isMac = osCapabilities.platform === "macos";
+
   useEffect(() => {
     localStorage.setItem("imagefilter-glass", transparentBg ? "1" : "0");
   }, [transparentBg]);
@@ -640,11 +648,12 @@ function App({ osCapabilities }: { osCapabilities: OsCapabilities }) {
 
   return (
     <div
-      className={`flex flex-col h-screen w-screen overflow-hidden text-zinc-100 transition-colors duration-200 ${transparentBg ? "" : "bg-zinc-950"}`}
+      className={`flex flex-col h-screen w-screen overflow-hidden text-zinc-100 transition-colors duration-200 ${isMac ? "rounded-xl" : ""} ${transparentBg ? "" : "bg-zinc-950"}`}
       style={transparentBg ? { backgroundColor: backgroundOpacity > 0 ? "var(--background-bg)" : "transparent" } : undefined}
     >
       {/* Custom title bar */}
       <TitleBar
+        platform={osCapabilities.platform}
         preloadFull={preloadFull}
         onTogglePreloadFull={togglePreloadFull}
         autoAdvance={autoAdvance}
