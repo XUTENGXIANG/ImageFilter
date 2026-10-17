@@ -2228,7 +2228,7 @@ dependencies = [
 
 [[package]]
 name = "image-filter"
-version = "1.2.0"
+version = "1.2.1"
 dependencies = [
  "axum",
  "cc",
