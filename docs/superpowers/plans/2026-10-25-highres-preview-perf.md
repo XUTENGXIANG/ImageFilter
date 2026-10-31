@@ -3,13 +3,13 @@
 **Goal:** 降低安卓查看器「高清」的首屏等待，不改变画质契约（只降不升 / q88 / 方向只校正一次）。
 
 **诊断：**
-- 安卓高清 = `max=2048` + `full=true`（[ViewerState.kt:480](../../android/app/src/main/kotlin/com/imagefilter/mobile/ui/ViewerState.kt#L480)）。
+- 安卓高清 = `max=2048` + `full=true`（[ViewerState.kt:480](../../../android/app/src/main/kotlin/com/imagefilter/mobile/ui/ViewerState.kt#L480)）。
 - 服务端 `preview_bytes` 对 `full=true` 直接 `get_full_image`；DNG 分支无条件全解码
-  （[images.rs:212](../../src-tauri/src/scanner/images.rs#L212)），完全不看内嵌预览。
-- 非 DNG 也要内嵌预览长边 ≥3000 才走快路径（[images.rs:278](../../src-tauri/src/scanner/images.rs#L278)），
+  （[images.rs:212](../../../src-tauri/src/scanner/images.rs#L212)），完全不看内嵌预览。
+- 非 DNG 也要内嵌预览长边 ≥3000 才走快路径（[images.rs:278](../../../src-tauri/src/scanner/images.rs#L278)），
   而手机只要 2048。
 - 全解码 → 5000 缓存 → 再缩到 2048，**两次缩放**；预览/全图共用 `Semaphore(1)`
-  （[media.rs:86](../../src-tauri/src/server/media.rs#L86)），全解码会堵住下一张默认预览。
+  （[media.rs:86](../../../src-tauri/src/server/media.rs#L86)），全解码会堵住下一张默认预览。
 
 **Architecture:** 把「高清」定义为“在请求尺寸下取最好的可用源”：
 内嵌预览够大就用内嵌预览（快），不够才全解码。全解码路径保留，但加计时日志；

@@ -1,8 +1,14 @@
 # ImageFilter 交接与上手（单一文档）
 
-> **给接手的新会话/协作者**：读完这一份即可开始改代码。深度证据（每条问题的代码行号、标定过程、社区调研来源）在 [ImageFilter-架构与机制走查.md](ImageFilter-架构与机制走查.md)。
+> **给接手的新会话/协作者**：读完这一份即可开始改代码。深度证据（每条问题的代码行号、标定过程、社区调研来源）在 [ImageFilter-架构与机制走查.md](archive/ImageFilter-架构与机制走查.md)（已归档，写于 v1.0.1，结论以本文为准）。
 >
-> 最后更新：本轮会话结束 · HEAD `8ec4eaf` · 版本 `1.0.1` · 工作区干净，**已推送到 `origin/master`**（与远端同步）
+> 最后更新：2026-10-31 · HEAD `39e7188` · 版本 `1.2.1` · 分支 `feat/android-gallery-service`
+> （**领先 origin 9 个 commit，未推送**；工作区另有未提交的圆角统一）
+>
+> **版本边界**：本文主体写于 v1.0.1；1.1–1.2 的增量（Lightroom、XMP 边车、
+> mDNS 配对、浅色主题、高清预览、竖屏方向、目录计数、Android 客户端、图库服务）
+> 见 [项目日志](ImageFilter-项目日志.md) §七 / §十一–§十四。§6 的已知问题清单是
+> v1.0.1 时点，部分已修。
 
 ---
 
@@ -11,11 +17,15 @@
 | 维度 | 事实 |
 |---|---|
 | 是什么 | SD 卡/相机照片的**初筛导入工具**：插卡 → 秒级预览 → 星级/AI 废片筛选 → 按模板归档。全程本地处理 |
-| 形态 | Tauri 2 桌面应用，单窗口 1200×800、**无边框 + transparent**，标题栏 React 自绘 |
-| 技术栈 | 前端 React 19 + TS 5.7 + Tailwind 4 + `@base-ui/react` + IconPark + i18next（无状态库/路由/动画库）；后端 Rust + rawler/WIC/tinydng(DNG) + zune-jpeg + **image_hasher** + kamadak-exif + tokio + sqlx(SQLite) + rayon |
-| 规模 | 后端约 2.5k 行 Rust（含测试）+ 前端约 2.9k 行 TS/TSX + 一个 C++ DNG 桥接 |
-| 测试 | **26 个活跃单测**（analyzer / importer / scanner），另有 3 个 `#[ignore]` 标定助手。**前端零测试** |
-| 已知缺口 | macOS 整条链未实机验证；D6/D7/D9–D11/D13 未修（见 §6） |
+| 形态 | Tauri 2 桌面应用 + 内嵌 axum 图库服务 + Android Compose 客户端；单窗口 1200×800、**无边框 + transparent**，标题栏 React 自绘 |
+| 技术栈 | 前端 React 19 + TS 5.7 + Tailwind 4 + `@base-ui/react` + IconPark + i18next（无状态库/路由/动画库）；后端 Rust + rawler/WIC/tinydng(DNG) + zune-jpeg + **image_hasher** + kamadak-exif + tokio + sqlx(SQLite) + rayon + axum/mDNS；手机 Kotlin + Compose + Coil 3 + OkHttp |
+| 规模 | 后端约 22k 行 Rust（含测试）+ 前端约 10k 行 TS/TSX + Android 约 26k 行 Kotlin（含测试）+ 一个 C++ DNG 桥接 |
+| 测试 | Rust `cargo test --lib` **196** + `server_contract` **65**；Android JVM **545**；前端 `tsc` / `vite build`（数字见项目日志 §一） |
+| 已知缺口 | macOS 部分链未实机验证；Android 只做局域网（无隧道 / 删除）；§6 为 v1.0.1 清单，部分已修 |
+
+**1.1–1.2 增量**：Lightroom 衔接、XMP 边车、mDNS 配对 + 浅色主题、高清预览提速、
+竖屏方向修复、目录计数口径、Android 客户端与图库服务。细节见
+[项目日志](ImageFilter-项目日志.md) §七 / §十一–§十四。
 
 **一句话架构**：单页三栏（左设备树 / 中网格 / 右 EXIF）+ 全屏查看器；业务状态全部收敛在 `useScanner()`，经 21 个 Tauri command 命令式取数，长任务用 `Channel` 流式回推进度。
 
@@ -25,7 +35,7 @@
 │   └── useScanner()   ← 唯一业务状态源（设备/树/照片/勾选/星级/导入/分析）│
 │   └── PhotoViewer    ← 独立状态机（渐进加载 + 缩放/旋转/评分）          │
 └───────┬────────────────────────────────────────────────┬────────────┘
-        │ invoke(21 cmds) + Channel(进度)                 │ asset://（图片字节）
+        │ invoke(Tauri commands) + Channel(进度)           │ asset://（图片字节）
 ┌───────▼────────────────────────────────────────────────▼────────────┐
 │ Rust: scanner{drives,browse,exif,images} analyzer importer db        │
 │  解码链: 内嵌JPEG(mmap) → WIC(系统 codec) → rawler 全解码 → tinydng   │
@@ -53,7 +63,7 @@ cargo test --lib       # 在 src-tauri/ 下执行；67 活跃 + 3 忽略（2026-
 | **版本号** | 发布需同步 **4 处**：`package.json`、`src-tauri/tauri.conf.json`、`src-tauri/Cargo.toml`、`src/components/settings-dialog.tsx`（旧文档只提了前三处） |
 | **发布流程** | 推代码 → `git tag vX.Y.Z` + `git push origin vX.Y.Z` → GitHub Actions 构建安装包 → **人工建 Release** 才算发布 |
 | **运行期数据** | 缓存 `%LOCALAPPDATA%\image-filter\{thumbnails_v2, preview_v4, full_v3}`；数据库 `%APPDATA%\com.imagefilter.app\image-filter.db` |
-| **本地文档** | `HANDOFF.md` / `PROJECT_LOG.md` 在 `.gitignore` 里（不入库）。本文件在 `docs/` 下，**已入库**，是唯一权威交接文档 |
+| **本地文档** | `HANDOFF.md` 是本地指针（`.gitignore`，不入库）；`PROJECT_LOG.md` 已并入并删除。本文件在 `docs/` 下，**已入库**，是唯一权威交接文档 |
 
 ---
 
@@ -146,6 +156,19 @@ asset 协议 scope **收紧为空**（`tauri.conf.json`），启动只放行缓�
 ### 4.7 前端持久化 key
 `imagefilter-theme`（深/浅，index.html 有防闪脚本）、`-lang`、`-glass`、`-glass-opacity`、`-background-opacity`、`-preload-full`、`-ratings`（星级，JSON）、`-cols`（网格列数）。
 
+### 4.8 图库服务与 Android（1.2 新增）
+
+- 桌面端内嵌 axum 服务，**默认关闭**，只监听局域网；入口在「设置 → 图库服务」。
+- 路由：`ping` / `shares` / `drives` / `browse` / `scan` / `thumb` / `preview` /
+  `decisions` / `move` / `clients`，外加配对请求与状态。
+- 鉴权：全路由 Bearer fail-closed；路径必须过共享根白名单 `ensure_within`；
+  错误统一 `{ code }`；服务命令失败一律 `Err(String)`，不许 panic。
+- Android：Compose 客户端，扫码/手输配对 → 目录树 → 网格 → 查看器/滑卡 →
+  决策回写；失败进「待重试」。
+- 刻意不做：删除、手机新建文件夹、隧道 / 公网、TLS。
+- 细节见 [安卓设计规格](superpowers/specs/2026-10-06-imagefilter-android-design.md)
+  与项目日志 §十一–§十四。
+
 ---
 
 ## 5. 必守的坑（不要"顺手简化"）
@@ -168,6 +191,9 @@ asset 协议 scope **收紧为空**（`tauri.conf.json`），启动只放行缓�
 ---
 
 ## 6. 已知问题与优化建议（按优先级，均未修）
+
+> **时点说明**：以下清单写于 v1.0.1；部分已在 1.1–1.2 修复（见项目日志
+> §四 / §七 / §十一–§十四），未关闭项以项目日志 / 待决清单为准。
 
 ### P1 — 影响体验或有数据风险
 | # | 问题 | 证据 / 位置 | 建议 |
@@ -248,10 +274,13 @@ cargo test --release --lib bench_analyze_cache -- --ignored --nocapture   # 生�
 
 ---
 
-## 9. 发版计划（当前：v1.1.0）
+## 9. 发版计划（历史：v1.1.0）
 
+> **历史章节**：这是 v1.1.0 的发版计划；后续版本见
+> [更新说明](ImageFilter-更新说明.md) 与项目日志 §五。
+>
 > **本节已随 Phase 1–7 更新**。原计划里的 `v1.0.2`（那批模糊/重复/CPU 修复）与后续的 Phase 1–6（自动前进、撤销、1:1、颜色标签与三维筛选、XMP 边车、导入历史/命名方案/导入统计）、Phase 7（Lightroom 衔接）**合并为一次 `v1.1.0`** 发布。
-> 版本号已改为 `1.1.0`（4 处），见 [ImageFilter-Phase7-Lightroom衔接.md](ImageFilter-Phase7-Lightroom衔接.md) 与 [ImageFilter-功能实施方案.md](ImageFilter-功能实施方案.md)。
+> 版本号已改为 `1.1.0`（4 处），见 [ImageFilter-Phase7-Lightroom衔接.md](ImageFilter-Phase7-Lightroom衔接.md) 与 [功能实施方案（归档）](archive/ImageFilter-功能实施方案.md)。
 
 ### 9.1 发布前检查
 - [x] `cargo test --lib`（67 活跃 + 3 忽略）与 `npx tsc --noEmit` / `npx vite build` 全绿；i18n zh/en 各 273 叶子 key 对齐
@@ -314,10 +343,14 @@ git push origin v1.1.0
 
 | 文档 | 用途 |
 |---|---|
-| **本文件** | 唯一权威交接文档：现状、机制、必守坑位、未修问题与优化建议、验证工具、**发版计划** |
-| [ImageFilter-架构与机制走查.md](ImageFilter-架构与机制走查.md) | 深度证据：D1–D14 逐条（含代码行号、复现数据）、§8 三轮修复的根因与社区调研来源 |
-| [ImageFilter-功能实施方案.md](ImageFilter-功能实施方案.md) | Phase 1–6 的施工图 + 各会话决策日志（含**被否决方案**）+ 手测清单 |
-| [ImageFilter-Phase7-Lightroom衔接.md](ImageFilter-Phase7-Lightroom衔接.md) | Phase 7 与 Lightroom Classic 衔接：实机探路结论、决策日志、手测清单、已知限制 |
+| **本文件** | 当前状态、机制、必守坑位、未修问题、验证工具、发版计划 —— 现状只写这一处 |
+| [文档索引](README.md) | 所有文档、归档与 SDD 的唯一入口 |
+| [更新说明](ImageFilter-更新说明.md) | 1.1.0 起的版本变更与安装说明 |
+| [项目日志](ImageFilter-项目日志.md) | 时间线、事故簿、决策（历史；规则以本文件为准） |
+| [待决清单](ImageFilter-待决清单.md) | 待决定 / 待动手 / 未处理风险 |
+| [安卓发版与签名](ImageFilter-安卓发版与签名.md) | 安卓构建、签名、CI、版本号 |
+| [Lightroom 衔接](ImageFilter-Phase7-Lightroom衔接.md) | Phase 7 的深度说明与历史决策 |
+| [archive/](archive/) | 历史走查与 Phase 1–6 方案；**不要据此改代码** |
+| [docs/superpowers/](superpowers/README.md) | SDD 规范、specs / plans 索引；执行台账在 `.superpowers/sdd/`（本地、gitignored） |
 | [README.md](../README.md) / [README.en.md](../README.en.md) | 对外介绍、安装与快捷键 |
-| `PROJECT_LOG.md`、`HANDOFF.md`（本地，未入库） | **已过期**，保留仅作历史；以本文件为准 |
-| `docs/superpowers/` 下的 plans 与 specs | 落地页网站（另一个仓库）的计划与设计规格 |
+| `HANDOFF.md`（本地指针） | 指向本文件；`PROJECT_LOG.md` 已并入，不再维护 |

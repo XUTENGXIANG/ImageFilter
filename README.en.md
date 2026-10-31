@@ -10,7 +10,7 @@
 
 <p align="center">
   <a href="https://github.com/XUTENGXIANG/ImageFilter/releases/latest"><img src="https://img.shields.io/github/v/release/XUTENGXIANG/ImageFilter?sort=semver&amp;color=1f883d" alt="Release"></a>
-  <a href="#"><img src="https://img.shields.io/badge/platform-Windows%2010%2F11%20%7C%20macOS-lightgrey" alt="Platform"></a>
+  <a href="#"><img src="https://img.shields.io/badge/platform-Windows%2010%2F11%20%7C%20macOS%20%7C%20Android-lightgrey" alt="Platform"></a>
   <a href="LICENSE"><img src="https://img.shields.io/github/license/XUTENGXIANG/ImageFilter" alt="License"></a>
   <a href="https://github.com/XUTENGXIANG/ImageFilter/releases/latest"><img src="https://img.shields.io/badge/download-latest-green" alt="Download"></a>
 </p>
@@ -56,8 +56,13 @@ Download the installer for your platform from [Releases](https://github.com/XUTE
 |------|-------------|
 | `ImageFilter_x64-setup.exe` | NSIS installer (recommended) |
 | `ImageFilter_x64_zh-CN.msi` | MSI installer |
+| `ImageFilter-Mobile-<version>.apk` | Android client (same LAN as the desktop app) |
 
 Double-click to install. If downloads are slow, use the [official website](https://tensyn.online/#download) or the links on [Releases](https://github.com/XUTENGXIANG/ImageFilter/releases). macOS builds are available on [Releases](https://github.com/XUTENGXIANG/ImageFilter/releases).
+
+The Android client connects over the local network: open **Settings → Gallery Service**
+on the desktop, turn the service on, then pair by scanning the QR code or entering the
+address manually. The service is off by default and listens on the LAN only.
 
 ## Quick Start
 
@@ -94,10 +99,12 @@ Example: `{date}/{camera}/{seq}.{ext}` produces `2026-08-10/Sony_A7M4/0001.ARW`
 |-------|------------|
 | Framework | Tauri 2, React 19, TypeScript |
 | UI | Tailwind CSS 4, shadcn/ui, IconPark |
-| RAW decoding | rawler, WIC, tinydng, zune-jpeg |
-| Thumbnails | Windows Shell (IShellItemImageFactory) |
-| Image analysis | imgfprint, pure algorithms (Laplacian / histogram) |
-| Storage | SQLite |
+| RAW decoding | rawler, WIC, tinydng, zune-jpeg, fast_image_resize |
+| Thumbnails | Windows Shell (WIC / IShellItemImageFactory) first, fallback to embedded preview + zune-jpeg; disk cache |
+| Image analysis | image_hasher (perceptual hash) + Laplacian / histogram |
+| Storage | SQLite (import history / rules) + XMP sidecars |
+| Mobile | Android Compose, Coil 3, OkHttp |
+| LAN service | axum 0.8, mDNS |
 
 ## Development
 
@@ -145,9 +152,12 @@ npx tauri dev 2>&1 | tee dev.log
 tasklist | findstr image-filter    # confirm the window process is up
 ```
 
-**Hot reload**: frontend changes apply instantly via Vite HMR; Rust changes trigger an incremental rebuild and window restart. Before touching `viewer.tsx`'s loading state machine, read section 5 of `HANDOFF.md` (every branch exists to fix a visual bug — don't "simplify" them).
+**Hot reload**: frontend changes apply instantly via Vite HMR; Rust changes trigger an incremental rebuild and window restart. Before touching `viewer.tsx`'s loading state machine, read section 5 of `docs/ImageFilter-交接与上手.md` (every branch exists to fix a visual bug — don't "simplify" them).
 
-**Versioning**: bump the version in `package.json`, `tauri.conf.json` and `src-tauri/Cargo.toml` together; mark a pending release with `git tag vX.Y.Z` and push the tag. Installers are produced by the GitHub Actions workflow.
+**Versioning**: bump the version in `package.json`, `tauri.conf.json`, `src-tauri/Cargo.toml`
+and `src/components/settings-dialog.tsx` together; Android reads `android/version.properties`
+and the Gradle build verifies it matches the desktop files. Mark a pending release with
+`git tag vX.Y.Z` and push the tag. Installers are produced by the GitHub Actions workflow.
 
 ## Project Structure
 
@@ -161,12 +171,21 @@ src/                  # React frontend
 src-tauri/            # Rust backend
   src/
     scanner/          # Devices / browsing / EXIF / image decoding
+    server/           # Embedded LAN gallery service (axum + mDNS + pairing)
     analyzer.rs       # Blur / exposure / duplicate detection
     importer.rs       # Import engine
     win_wic.rs        # Windows WIC decoding
     tinydng.rs        # DNG decoding (FFI)
   third_party/tinydng # DNG decoder C++ sources
+android/              # Android Compose client
+docs/                 # Handoff docs, project log, SDD plans and evidence
 ```
+
+## Docs
+
+- [Handoff & onboarding](docs/ImageFilter-交接与上手.md) — read this first
+- [Documentation index](docs/README.md) — all docs, archive and SDD
+- [Release notes](docs/ImageFilter-更新说明.md) — version changes
 
 ## License
 

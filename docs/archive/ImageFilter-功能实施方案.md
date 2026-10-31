@@ -1,12 +1,17 @@
 # ImageFilter 功能实施方案（P0 / P1）
 
-> 定位：本文是**动手前的施工图**，不是交接文档。现状与机制见 [ImageFilter-交接与上手.md](ImageFilter-交接与上手.md)，深度证据见 [ImageFilter-架构与机制走查.md](ImageFilter-架构与机制走查.md)。
+> **历史文档（已归档）**：Phase 1–6 已并入 1.1.0。当前状态见
+> [交接与上手](../ImageFilter-交接与上手.md)；本文只保留施工图、决策日志（含被否决方案）
+> 与手测清单。
+>
+> 定位：本文是**动手前的施工图**，不是交接文档。深度证据见
+> [架构与机制走查](ImageFilter-架构与机制走查.md)（同目录）。
 >
 > 基线：HEAD `6cad676` · 版本 `1.0.1` · 工作区干净 · `npx tsc --noEmit` exit 0 · `npx vite build` exit 0 · `cargo test --lib` 58 活跃 + 3 忽略 · i18n zh/en 各 241 叶子 key。**Phase 1–6 已全部落地**（会话 ①–⑤），本文现在同时是施工图与决策记录：正文各节已回填成"实现后的样子"，**符号名是权威**（写文时的行号早已漂移）。
 >
 > 每个 Phase 都是**可独立提交、可独立回归**的最小单元；建议一次只做一个 Phase，做完跑一次验收清单再进下一个。
 >
-> **Phase 7（与 Lightroom Classic 衔接）不在本文内**，已单独成文：[ImageFilter-Phase7-Lightroom衔接.md](ImageFilter-Phase7-Lightroom衔接.md)（含实机探路结论、决策日志、手测清单、被否决方案）。
+> **Phase 7（与 Lightroom Classic 衔接）不在本文内**，已单独成文：[ImageFilter-Phase7-Lightroom衔接.md](../ImageFilter-Phase7-Lightroom衔接.md)（含实机探路结论、决策日志、手测清单、被否决方案）。
 
 ---
 
@@ -36,14 +41,14 @@
 **共同的前置约束（每个 Phase 都要守）**：
 
 1. **不许简化查看器的四条加载分支**（交接文档 §5-1）。所有改动是在这四条之上加分支，不是替换。
-2. **评分目前是"单一事实源"**：`useScanner.setRating` 是唯一写入点（[useScanner.ts:179](../src/useScanner.ts:179)），任何新写入路径（撤销、XMP、标签）都必须汇流到这里或与它并列并被同一处序列化，否则会出现"查看器与网格不一致"这类回归（交接文档 §7 修过）。
+2. **评分目前是"单一事实源"**：`useScanner.setRating` 是唯一写入点（[useScanner.ts:179](../../src/useScanner.ts:179)），任何新写入路径（撤销、XMP、标签）都必须汇流到这里或与它并列并被同一处序列化，否则会出现"查看器与网格不一致"这类回归（交接文档 §7 修过）。
 3. **i18n 双写**：zh 与 en 各 **241** 个 key 目前完全对齐（会话 ① 163 → ② +6 → ③ +23 → ④ +27 → ⑤ +22：6.1 十个 + 6.2 十个 + 6.3 两个），**新增 key 必须两边同时加**，否则会踩 fallback。另注意插值写法见第 5 条。
-4. **落地页 demo 的 mock 层**（另一仓库，见 [superpowers/specs](superpowers/specs/2026-08-11-imagefilter-website-design.md)）会 mock Tauri API：**Phase 5/6 一旦改命令签名，需要同步那份 mock**，否则官网迷你演示会白屏。
-5. **i18n 插值只能用单括号 `{n}`，不是 i18next 默认的双括号**（会话 ② 踩过、已修，见提交 `07b543a`）：[i18n/index.ts:26](../src/i18n/index.ts:26) 把 `prefix`/`suffix` 改成了 `{` 和 `}`，所以写成 `{{n}}` **既不报错也不翻译，而是把 `{{n}}` 原样显示出来**（会话 ② 首轮实机的 toast 就是 `已撤销：{{prev}}★ → {{next}}★`）。**动手加任何带占位符的文案前，先照 `toast.ratingChange` / `toolbar.selected` 这类既有 key 抄写法**，别照 i18next 官方文档写。
-6. **任何"会改数据"的新入口都必须能被 `Ctrl+Z` 撤回**（会话 ② 建立的补丁栈纪律）。当前记录点：评分的唯一写入点 `useScanner.setRating`，勾选的三条路径 `commitSelection` / `selectAll` / `clearSelection`（选择集的唯一写入口是 `selectPaths`），纯逻辑与三条不变式在 [undo.ts](../src/undo.ts) 文件头。新增写入路径（颜色标签、日后的 XMP 回填、**任何新勾选按钮**）**要么汇流到既有记录点，要么与它们并列并走同一个补丁栈**；直接调 `setXxx` 而不 `recordPatch` = 这一步撤销不到，用户按 `Ctrl+Z` 会**跳过它去撤更早的操作**。给 `Patch` 加新 `kind` 时，`tsc` 会把 `undo()` / `redo()` / `patchToast()` / `samePatch()` / `patchPath()` 这几个派发点全报出来 —— **逐个补齐，不许用 `any` / `as` 兜底**（"漏点由编译器发现"就是这条纪律的收益）。
+4. **落地页 demo 的 mock 层**（另一仓库，见 [superpowers/specs](../superpowers/specs/2026-08-11-imagefilter-website-design.md)）会 mock Tauri API：**Phase 5/6 一旦改命令签名，需要同步那份 mock**，否则官网迷你演示会白屏。
+5. **i18n 插值只能用单括号 `{n}`，不是 i18next 默认的双括号**（会话 ② 踩过、已修，见提交 `07b543a`）：[i18n/index.ts:26](../../src/i18n/index.ts:26) 把 `prefix`/`suffix` 改成了 `{` 和 `}`，所以写成 `{{n}}` **既不报错也不翻译，而是把 `{{n}}` 原样显示出来**（会话 ② 首轮实机的 toast 就是 `已撤销：{{prev}}★ → {{next}}★`）。**动手加任何带占位符的文案前，先照 `toast.ratingChange` / `toolbar.selected` 这类既有 key 抄写法**，别照 i18next 官方文档写。
+6. **任何"会改数据"的新入口都必须能被 `Ctrl+Z` 撤回**（会话 ② 建立的补丁栈纪律）。当前记录点：评分的唯一写入点 `useScanner.setRating`，勾选的三条路径 `commitSelection` / `selectAll` / `clearSelection`（选择集的唯一写入口是 `selectPaths`），纯逻辑与三条不变式在 [undo.ts](../../src/undo.ts) 文件头。新增写入路径（颜色标签、日后的 XMP 回填、**任何新勾选按钮**）**要么汇流到既有记录点，要么与它们并列并走同一个补丁栈**；直接调 `setXxx` 而不 `recordPatch` = 这一步撤销不到，用户按 `Ctrl+Z` 会**跳过它去撤更早的操作**。给 `Patch` 加新 `kind` 时，`tsc` 会把 `undo()` / `redo()` / `patchToast()` / `samePatch()` / `patchPath()` 这几个派发点全报出来 —— **逐个补齐，不许用 `any` / `as` 兜底**（"漏点由编译器发现"就是这条纪律的收益）。
 7. **提交卫生（会话 ② 起适用，任何会话都不许省）**：**禁止 `git add -A` / `git commit -a`**，只 `git add` 明确列出的路径；`src-tauri/Cargo.toml` 有**非本会话的行尾符噪音**（内容无实质变化），不要提交；仓库根的 `task-7-review-package.decoded.txt` **不属于本项目**，不要提交；`vite.config.ts` 可能正被**另一个并发会话**修改，不要动、也不要把它未完成的改动捎带提交。**提交前先 `git status --porcelain` 核对暂存清单里只有预期文件。**
 8. **依赖面与 Rust 边界**：除 Phase 5 / Phase 6 按本文设计改 `src-tauri` 外，其余 Phase **一律不动 Rust**；**任何 Phase 都不新增第三方依赖**（Phase 5 刻意不用 XML 解析库，会话 ② 刻意不引入 vitest）。要验证纯逻辑时，用"临时脚本 + 仓库自带 esbuild 转译后跑 Node，用完即删"的办法（会话 ② 用它给 `src/undo.ts` 跑了 27 条断言）。
-9. **滚动容器一律"保留滚动、隐藏滚动条"**（会话 ③ 定，用户明确要求，以后都照这条做）：凡是 `overflow-auto` / `overflow-y-auto` / `overflow-scroll` 的容器都要带 `no-scrollbar`（定义在 [index.css](../src/index.css)：`::-webkit-scrollbar { display: none }` + `scrollbar-width: none`）。会话 ③ 全仓库复查时 8 处滚动容器只有两个对话框漏了，已补齐（设置对话框 `5dbd085`、使用说明 `0203907`）。**新增任何可滚动容器都要顺手加 `no-scrollbar`**；内容变高先考虑加高容器/收紧行距，`no-scrollbar` 只负责不让滚动条冒出来（滚轮、触控板、键盘照旧可用）。
+9. **滚动容器一律"保留滚动、隐藏滚动条"**（会话 ③ 定，用户明确要求，以后都照这条做）：凡是 `overflow-auto` / `overflow-y-auto` / `overflow-scroll` 的容器都要带 `no-scrollbar`（定义在 [index.css](../../src/index.css)：`::-webkit-scrollbar { display: none }` + `scrollbar-width: none`）。会话 ③ 全仓库复查时 8 处滚动容器只有两个对话框漏了，已补齐（设置对话框 `5dbd085`、使用说明 `0203907`）。**新增任何可滚动容器都要顺手加 `no-scrollbar`**；内容变高先考虑加高容器/收紧行距，`no-scrollbar` 只负责不让滚动条冒出来（滚轮、触控板、键盘照旧可用）。
 
 ---
 
@@ -59,7 +64,7 @@
 
 **A. `src/viewer.tsx`**
 
-1. 键盘 handler 内的评分分支（[viewer.tsx:268-270](../src/viewer.tsx:268)）：
+1. 键盘 handler 内的评分分支（[viewer.tsx:268-270](../../src/viewer.tsx:268)）：
 
 ```tsx
 else if (e.key.toLowerCase() === "j") { onRate(photo.path, 3); autoNext(); }
@@ -77,28 +82,28 @@ const autoNext = useCallback(() => {
 }, [autoAdvance, cur, photos.length, navigateTo, handleClose]);
 ```
 
-3. 星条按钮（[viewer.tsx:357](../src/viewer.tsx:357)）点击后同样调 `autoNext()`，但**"点同一颗星取消评分"也前进吗？** → 前进。行为一致性优先，用户想留下就用 `←` 回退。
+3. 星条按钮（[viewer.tsx:357](../../src/viewer.tsx:357)）点击后同样调 `autoNext()`，但**"点同一颗星取消评分"也前进吗？** → 前进。行为一致性优先，用户想留下就用 `←` 回退。
 4. 新增 prop `autoAdvance: boolean`。
 
 ### 关键陷阱（必须实现，否则会引出新 bug）
 
-- **`navigateTo` 会写 `lastSwitchRef`**（[viewer.tsx:100](../src/viewer.tsx:100) 附近），而该 ref 用来判定"快速连切 → 预览请求 debounce 120ms"（[viewer.tsx:184-206](../src/viewer.tsx:184)）。自动前进如果也走这条路径，用户"慢速逐张评分"会被误判成 rapid，反而多出 120ms 延迟。
+- **`navigateTo` 会写 `lastSwitchRef`**（[viewer.tsx:100](../../src/viewer.tsx:100) 附近），而该 ref 用来判定"快速连切 → 预览请求 debounce 120ms"（[viewer.tsx:184-206](../../src/viewer.tsx:184)）。自动前进如果也走这条路径，用户"慢速逐张评分"会被误判成 rapid，反而多出 120ms 延迟。
   **做法**：给 `navigateTo` 加第二个参数 `markSwitch = true`；`autoNext` 传 `false`。这样自动前进不写 `lastSwitchRef`，下一张按正常路径立即发预览。
 - **不要等图片加载完成再前进**。加载是异步的，等它会把"评分"这个操作变成有延迟的动作。刷新键位流即可。
 - **不要在最后一张循环回第一张**——那会让 culling 永远不结束；关闭查看器才是正确终点。
-- 与"锚点重锚"effect（[viewer.tsx:232-245](../src/viewer.tsx:232)）的交互：开着星级筛选时自动前进到下一张，若下一张不在筛选结果里则它本来就不在 `photos` 数组中，`navigateTo` 会自然跳过——**这正好是想要的行为**，不要额外处理。
+- 与"锚点重锚"effect（[viewer.tsx:232-245](../../src/viewer.tsx:232)）的交互：开着星级筛选时自动前进到下一张，若下一张不在筛选结果里则它本来就不在 `photos` 数组中，`navigateTo` 会自然跳过——**这正好是想要的行为**，不要额外处理。
 
-**B. `src/App.tsx`**：把 `autoAdvance` 从 `useScanner` 传入 `PhotoViewer`（[App.tsx:604-616](../src/App.tsx:604)）。
+**B. `src/App.tsx`**：把 `autoAdvance` 从 `useScanner` 传入 `PhotoViewer`（[App.tsx:604-616](../../src/App.tsx:604)）。
 
-**C. `src/useScanner.ts`**：新增持久化设置，照抄 `preloadFull` 的写法（[useScanner.ts:142-151](../src/useScanner.ts:142)）：
+**C. `src/useScanner.ts`**：新增持久化设置，照抄 `preloadFull` 的写法（[useScanner.ts:142-151](../../src/useScanner.ts:142)）：
 
 ```ts
 const [autoAdvance, setAutoAdvance] = useState(() => localStorage.getItem("imagefilter-auto-advance") !== "false"); // 默认开
 ```
 
-并在 return 对象里导出（[useScanner.ts:363-374](../src/useScanner.ts:363)）。
+并在 return 对象里导出（[useScanner.ts:363-374](../../src/useScanner.ts:363)）。
 
-**D. `src/components/settings-dialog.tsx`**：仿 `preloadFull` 那一行（[settings-dialog.tsx:103-105](../src/components/settings-dialog.tsx:103)）加一个 `SettingRow` + `Toggle`，链路 `App → TitleBar → SettingsDialog`（三处 props 透传，与 `preloadFull` 完全一致的路径）。
+**D. `src/components/settings-dialog.tsx`**：仿 `preloadFull` 那一行（[settings-dialog.tsx:103-105](../../src/components/settings-dialog.tsx:103)）加一个 `SettingRow` + `Toggle`，链路 `App → TitleBar → SettingsDialog`（三处 props 透传，与 `preloadFull` 完全一致的路径）。
 
 **E. i18n**：`settings.autoAdvance` / `settings.autoAdvanceDesc` / `help.autoAdvance`（zh + en 各 3 个）。
 
@@ -129,13 +134,13 @@ type Patch =
 - 任何新变更 `push` 到 `undoStack` 并**清空 `redoStack`**。
 - 撤销 = 取栈顶，应用其 `prev`，移入 `redoStack`；重做反之。
 
-UI 上给一个 toast 反馈：`撤销：4★ → 3★`，让用户知道撤销了什么（复用 [App.tsx:271](../src/App.tsx:271) 的 `showToast`）。
+UI 上给一个 toast 反馈：`撤销：4★ → 3★`，让用户知道撤销了什么（复用 [App.tsx:271](../../src/App.tsx:271) 的 `showToast`）。
 
 ### 改动点
 
 **A. `src/useScanner.ts`**
 
-1. `setRating`（[useScanner.ts:127-133](../src/useScanner.ts:127)）内部先记录补丁：
+1. `setRating`（[useScanner.ts:127-133](../../src/useScanner.ts:127)）内部先记录补丁：
 
 ```ts
 const setRating = useCallback((path: string, stars: number) => {
@@ -165,7 +170,7 @@ const setRating = useCallback((path: string, stars: number) => {
 > 会话 ② 改用 `useState<{undo, redo}>` 原子更新，`canUndo`/`canRedo` 由 `useMemo` 派生。
 
 
-2. 勾选变更同理：`handlePhotoClick`（[useScanner.ts:73-101](../src/useScanner.ts:73)）、`selectAll`、`clearSelection` 三处都要记录 `prev/next` 的路径数组。
+2. 勾选变更同理：`handlePhotoClick`（[useScanner.ts:73-101](../../src/useScanner.ts:73)）、`selectAll`、`clearSelection` 三处都要记录 `prev/next` 的路径数组。
    > 补充（会话 ② 核实）：`handlePhotoClick` 内部有**三个**分支（Ctrl 切换 / Shift 范围 / 单击累积）都要记；
    > 且查看器的勾选框（viewer.tsx:436）与空格键（viewer.tsx:370）也走 `App.toggleSelect → handlePhotoClick`，
    > 即"记录点 3 处、覆盖 5 条入口"。另外 `loadFolder` 里直接 `setSelectedPaths(new Set())` 也要走同一个
@@ -173,7 +178,7 @@ const setRating = useCallback((path: string, stars: number) => {
 
 3. 新增导出：`undo()`、`redo()`、`canUndo`、`canRedo`。
 
-**B. `src/App.tsx`**：新增一个 `keydown` 监听（放在现有快捷键 effect 旁边 [App.tsx:180](../src/App.tsx:180)）：
+**B. `src/App.tsx`**：新增一个 `keydown` 监听（放在现有快捷键 effect 旁边 [App.tsx:180](../../src/App.tsx:180)）：
 
 ```tsx
 if ((e.ctrlKey || e.metaKey) && key === "z") {
@@ -183,10 +188,10 @@ if ((e.ctrlKey || e.metaKey) && key === "z") {
 }
 ```
 
-注意 [App.tsx:160-171](../src/App.tsx:160) 已经拦了 `Ctrl+A`，这里要**同时**在输入框内豁免（`e.target` 是 INPUT/TEXTAREA 时不处理），否则用户没法在目标目录/模板输入框里撤销打字。
+注意 [App.tsx:160-171](../../src/App.tsx:160) 已经拦了 `Ctrl+A`，这里要**同时**在输入框内豁免（`e.target` 是 INPUT/TEXTAREA 时不处理），否则用户没法在目标目录/模板输入框里撤销打字。
 
 > 🛠 会话 ② 的实现与两处补充：
-> - 撤销键**合并进 Ctrl+A 那个 effect**（两者是同一份输入框豁免判断，省一个 window 监听器），依赖数组必须是 `[viewerIndex, undo, redo, t]` —— 漏了 `viewerIndex` 就会出现"App 与 viewer 双重撤销，一次 Ctrl+Z 退两步"（与 [App.tsx:193](../src/App.tsx:193) 同一条坑，交接 §5-7）；
+> - 撤销键**合并进 Ctrl+A 那个 effect**（两者是同一份输入框豁免判断，省一个 window 监听器），依赖数组必须是 `[viewerIndex, undo, redo, t]` —— 漏了 `viewerIndex` 就会出现"App 与 viewer 双重撤销，一次 Ctrl+Z 退两步"（与 [App.tsx:193](../../src/App.tsx:193) 同一条坑，交接 §5-7）；
 > - 只有真的撤到/重做到东西才 `preventDefault()`，空栈时把 `Ctrl+Z` 让给浏览器（否则"什么都没撤还把原生撤销吃掉"）；
 > - `showToast` 的 `const` 声明必须在 effect **之前**，否则依赖数组急切求值会 TDZ 崩溃（同 `viewerIndex` 的纪律）；会话 ② 把它从 App 中段上移。
 
@@ -201,7 +206,7 @@ if ((e.ctrlKey || e.metaKey) && key === "z") {
 
 ### 关键陷阱
 
-- **撤销必须同时撤销 UI 连锁反应**：撤销一个评分，如果当前开着 ≥N 星筛选，撤回后那张图会重新出现/消失——这是**正确**行为。但查看器的锚点逻辑（[viewer.tsx:232-245](../src/viewer.tsx:232)）会因列表变化重锚，需要验收"在查看器里撤销评分不会跳图/关闭"。
+- **撤销必须同时撤销 UI 连锁反应**：撤销一个评分，如果当前开着 ≥N 星筛选，撤回后那张图会重新出现/消失——这是**正确**行为。但查看器的锚点逻辑（[viewer.tsx:232-245](../../src/viewer.tsx:232)）会因列表变化重锚，需要验收"在查看器里撤销评分不会跳图/关闭"。
 - **撤销不跨越文件夹切换**：`loadFolder` 应清空两个栈（否则会把 A 文件夹的评分撤销到 B 文件夹的展示上，用户看到的是"没反应"）。同理 `browseDrive`。
 - **不做撤销的**：导入（文件已落盘，撤销要删文件——另立功能）、分析结果、筛选条件本身。要在 help 里写清楚，避免误解。
 
@@ -221,7 +226,7 @@ if ((e.ctrlKey || e.metaKey) && key === "z") {
 按 `Z` 在"适应窗口"与"1:1 实际像素"之间切换；进入 1:1 时**以鼠标位置为锚点**放大（如果鼠标不在图上则以视图中心为锚点），这样能立刻看清"眼睛/对焦点到底糊没糊"。
 
 ### 现状与难点
-现在只有连续缩放 `scale`（0.2–8×，[viewer.tsx:278-285](../src/viewer.tsx:278)），**没有到 1:1 的那一档**。而 `<img>` 用的是 `max-w-full max-h-full object-contain` + CSS `transform: scale(...)`（[viewer.tsx:391-399](../src/viewer.tsx:391)），所以 `scale=1` 是"适应窗口"，**不等于 100%**。
+现在只有连续缩放 `scale`（0.2–8×，[viewer.tsx:278-285](../../src/viewer.tsx:278)），**没有到 1:1 的那一档**。而 `<img>` 用的是 `max-w-full max-h-full object-contain` + CSS `transform: scale(...)`（[viewer.tsx:391-399](../../src/viewer.tsx:391)），所以 `scale=1` 是"适应窗口"，**不等于 100%**。
 
 ### 算法（尺寸只从 DOM 读一次，不引入后端改动）
 
@@ -248,11 +253,11 @@ function zoomToActual(cx: number, cy: number) {
 ```
 
 - `cx/cy` 取法：记录一个 `onMouseMove` 更新的 `hoverRef = { x: e.clientX - centerX, y: e.clientY - centerY }`（`centerX/Y` 来自图片区 `getBoundingClientRect()` 的中心）。鼠标没进过图区就用 `{0,0}`（视图中心）。
-- 需要给 `<img>` 加 `ref={imgRef}`（[viewer.tsx:386](../src/viewer.tsx:386)）。
-- 若 `1/fitScale` 落在 0.2–8 之外，夹到范围内（[viewer.tsx:264-265](../src/viewer.tsx:264) 的上下限）。
+- 需要给 `<img>` 加 `ref={imgRef}`（[viewer.tsx:386](../../src/viewer.tsx:386)）。
+- 若 `1/fitScale` 落在 0.2–8 之外，夹到范围内（[viewer.tsx:264-265](../../src/viewer.tsx:264) 的上下限）。
 
 ### 改动点
-- `viewer.tsx`：新增 `imgRef`、`hoverRef`、`fitScaleOf`、`zoomToActual`；keydown 加 `z` 分支（注意别和现有的 `0`（重置）冲突，`0` 保持"回适应窗口 + 清旋转/偏移"）；底部提示条加一条 `Z 1:1`（[viewer.tsx:419-426](../src/viewer.tsx:419)）。
+- `viewer.tsx`：新增 `imgRef`、`hoverRef`、`fitScaleOf`、`zoomToActual`；keydown 加 `z` 分支（注意别和现有的 `0`（重置）冲突，`0` 保持"回适应窗口 + 清旋转/偏移"）；底部提示条加一条 `Z 1:1`（[viewer.tsx:419-426](../../src/viewer.tsx:419)）。
 - 可选增强：双击图面切 1:1（现在双击无绑定，不冲突）。
 - i18n：`viewer.actual`（zh: `"1:1 实际像素 (Z)"`）。
 
@@ -281,21 +286,21 @@ const [labels, setLabels] = useState<Record<string, Label>>(() => {
 const setLabel = useCallback((path: string, label: Label | null) => { /* 同 setRating，含 Phase 2 的补丁记录 */ }, []);
 ```
 
-- **快捷键（会话 ③ 定稿）**：`Ctrl+1`–`Ctrl+5` 打标、`Ctrl+0` 清除（正好与"`1`–`5` 是星级"形成记忆对照）；**同一组键的修饰键由用户在设置里选：Ctrl 或 Alt**（新增设置项：state 放 `useScanner`，key `imagefilter-label-modifier`，只有显式 `"alt"` 才算 Alt，缺省/损坏一律当 Ctrl；链路 `useScanner` → `App` → [title-bar.tsx](../src/components/title-bar.tsx) → [settings-dialog.tsx](../src/components/settings-dialog.tsx)，与 `autoAdvance` 同路，控件复用语言那对分段按钮）。
+- **快捷键（会话 ③ 定稿）**：`Ctrl+1`–`Ctrl+5` 打标、`Ctrl+0` 清除（正好与"`1`–`5` 是星级"形成记忆对照）；**同一组键的修饰键由用户在设置里选：Ctrl 或 Alt**（新增设置项：state 放 `useScanner`，key `imagefilter-label-modifier`，只有显式 `"alt"` 才算 Alt，缺省/损坏一律当 Ctrl；链路 `useScanner` → `App` → [title-bar.tsx](../../src/components/title-bar.tsx) → [settings-dialog.tsx](../../src/components/settings-dialog.tsx)，与 `autoAdvance` 同路，控件复用语言那对分段按钮）。
   - **为什么可配**：Tauri 的 WebView2 有可能把 `Ctrl+数字` / `Ctrl+0` 当成浏览器加速键吃掉（切标签页 / 重置缩放）。实机第一条就要验 `Ctrl+2` 有没有反应；没反应就在设置里切到 Alt，**不用改代码、不用重启**（`AreBrowserAcceleratorKeysEnabled` 属 Rust 红线，不碰）。
   - 键盘只做"赋值"，不做"再按一次取消"（与键盘 `1`–`5` 一致）。取消的三个入口：查看器点亮的色点再点一次、右键菜单"清除颜色标签"、`Ctrl+0` / `Alt+0`。
-  - **易写错的一处**：查看器里的分支顺序 —— 新的组合键分支必须放在 plain `0` 与 `1`-`5` 分支**之前**（[viewer.tsx:389-400](../src/viewer.tsx:389)），否则 `Ctrl+2` 会先被星级分支吃掉、变成打星。
+  - **易写错的一处**：查看器里的分支顺序 —— 新的组合键分支必须放在 plain `0` 与 `1`-`5` 分支**之前**（[viewer.tsx:389-400](../../src/viewer.tsx:389)），否则 `Ctrl+2` 会先被星级分支吃掉、变成打星。
   - **打标不触发自动前进**（`autoNext()` 只跟评分走：打标是二次分拣，一前进就看不见刚打的标了）。
   - 帮助对话框那一行写 `Ctrl/Alt+1-5`（两种都列出来），避免为了显示"当前是哪个"把 `labelModifier` 一路透传到 `help-content.tsx`。
   - 纠正文中旧说法：**"`6`–`9` 被占用"不成立** —— 全仓库只有查看器用了 `0`（重置视图），6–9 无任何绑定（已 grep 确认）。
   - 已否决：`F1`–`F5`（F1 帮助 / **F5 会刷新 WebView 页面**）、`Shift+1`–`5`（`e.key` 变成 `!@#$%`，受键盘布局影响）、`Alt` 写死（就是本条要解决的问题）、只走右键菜单不加键（culling 的键盘流会断）。
-- **展示**：卡片左上角徽标行末尾加一个色点（[photo-card.tsx:69-76](../src/components/photo-card.tsx:69)）；查看器顶部工具栏加一排色点按钮（[viewer.tsx:355-360](../src/viewer.tsx:355) 星条旁边）。
+- **展示**：卡片左上角徽标行末尾加一个色点（[photo-card.tsx:69-76](../../src/components/photo-card.tsx:69)）；查看器顶部工具栏加一排色点按钮（[viewer.tsx:355-360](../../src/viewer.tsx:355) 星条旁边）。
 - **存放位置**：类型与五色常量（`Label`、`LABEL_ORDER`、`LABEL_BG` 色类）放新增的 `src/labels.ts`，`useScanner.ts` 只 `export type { Label }` 转发 —— **展示组件不许 import `useScanner`**，那会把 `@tauri-apps/api` 拖进纯展示组件。
 - **不做**：标签改名/自定义、标签自动推断（AI 猜场景）。
 
 ### 4.2 筛选拆成"星级 + 标签 + 分析结果"三个维度叠加
 
-现在只有 `starFilter` 一个数字（[App.tsx:199-201](../src/App.tsx:199)）。改成：
+现在只有 `starFilter` 一个数字（[App.tsx:199-201](../../src/App.tsx:199)）。改成：
 
 ```ts
 const [starFilter, setStarFilter] = useState(0);            // 0=全部, 1-5=≥N星（保持现状语义）
@@ -304,7 +309,7 @@ const [flagFilter, setFlagFilter] = useState<FlagFilter>("all"); // all|blurry|o
 const [sortDir, setSortDir] = useState<"asc"|"desc">("asc");     // 顺手补上方向切换（现在缺）
 ```
 
-`sortedPhotos`（[App.tsx:196-215](../src/App.tsx:196)）里串起来：星级 → 标签 → 分析 → 排序 → 方向。
+`sortedPhotos`（[App.tsx:196-215](../../src/App.tsx:196)）里串起来：星级 → 标签 → 分析 → 排序 → 方向。
 
 **关键点：分析筛选是"有分析结果的才命中"还是"没分析的也算"？**
 必须选前者并**在 UI 上显式提示**。会话 ③ 把触发条件钉成四条，**同时成立才显示**：
@@ -317,29 +322,29 @@ const [sortDir, setSortDir] = useState<"asc"|"desc">("asc");     // 顺手补上
 
 提示挂在滚动容器内、网格**上方**（非 sticky，避免遮挡第一行），按钮在 `analyzing` 时置灰。这条提示直接把 Phase 4 和"分析只作用于选区"的需求串起来了。
 
-**Chips 布局（会话 ③ 实机后定稿）**：工具栏 [photo-toolbar.tsx](../src/components/photo-toolbar.tsx) 那一行比较满（全选/取消/已选/排序/方向/星级/筛选/列数/分析/收起）。最终布局：
+**Chips 布局（会话 ③ 实机后定稿）**：工具栏 [photo-toolbar.tsx](../../src/components/photo-toolbar.tsx) 那一行比较满（全选/取消/已选/排序/方向/星级/筛选/列数/分析/收起）。最终布局：
 - "标签 + 分析结果"收进一个**筛选下拉行**（点"筛选"展开，复用 `CollapsibleBar` 的折叠容器，不额外加层）；
 - **星级筛选收成一个下拉**（`全部 / ≥1★ … ≥5★`，选中时琥珀色）：原来 6 个 chip 一字排开占 ~250px，实测窗口一窄就把那一行挤爆（先是文字竖排、换行后收起箭头又跑到下一行左端）。收成下拉后那一行能稳定保持**单行**；语义不变（仍是"至少 N 星"），"再点一次取消"改成选"全部"。
 - 这一行不许靠"换行"来兜底：每项 `shrink-0` + `whitespace-nowrap`，`flex-wrap` 只当极窄时的安全网（换行时"AI 分析 + 收起箭头"整组落到下一行右端）。
 
 ### 4.3 顺带修的两个相关小问题
-- **分析只作用于选区**：工具栏按钮现在是 `photos.map(...)`（[App.tsx:506](../src/App.tsx:506)）。改成：`selectedPaths.size > 0 ? [...selectedPaths] : photos.map(...)`，并在按钮文案上体现（`AI 分析 (N)`）。这一条让"选 10 张只分析 10 张"成为可能，是 Phase 4 的主要收益之一。⚠️ **必须同时修 4.4-B**：`runAnalysis` 现在一进门就清空全部分析结果，不动它就变成"只分析这 3 张 + 把其余几百张的结果抹掉"。
-- **`handlePhotoClick` 的 `lastClicked` 改 `useRef`**（[useScanner.ts:68,101](../src/useScanner.ts:68)）：这是交接文档 §6 P2-6 的老问题——`lastClicked` 在依赖数组里让所有卡片 `onToggle` 每次点击都换引用，双层 memo 失效。既然 Phase 4 要动筛选与卡片，顺手改成 `lastClickedRef`（Shift 范围选只用 `photoPaths` 和 ref，不依赖 state），**注意改完要专门验收 Shift 范围选**。⚠️ 但**只改它并不够**：验收第 6 条还有第二个、而且更大的原因（菜单 props），见 4.4-A —— 只改一半会让这条验收**假过**。
+- **分析只作用于选区**：工具栏按钮现在是 `photos.map(...)`（[App.tsx:506](../../src/App.tsx:506)）。改成：`selectedPaths.size > 0 ? [...selectedPaths] : photos.map(...)`，并在按钮文案上体现（`AI 分析 (N)`）。这一条让"选 10 张只分析 10 张"成为可能，是 Phase 4 的主要收益之一。⚠️ **必须同时修 4.4-B**：`runAnalysis` 现在一进门就清空全部分析结果，不动它就变成"只分析这 3 张 + 把其余几百张的结果抹掉"。
+- **`handlePhotoClick` 的 `lastClicked` 改 `useRef`**（[useScanner.ts:68,101](../../src/useScanner.ts:68)）：这是交接文档 §6 P2-6 的老问题——`lastClicked` 在依赖数组里让所有卡片 `onToggle` 每次点击都换引用，双层 memo 失效。既然 Phase 4 要动筛选与卡片，顺手改成 `lastClickedRef`（Shift 范围选只用 `photoPaths` 和 ref，不依赖 state），**注意改完要专门验收 Shift 范围选**。⚠️ 但**只改它并不够**：验收第 6 条还有第二个、而且更大的原因（菜单 props），见 4.4-A —— 只改一半会让这条验收**假过**。
 
 ### 4.4 落地时必须一起修的两处现状问题（会话 ③ 走查发现，已定为 Phase 4 内容）
 
 原文没写这两条，是读代码时发现的。不修的话，4.1–4.3 的验收会**看起来通过、其实没达成**。
 
 - **A. `menuItems` 让"点击不重渲染其它卡片"做不到（验收第 6 条假过的真正原因）**
-  现状：`photoMenuItems` 依赖 `selectedPaths`（[App.tsx:288](../src/App.tsx:288)），每次勾选都生成**新数组**，而它作为 `menuItems` prop 传给**每一张**卡片（[App.tsx:592](../src/App.tsx:592)）→ 一次点击让所有卡片重渲染。所以 `lastClicked` 改 ref 只解决了两个原因里的一个。
+  现状：`photoMenuItems` 依赖 `selectedPaths`（[App.tsx:288](../../src/App.tsx:288)），每次勾选都生成**新数组**，而它作为 `menuItems` prop 传给**每一张**卡片（[App.tsx:592](../../src/App.tsx:592)）→ 一次点击让所有卡片重渲染。所以 `lastClicked` 改 ref 只解决了两个原因里的一个。
   做法：把"每张卡片各包一个 `PixelMenu`"改成**整块网格共用一个**：
   - `PhotoGridItem` 去掉 `menuItems` prop 与 `PixelMenu` 包裹；右键仍由 `PhotoCard.onContextMenu → onCtx(photo)` 设 `ctxTarget`（时间点从 `onOpenChange` 提前到 `contextmenu`，更稳）。
-  - 网格那层 `items={emptyMenuItems}`（[App.tsx:577](../src/App.tsx:577)）改成 `items={ctxTarget ? photoMenuItems : emptyMenuItems}`；空白处右键用 `(e.target).closest("[data-photo-path]") === null` 判定后清 `ctxTarget`（卡片自己的 handler 先跑、只置不清，靠 DOM 判定保证不会误清）。
+  - 网格那层 `items={emptyMenuItems}`（[App.tsx:577](../../src/App.tsx:577)）改成 `items={ctxTarget ? photoMenuItems : emptyMenuItems}`；空白处右键用 `(e.target).closest("[data-photo-path]") === null` 判定后清 `ctxTarget`（卡片自己的 handler 先跑、只置不清，靠 DOM 判定保证不会误清）。
   - **新鲜度不变式（要写进代码注释）**：菜单项只依赖"会触发 App 重渲染的状态"（`ctxTarget` / `selectedPaths` / `labels` / 当前照片），所以"同一个 `ctxTarget` 再右键一次"也不会显示旧菜单。
   - 静态收益：2000 张卡片从 2000 个 Radix `ContextMenu.Root` 降到 1 个。
-  - 已否决备选：保留每卡片菜单、把 `menuItems` 换成"打开时求值"的稳定 getter —— 要改 [contextmenu.tsx](../src/contextmenu.tsx) 的 API 并从 `useScanner` 暴露 ref/getter，改动面更大，且一旦"求值时机"写错就会出现**菜单文案/动作用的是过期选择集**（点"导入 3 张"却导入别的集合）这种静默 bug。
+  - 已否决备选：保留每卡片菜单、把 `menuItems` 换成"打开时求值"的稳定 getter —— 要改 [contextmenu.tsx](../../src/contextmenu.tsx) 的 API 并从 `useScanner` 暴露 ref/getter，改动面更大，且一旦"求值时机"写错就会出现**菜单文案/动作用的是过期选择集**（点"导入 3 张"却导入别的集合）这种静默 bug。
 - **B. `runAnalysis` 开头的 `setAnalysis({})` 会把"只分析选区"变成破坏性操作**
-  现状 [useScanner.ts:447](../src/useScanner.ts:447) 一进门就清空全部分析结果：勾 3 张点 `AI 分析 (3)` → 其余几百张的徽标全部消失、"还有 N 张未分析"的 N 直接跳到总数 —— 这不是"只分析这 3 张"，是"把其余的抹了"。
+  现状 [useScanner.ts:447](../../src/useScanner.ts:447) 一进门就清空全部分析结果：勾 3 张点 `AI 分析 (3)` → 其余几百张的徽标全部消失、"还有 N 张未分析"的 N 直接跳到总数 —— 这不是"只分析这 3 张"，是"把其余的抹了"。
   做法：改成**增量合并** —— 开始时只删掉本次要分析的那些 path 的旧结果，完成时把新结果并进旧 map；用 `analysisRef` 镜像同步（与 `ratingsRef` / `selectedPathsRef` 同款纪律，因为要读"当前"map）。
   - 已知语义（写进「遗留」）：`find_duplicates` 只在**本次传入的集合内**判重，所以选区分析时"重复"只在选区内成立、"最佳"也可能与全量结果不同。这是后端命令的既有语义，**不改 Rust**。
 
@@ -366,9 +371,9 @@ const [sortDir, setSortDir] = useState<"asc"|"desc">("asc");     // 顺手补上
 ## Phase 5 · 评分/色标写 XMP 边车（可选开关）
 
 ### 为什么这是最大的短板
-决策现在只活在**本机 webview 的 localStorage** 里（[useScanner.ts:120-133](../src/useScanner.ts:120)），key 是绝对路径、无任何内容校验。后果：
+决策现在只活在**本机 webview 的 localStorage** 里（[useScanner.ts:120-133](../../src/useScanner.ts:120)），key 是绝对路径、无任何内容校验。后果：
 - 换盘符 / 换机器 → 星级全丢；
-- 卡格式化后新照片占用了同名路径 → **旧星级静默贴到不相干的照片上**（[App.tsx:550](../src/App.tsx:550) 直接 `ratings[photo.path]`）；
+- 卡格式化后新照片占用了同名路径 → **旧星级静默贴到不相干的照片上**（[App.tsx:550](../../src/App.tsx:550) 直接 `ratings[photo.path]`）；
 - Lightroom / digiKam / darktable **完全读不到**这些决策。
 
 XMP 边车是行业事实标准（`xmp:Rating` / `xmp:Label`），写了之后决策跟着文件走，也能互通。
@@ -385,14 +390,14 @@ XMP 边车是行业事实标准（`xmp:Rating` / `xmp:Label`），写了之后�
 - 校验：与现有 `tinydng`/WIC 同样的思路——写入前限长（比如 1MB），路径走 `is_safe_relative` 同款断言思路（**边车路径必须由源路径推导，不接受前端传任意路径**）。
   - 会话 ④ 落实为：命令签名里**根本没有**目标路径参数；源路径必须是绝对路径 + `is_file()` + 扩展名 ∈ `SUPPORTED_EXTENSIONS`（为此该常量改成 `pub(crate)`）；读不到/看不懂的边车返回"没有值"而不是报错（只有**写**失败才是红线要求"可见地报错"的那一类）。
 
-**两个新命令**（注册到 [lib.rs:100-121](../src-tauri/src/lib.rs:100)）：
+**两个新命令**（注册到 [lib.rs:100-121](../../src-tauri/src/lib.rs:100)）：
 
 ```rust
 #[tauri::command] pub async fn read_decision(file_path: String) -> Result<Option<Decision>, String>
 #[tauri::command] pub async fn write_decision(file_path: String, rating: Option<u8>, label: Option<String>) -> Result<(), String>
 ```
 
-- 写盘必须走 `tokio::task::spawn_blocking`（与 [importer.rs:286](../src-tauri/src/importer.rs:286) 同款），不占 tokio worker。
+- 写盘必须走 `tokio::task::spawn_blocking`（与 [importer.rs:286](../../src-tauri/src/importer.rs:286) 同款），不占 tokio worker。
 - 批量写（一次给 N 张）建议只提供**批量命令** `write_decisions(decisions: Vec<...>)` + `Channel` 进度，避免前端循环 N 次 IPC。这是"读完本地状态后一次性回写整卡"的常用路径。
 - ⚠️ **会话 ④ 落地后的实际签名（以此为准）**：`read_decisions(filePaths: Vec<String>)` / `write_decisions(items: Vec<DecisionWrite>)` / **`probe_xmp_target(dirPath)`**（第三个命令：§5.3 要求"写卡前确认可写"，不单独探测就只能"先写一次试试"）；**读也是批量**（一次 spawn_blocking + 一份结果 + 一次合并，替掉"并发 4 个 `read_decision`"）；**暂不加 `Channel`**，本 Phase 也不做"回写整卡"（没有消费方 = 死代码）。逐字段语义（"不动" vs "清空"）见 `src-tauri/src/xmp.rs` 的 `DecisionWrite`。
 
@@ -410,10 +415,10 @@ XMP 边车是行业事实标准（`xmp:Rating` / `xmp:Label`），写了之后�
 
 ### 5.3 风险与红线（不可绕过）
 - **绝不删除卡上的文件**，只增改 `.xmp`。
-- 写卡失败必须**可见地**报错（现在项目里 `eprintln!` 是不给用户看的，[importer.rs:348](../src-tauri/src/importer.rs:348)）——这是"卡写保护"最常见的场景，用 toast + 设置页状态提示。
+- 写卡失败必须**可见地**报错（现在项目里 `eprintln!` 是不给用户看的，[importer.rs:348](../../src-tauri/src/importer.rs:348)）——这是"卡写保护"最常见的场景，用 toast + 设置页状态提示。
 - **写卡前必须确认目标可写**（只读卡/写保护），失败时自动降级为 `off` 并提示，不要每次评分都弹错。
 - 与 Phase 2 的交互：撤销一个评分 → 也要回写边车（或标记为"待同步"）。建议引入一个**待同步集合**，避免每次撤销都同步写盘。
-- **与导入的关系**：导入时是否一起复制 `.xmp`？→ **应该复制**（否则归档里没有决策）。这需要在 [importer.rs:277](../src-tauri/src/importer.rs:277) 附近加一步"若源目录存在同名 .xmp，一并复制并套用同一模板改名"。这是"绝不覆盖"契约的延伸，**要新增单测**（照抄 [importer.rs:462](../src-tauri/src/importer.rs:462) 的 `copy_one` 测试结构）。
+- **与导入的关系**：导入时是否一起复制 `.xmp`？→ **应该复制**（否则归档里没有决策）。这需要在 [importer.rs:277](../../src-tauri/src/importer.rs:277) 附近加一步"若源目录存在同名 .xmp，一并复制并套用同一模板改名"。这是"绝不覆盖"契约的延伸，**要新增单测**（照抄 [importer.rs:462](../../src-tauri/src/importer.rs:462) 的 `copy_one` 测试结构）。
 
 ### 验收
 1. `off` 档：评分后文件夹里**不出现**任何新文件（这是默认，必须零副作用）。
@@ -577,7 +582,7 @@ cd src-tauri && cargo check --lib
   - 六个功能拆成 Phase 1–6，正文已含每项的文件/行号/陷阱/验收；
   - 顺序为"纯前端 → 写磁盘 → 改导入契约"，理由是把不可逆风险放后面；
   - Phase 5（XMP）**默认关闭**，三档开关，保持 v1.0.x 的零副作用行为；
-    > ⚠️ **此条已被推翻**（会话 ⑥）：默认改为 **`ask`（询问）**，见 [Phase 7 文档](ImageFilter-Phase7-Lightroom衔接.md) §9。
+    > ⚠️ **此条已被推翻**（会话 ⑥）：默认改为 **`ask`（询问）**，见 [Phase 7 文档](../ImageFilter-Phase7-Lightroom衔接.md) §9。
     > 保守的不再是"默认不写"，而是"**永不静默写**"；已显式选过档位的老用户不受影响。
   - Phase 2 撤销栈**刻意不跨重启**，切文件夹/切设备时清空（跨重启的撤销语义无法向用户解释）；
   - Phase 6 的 `{seq}` 改为**按输入顺序独立递增**，跳过也递增（保持"编号 = 拍摄顺序位次"）；
@@ -1102,7 +1107,7 @@ cd src-tauri && cargo check --lib
 ### 会话 ①（Phase 1 + 3）— 现在可用
 
 ```text
-接着做 docs/ImageFilter-功能实施方案.md 的 Phase 1 和 Phase 3（同一会话，都只动 viewer.tsx）。
+接着做 docs/archive/ImageFilter-功能实施方案.md 的 Phase 1 和 Phase 3（同一会话，都只动 viewer.tsx）。
 
 先只输出改动计划：要改哪几个文件、每处改什么、会新增哪些 i18n key，
 以及 Phase 1 那个 lastSwitchRef 陷阱你打算怎么处理。我确认后再动手。
@@ -1114,7 +1119,7 @@ cd src-tauri && cargo check --lib
 ### 会话 ②（Phase 2）— ✅ 会话 ② 已完成（见决策日志），下一会话请用会话 ③
 
 ```text
-接着做 docs/ImageFilter-功能实施方案.md 的 Phase 2（撤销/重做）。
+接着做 docs/archive/ImageFilter-功能实施方案.md 的 Phase 2（撤销/重做）。
 
 先读该文档的 Phase 2 一节和文末决策日志，再只输出改动计划：
 补丁栈的数据结构、三处记录点、Ctrl+Z 在输入框内的豁免怎么处理、
@@ -1127,7 +1132,7 @@ cd src-tauri && cargo check --lib
 ### 会话 ③（Phase 4）— ✅ 会话 ③ 已完成（见决策日志），下一会话请用会话 ④
 
 ```text
-接着做 docs/ImageFilter-功能实施方案.md 的 Phase 4（颜色标签 + 可叠加筛选）。
+接着做 docs/archive/ImageFilter-功能实施方案.md 的 Phase 4（颜色标签 + 可叠加筛选）。
 
 先读该文档的 Phase 4 一节和文末决策日志，再只输出改动计划：
 标签存储 key、快捷键方案（文档推荐 Ctrl+1–Ctrl+5，可提出更好方案）、
@@ -1143,7 +1148,7 @@ cd src-tauri && cargo check --lib
 > 提交卫生 / 新写入路径必须序列化）都写进了提示词，并加了"开动前先确认 Phase 4 遗留验收"。
 
 ```text
-接着做 docs/ImageFilter-功能实施方案.md 的 Phase 5（评分/色标写 XMP 边车）。
+接着做 docs/archive/ImageFilter-功能实施方案.md 的 Phase 5（评分/色标写 XMP 边车）。
 
 先读：Phase 5 一节 + Phase 4 一节 + 文末决策日志（会话 ⓪①②③ 都要读）+ 开头「共同的前置约束」9 条。
 （文档里的行号是写文时记的，可能已漂移，请按符号名找，别照行号跳。）
@@ -1194,7 +1199,7 @@ C. **落地页 demo 的 mock 层**（另一个仓库）：命令签名一变那�
 ### 会话 ⑤（Phase 6）— ✅ 会话 ⑤ 已完成（见决策日志）；Phase 1–6 全部落地，无后续规划的 Phase
 
 ```text
-接着做 docs/ImageFilter-功能实施方案.md 的 Phase 6（导入历史 / 命名方案预设 / 导入结果统计）。
+接着做 docs/archive/ImageFilter-功能实施方案.md 的 Phase 6（导入历史 / 命名方案预设 / 导入结果统计）。
 
 先读：Phase 6 一节 + 文末决策日志（会话 ⓪①②③④ 都要读）+ 开头「共同的前置约束」9 条。
 （文档里的行号是写文时记的，可能已漂移，请按符号名找。）

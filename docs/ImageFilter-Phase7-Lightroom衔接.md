@@ -1,6 +1,9 @@
 # ImageFilter · Phase 7 与 Lightroom Classic 衔接
 
-> 这份是 Phase 7 的记录与手测清单。总方案的 Phase 1–6 见 [ImageFilter-功能实施方案.md](ImageFilter-功能实施方案.md)（那份已按会话 ⑤ 收尾，本文不重复其内容）。
+> **本文定位**：Lightroom 衔接的深度说明与历史决策；当前实现摘要见
+> [交接与上手](ImageFilter-交接与上手.md) §4。本文的测试数 / 版本号是当时快照。
+>
+> 这份是 Phase 7 的记录与手测清单。总方案的 Phase 1–6 见 [ImageFilter-功能实施方案.md](archive/ImageFilter-功能实施方案.md)（那份已按会话 ⑤ 收尾，本文不重复其内容）。
 >
 > **状态：已完成并实机验证**（使用者确认"p7 我已经测试过可以了"）。
 >
@@ -260,7 +263,7 @@ LrC 的偏好文件 `%APPDATA%\Adobe\Lightroom\Preferences\Lightroom Classic CC 
 
 用户要求：`src/xmp.ts::DEFAULT_XMP_MODE = "ask"`（原为 `"off"`）。
 
-**这不是一个小改动，它推翻了一条既有决定** —— 原文（本仓 [实施方案](ImageFilter-功能实施方案.md) 会话 ⓪ 决策日志）写的是"Phase 5（XMP）**默认关闭**……保持 v1.0.x 的零副作用行为"。两处已加"已失效"标注，避免后续会话据此回退。
+**这不是一个小改动，它推翻了一条既有决定** —— 原文（本仓 [实施方案](archive/ImageFilter-功能实施方案.md) 会话 ⓪ 决策日志）写的是"Phase 5（XMP）**默认关闭**……保持 v1.0.x 的零副作用行为"。两处已加"已失效"标注，避免后续会话据此回退。
 
 **语义变化要说清**：
 

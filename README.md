@@ -10,7 +10,7 @@
 
 <p align="center">
   <a href="https://github.com/XUTENGXIANG/ImageFilter/releases/latest"><img src="https://img.shields.io/github/v/release/XUTENGXIANG/ImageFilter?sort=semver&amp;color=1f883d" alt="Release"></a>
-  <a href="#"><img src="https://img.shields.io/badge/platform-Windows%2010%2F11%20%7C%20macOS-lightgrey" alt="Platform"></a>
+  <a href="#"><img src="https://img.shields.io/badge/platform-Windows%2010%2F11%20%7C%20macOS%20%7C%20Android-lightgrey" alt="Platform"></a>
   <a href="LICENSE"><img src="https://img.shields.io/github/license/XUTENGXIANG/ImageFilter" alt="License"></a>
   <a href="https://github.com/XUTENGXIANG/ImageFilter/releases/latest"><img src="https://img.shields.io/badge/download-latest-green" alt="Download"></a>
 </p>
@@ -57,8 +57,12 @@
 |------|------|
 | `ImageFilter_x64-setup.exe` | NSIS 安装包，推荐 |
 | `ImageFilter_x64_zh-CN.msi` | MSI 安装包 |
+| `ImageFilter-Mobile-<version>.apk` | Android 客户端（需与桌面端在同一局域网） |
 
 双击运行，按提示完成安装。下载慢可用[官网](https://tensyn.online/#download)直链或 [Releases](https://github.com/XUTENGXIANG/ImageFilter/releases) 说明处下载；macOS 版请见 [Releases](https://github.com/XUTENGXIANG/ImageFilter/releases)。
+
+Android 客户端通过局域网连到桌面端：在桌面端 **设置 → 图库服务** 打开服务，
+再用手机扫码或手输地址配对。服务默认关闭，只监听局域网。
 
 ## 快速上手
 
@@ -95,10 +99,12 @@
 |----|------|
 | 框架 | Tauri 2, React 19, TypeScript |
 | UI | Tailwind CSS 4, shadcn/ui, IconPark |
-| RAW 解码 | rawler, WIC, tinydng, zune-jpeg |
-| 缩略图 | Windows Shell（IShellItemImageFactory） |
-| 图像分析 | imgfprint, 纯算法（拉普拉斯/直方图） |
-| 存储 | SQLite |
+| RAW 解码 | rawler, WIC, tinydng, zune-jpeg, fast_image_resize |
+| 缩略图 | Windows Shell（WIC / IShellItemImageFactory）优先，失败回落内嵌预览 + zune-jpeg；磁盘缓存 |
+| 图像分析 | image_hasher（感知哈希）+ 拉普拉斯 / 直方图 |
+| 存储 | SQLite（导入历史 / 规则）+ XMP 边车 |
+| 手机端 | Android Compose, Coil 3, OkHttp |
+| 局域网服务 | axum 0.8, mDNS |
 
 ## 开发
 
@@ -143,12 +149,21 @@ src/                  # React 前端
 src-tauri/            # Rust 后端
   src/
     scanner/          # 设备/浏览/EXIF/图片解码模块
+    server/           # 内嵌局域网图库服务（axum + mDNS + 配对）
     analyzer.rs       # 模糊/曝光/重复检测
     importer.rs       # 导入引擎
     win_wic.rs        # Windows WIC 解码
     tinydng.rs        # DNG 解码（FFI）
   third_party/tinydng # DNG 解码器 C++ 源码
+android/              # Android Compose 客户端
+docs/                 # 交接文档、项目日志、SDD 计划与证据
 ```
+
+## 文档
+
+- [交接与上手](docs/ImageFilter-交接与上手.md) — 开发 / 接手先读
+- [文档索引](docs/README.md) — 全部文档、归档与 SDD
+- [更新说明](docs/ImageFilter-更新说明.md) — 版本变更
 
 ## 许可
 
