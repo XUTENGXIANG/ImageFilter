@@ -139,7 +139,7 @@ export function ImportBar({
         <button
           disabled={!destDir || selectedCount === 0 || importing}
           onClick={onImport}
-          className="text-[10px] leading-4 px-3 py-1 rounded bg-emerald-600 hover:bg-emerald-500 disabled:bg-zinc-700 disabled:text-zinc-500 text-white font-medium"
+          className="text-[10px] leading-4 px-3 py-1 rounded bg-brand-strong hover:bg-brand disabled:bg-zinc-700 disabled:text-zinc-500 text-white font-medium"
         >
           {importing
             ? t("import.importingCount", { done: importDone, total: selectedCount })
@@ -166,7 +166,7 @@ export function ImportBar({
           {/* 四行明细(Phase 6 / 6.3): 成功 / 改名 ⊂ 成功 / 跳过 / 失败。
               数字全部来自 Rust 的 ImportSummary —— 前端不许再做 paths.length - count
               那种算术(它会把"跳过"算成"失败")。为 0 的行不显示, 老路径观感不变。 */}
-          <div className="text-emerald-400">{t("import.doneOk", { n: importResult.imported })}</div>
+          <div className="text-brand-hover">{t("import.doneOk", { n: importResult.imported })}</div>
           {importResult.renamed > 0 && (
             <div className="text-amber-400">{t("import.doneRenamed", { n: importResult.renamed })}</div>
           )}
@@ -201,7 +201,7 @@ export function ImportBar({
             <div key={`${i}-${p.fileName}`} className="text-[9px] text-zinc-500 flex gap-1.5">
               <span className={
                 p.status === "error" ? "text-red-400" :
-                p.status === "done" ? "text-emerald-400" :
+                p.status === "done" ? "text-brand-hover" :
                 p.status === "renamed" ? "text-amber-400" :
                 p.status === "verifying" ? "text-sky-400" :
                 p.status === "skipped" ? "text-zinc-600" : "text-zinc-500"

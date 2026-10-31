@@ -140,21 +140,21 @@ export function TitleBar({
     <>
       <Tip label={t("titlebar.help")} className="h-full flex items-center">
       <button type="button" onClick={() => setShowHelp(true)}
-        className="w-8 h-full flex items-center justify-center text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800 rounded-md"
+        className="w-8 h-full flex items-center justify-center text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800 rounded-2xl"
       >
         <Help theme="filled" size="15" strokeWidth={3} />
       </button>
       </Tip>
       <Tip label={t("titlebar.settings")} className="h-full flex items-center">
       <button type="button" onClick={() => setShowSettings(true)}
-        className="w-8 h-full flex items-center justify-center text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800 rounded-md"
+        className="w-8 h-full flex items-center justify-center text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800 rounded-2xl"
       >
         <Setting theme="filled" size="15" strokeWidth={3} />
       </button>
       </Tip>
       <Tip label={theme === "dark" ? t("titlebar.themeLight") : t("titlebar.themeDark")} className="h-full flex items-center">
       <button type="button" onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
-        className="w-8 h-full flex items-center justify-center text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800 rounded-md"
+        className="w-8 h-full flex items-center justify-center text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800 rounded-2xl"
       >
         {theme === "dark" ? <Sun theme="filled" size="15" strokeWidth={3} /> : <Moon theme="filled" size="15" strokeWidth={3} />}
       </button>
@@ -208,13 +208,13 @@ export function TitleBar({
           <>
             <Tip label={t("titlebar.min")} className="h-full flex items-center">
             <button type="button" onClick={() => { win.minimize().catch(() => {}); }}
-              className="w-10 h-full flex items-center justify-center text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800 rounded-md">
+              className="w-10 h-full flex items-center justify-center text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800 rounded-2xl">
               <svg width="10" height="1"><rect width="10" height="1" fill="currentColor"/></svg>
             </button>
             </Tip>
             <Tip label={t("titlebar.max")} className="h-full flex items-center">
             <button type="button" onClick={() => { win.toggleMaximize().catch(() => {}); }}
-              className="w-10 h-full flex items-center justify-center text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800 rounded-md">
+              className="w-10 h-full flex items-center justify-center text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800 rounded-2xl">
               <svg width="10" height="10" viewBox="0 0 10 10">
                 <rect x="0.5" y="0.5" width="9" height="9" fill="none" stroke="currentColor" strokeWidth="1"/>
               </svg>
@@ -222,7 +222,7 @@ export function TitleBar({
             </Tip>
             <Tip label={t("titlebar.close")} className="h-full flex items-center">
             <button type="button" onClick={() => { win.close().catch(() => {}); }}
-              className="w-10 h-full flex items-center justify-center text-zinc-500 hover:text-red-400 hover:bg-red-400/10 rounded-md">
+              className="w-10 h-full flex items-center justify-center text-zinc-500 hover:text-red-400 hover:bg-red-400/10 rounded-2xl">
               <Close theme="filled" size={14} strokeWidth={4} />
             </button>
             </Tip>

@@ -44,7 +44,7 @@ export default {
     autoAdvance: "评分后自动前进",
     autoAdvanceDesc: "评分后自动下一张（← 回退）",
     showCounts: "显示目录数量",
-    showCountsDesc: "在左侧目录树显示子文件夹 / 照片 / 视频数量",
+    showCountsDesc: "在左侧目录树显示数量",
     labelKeys: "颜色标签快捷键",
     labelKeysDesc: "打标修饰键（被占用换 Alt）",
     // Phase 5 · XMP 边车(三档开关, 默认"询问" —— 会话 ⑥ 由"关闭"改来, 见 src/xmp.ts)
@@ -62,8 +62,8 @@ export default {
     // Phase 7 · Lightroom 衔接(设置里的发送模式; 状态文案同样拼进 desc, 不新增行)
     lrcMode: "Lightroom 衔接",
     lrcModeDialog: "打开导入",
-    lrcModeSilent: "静默导入",
-    lrcModeSilentWhy: "需先在 Lightroom 里配置“自动导入”的监听文件夹，尚未支持",
+    lrcModeSilent: "静默导入（未支持）",
+    lrcModeSilentWhy: "需先在 Lightroom 配置“自动导入”（尚未支持）",
     lrcReprobe: "重新检测",
     lrcProbing: "检测中…",
     lrcNotFound: "未检测到 Lightroom Classic",
@@ -74,7 +74,7 @@ export default {
   transparentBgDescMac: "macOS 的透明玻璃背景",
   lrcUnsupportedMac: "macOS 版暂不支持 Lightroom 衔接（仅 Windows）",
   macPermTitle: "macOS 需要文件访问权限",
-  macPermBody: "读取照片、写 .xmp 边车都会触发 macOS 的「文件与文件夹」授权询问。给一次「完全磁盘访问权限」，就不会反复弹窗。",
+  macPermBody: "读取照片和写 .xmp 会触发权限询问；授予一次「完全磁盘访问权限」即可避免反复弹窗。",
   macPermPath: "系统设置 → 隐私与安全性 → 完全磁盘访问权限 → 勾选 ImageFilter",
   macPermOpen: "打开系统设置",
   macPermLater: "稍后再说",
@@ -402,63 +402,62 @@ export default {
   // 面板长在设置对话框里(见 src/components/settings-dialog.tsx 的 ServerPanel): 开关/监听状态/
   // 配对码/共享目录/排查清单。状态形状见 src-tauri/src/server/mod.rs 的 ServerStatus(camelCase)。
   server: {
-    title: "图库服务（手机端）",
-    switchDesc: "手机端访问的总开关，默认关闭",
+    title: "局域网远程浏览",
+    switchDesc: "远程服务开关，默认关闭",
     on: "已开启",
     off: "已关闭",
     listening: "正在监听 {url}",
     // 开启失败时的那一句: 后端刻意**不**回滚开关(Task 8), 所以"你要它开、它没在跑"是合法状态,
     // 界面必须如实说, 并把 lastError 摆在旁边 —— 否则用户只会以为自己没点中。
-    wantedNotRunning: "开关是开的，但服务没有在运行",
+    wantedNotRunning: "服务未运行",
     // 关闭不是"瞬间断开所有连接": stop() 之后端口还有一个**有界**的收敛窗口(实测最坏 63ms),
     // 期间仍可能完成握手。界面不许把"关"说成比实际更强(这条措辞就是那个边界)。
-    offNote: "已关闭（停止监听后，端口最迟几毫秒内不再接受新连接）",
-    warn: "开启后，同一网络下持有配对码的设备可以浏览你共享的目录。不要把它直接暴露到公网。",
+    offNote: "已关闭",
     lastError: "上次的错误",
     tokenLabel: "配对码",
-    tokenDesc: "在手机上填这一串配对；轮换后所有手机都要重新配对",
-    tokenEmpty: "还没有配对码——开启服务时会自动生成一枚",
+    tokenDesc: "重置后需重新配对",
+    tokenEmpty: "服务启动时自动生成",
     copy: "复制",
     copied: "已复制",
-    copyFailed: "复制失败，请手动选中配对码复制",
-    rotate: "轮换",
-    rotateConfirm: "确认轮换",
+    copyFailed: "复制失败，请手动复制",
+    rotate: "重置",
+    rotateConfirm: "确认重置",
     sharesLabel: "共享目录",
-    sharesDesc: "只有列在这里的目录，手机才访问得到",
-    shareEmpty: "还没共享任何目录——在添加之前，服务对所有路径都返回“无权限”（这是有意的安全默认）",
-    pathPlaceholder: "完整路径，或点“浏览…”",
+    sharesDesc: "允许访问目录",
+    shareEmpty: "尚未共享目录：手机端无法访问",
+    pathPlaceholder: "输入文件夹路径",
     browse: "浏览…",
     add: "添加",
     remove: "移除",
-    unavailable: "读不到服务状态：{reason}",
+    unavailable: "无法获取服务状态：{reason}",
     actionFailed: "操作失败：{reason}",
-    tipsTitle: "手机连不上时按顺序查这几条",
-    sleepTip: "远程访问时电脑不能睡眠：设置 → 系统 → 电源 → 屏幕和睡眠 → 设为“从不”",
-    firewallTip: "首次开启时 Windows 会弹出防火墙询问，必须允许“专用网络”",
+    tipsTitle: "无法连接？",
+    sleepTip: "睡眠模式关闭（系统电源设置中更改为“从不”）",
+    firewallTip: "首次开启时在 Windows 防火墙允许“专用网络”",
     // M4′ Task 2：LAN-only 决策（2026-10-07）之后**不再有“隧道”这个选项** ——
     // 原文案里的“或都加入了同一个 EasyTier/Tailscale 网络”已按决策删除。
-    appRunningTip: "手机连不上时先确认：① 电脑没睡眠 ② ImageFilter 正在运行 ③ 服务已开启 ④ 手机与电脑连在同一个 WiFi",
+    appRunningTip: "检查：电脑是否睡眠、应用运行状态、服务正常启动、相同局域网环境",
 
     // ── M4′ Task 2 · 局域网地址 / 防火墙 / 公用网络防护（LAN-only） ──
     // 面板长在 ServerPanel 里；数据来自 `get_server_network_hints`（NetHints, camelCase）。
     // 纪律：面板里**不许**出现“隧道 / EasyTier / Tailscale / 端口转发 / 公网暴露”的入口 ——
     // 本设计明确不做公网暴露，只警告（规格 §4.3）。
-    lanTitle: "局域网地址（手机配对时填这个）",
-    lanDesc: "手机和电脑要在同一个 WiFi。地址后面是网卡名——虚拟机 / WSL 那类虚拟网卡的地址多半连不上，优先选“WLAN”或“以太网”。",
-    lanEmpty: "没检测到局域网地址——手机现在连不上这台电脑。请先确认电脑已经连上 WiFi 或有线网。",
+    lanTitle: "局域网地址",
+    lanDesc: "手机与电脑需在同一局域网环境",
+    lanEmpty: "未检测到局域网地址",
     rescan: "重新检测",
-    firewallHintTitle: "防火墙（连不上的第一大原因）",
-    firewallHint: "Windows 安全中心 → 防火墙和网络保护 → 允许应用通过防火墙 → 找到 ImageFilter，勾上“专用”——只勾专用，别勾公用。",
-    firewallHintGeneric: "在 Windows 防火墙上允许 ImageFilter 通过“专用网络”——这是局域网模式下“连不上”的第一大原因。",
+    firewallHintTitle: "防火墙问题",
+    firewallHint: "Windows 安全中心 → 防火墙和网络保护 → 允许应用通过防火墙 → ImageFilter → 勾选“专用”。",
+    firewallHintGeneric: "在 Windows 防火墙允许 ImageFilter 通过“专用网络”。",
     publicTitle: "当前网络被 Windows 标为“公用”",
-    publicWarn: "“公用”= 不可信网络（咖啡厅 / 办公室 / 酒店那类共享 WiFi）。在这种网络上配对码是明文传输的：同一网段的设备可能嗅探到它，然后读到你共享的目录。",
-    publicOffer: "更安全的做法是：回到可信的家庭 WiFi 再开服务。",
+    publicWarn: "“公用”是不可信网络，存在一定风险",
+    publicOffer: "建议使用专用网络",
     publicConfirm: "我了解风险，仍要开启",
-    publicAck: "已在 {time} 确认过网络防护的风险（仅本次运行有效；重启后还会再问一次）",
-    publicAckNoTime: "本次运行已确认过网络防护的风险（读不到系统时钟）",
-    publicIpTitle: "检测到不是局域网的地址",
-    publicIpWarn: "{list} —— 这些地址可能被局域网外的设备访问。服务只该在同一个 WiFi 下用，请确认你确实需要开着它。",
-    profileUnknown: "读不到当前网络的类别（Windows 网络列表服务不可用，或没有已连接的网络）。这一档按“不可信”处理：在你确认之前服务不会开启——读不出类别，不等于这条网络可信。",
+    publicAck: "已在 {time} 确认风险",
+    publicAckNoTime: "本次运行已确认风险",
+    publicIpTitle: "局域网地址错误",
+    publicIpWarn: "{list} 存在暴露风险；已了解风险确认开启。",
+    profileUnknown: "当前为未知网络；已了解风险确认开启。",
 
     // ── M4′ Task 1 · 配对二维码（桌面端生成） ──
     // 数据来自 `get_server_pairing_qr`（PairingQr, camelCase）；返回 null = 这次没有二维码。
@@ -468,28 +467,21 @@ export default {
     // Fix 1：二维码只在服务**真的在监听**时才有（后端没在监听就返回 null）。没在监听时
     // 由 qrNotRunning 说清原因并保留手输那条路 —— 一张装在配置端口上的码会把手机指向
     // 一个没人听的端口，而它看上去比一句话更权威。
-    qrTitle: "配对二维码",
-    qrScanHint: "用手机上的 ImageFilter 扫这个码——地址和配对码会自动填好。",
-    qrNoToken: "还没有配对码——开启服务时会自动生成一枚，之后这里就会出现二维码。",
-    qrNotRunning: "服务没在监听，所以这里没有二维码——配置里那个端口手机连不上。请先打开上面的开关，状态显示“正在监听”之后再回来扫；现在也可以用下面的地址与配对码手动配对。",
+    qrShow: "用手机扫码连接",
+    qrHide: "收起二维码",
+    qrScanHint: "使用手机 ImageFilter 扫码",
+    qrNoToken: "服务启动后生成配对码与二维码。",
+    qrNotRunning: "服务异常；请先检查服务状态，或手动填写下方信息。",
     // 扫码是增强，不是唯一路径（M4′ Task 1 Step 4 第 3 条：拒绝相机权限也要能配对）。
-    qrFallback: "扫不出来也不要紧：手动填下面的局域网地址与配对码，效果完全一样。",
+    qrFallback: "无法使用？尝试手动配对？",
 
     // ── M4′ Task 3 · 只读模式 ──
     // 「开」= 所有写端点回 403 forbiddenPath（复用既有码，不新造）；读端点照常。
-    readOnly: "只读模式（手机只能看，不能改）",
-    readOnlyDesc: "开启后，手机上打分、改色标、移动照片都会被电脑拒绝；浏览与看原图不受影响。",
-    readOnlyNote: "手机端会提示“电脑上不允许这个操作”。关掉它之后，手机重新连一次即可恢复可写。",
+    readOnly: "只读模式",
+    readOnlyDesc: "手机端仅浏览",
 
     // ── M4′ Task 3 · 谁在连我 ──
     // 纪律：这里只有 HTTP 这一层真的知道的东西。**不许**编设备名或位置。
-    clientsTitle: "最近连接（谁在连我）",
-    clientsRefresh: "刷新",
-    clientsEmpty: "还没有记录——服务开启后，手机每请求一次就会在这里留一行。",
-    clientsUnknownIp: "来源未知",
-    clientsUnknownTime: "读不到系统时钟",
-    clientsCount: "缓冲里 {recorded} 条（最多留 {capacity} 条），这里显示最近的 {shown} 条",
-    clientsDesc: "这是一份“最近的请求”，不是在线设备清单。HTTP 客户端不会报上自己的名字或位置，所以这里只有来源 IP、请求的端点与时间——设备名和位置在这一层读不到，编一个出来只会骗人。同一台手机可能占好几行，两台设备也可能共用一个 IP；手机重连后 IP 也可能变。为免泄露，请求里带的文件路径（查询串）不记录。",
   },
 
   // ── 2026-10-25 · mDNS 配对（桌面端） ──
@@ -498,23 +490,22 @@ export default {
   // 否则用户会以为移除 = 已经踢下线（真正吊销只能轮换配对码，所有设备重连）。
   pairing: {
     sectionTitle: "配对新设备",
-    windowHint: "手机和电脑在同一个 WiFi 时，手机上的 ImageFilter 会发现这台电脑。要让新设备真正配对，先在电脑上打开配对窗口（5 分钟有效）；只有你点「允许」，配对码才会发给对方。",
+    windowHint: "配对前请点击此按钮接收配对请求",
     openWindow: "配对新设备",
     closeWindow: "关闭配对窗口",
     windowOpen: "配对窗口已打开",
-    windowClosed: "配对窗口未打开——手机还能看到这台电脑，但发起不了配对",
-    serviceOff: "先开启图库服务，手机才能发现这台电脑",
+    windowClosed: "配对窗口未打开",
+    serviceOff: "先开启远程服务",
     remaining: "剩余 {time}",
     pendingTitle: "待确认的请求",
-    pendingDesc: "待确认的请求 60 秒后自动过期，最多同时保留 3 个。",
+    pendingDesc: "请求 60 秒后自动过期",
     morePending: "还有 {n} 个待确认请求",
     pairedDevices: "已连接设备",
-    noDevices: "还没有配对过的设备",
+    noDevices: "暂无已配对设备",
     forget: "移除",
-    forgetNote: "v1 的「移除」只是忘记这台设备，不会吊销配对码；要让所有设备重新配对，请展开下面的「高级 / 手动配对」用「轮换」。",
     lastSeen: "最近连接 {time}",
     requestTitle: "配对请求",
-    requestBody: "这台设备想连接你的图库服务。点「允许」之后，它才能拿到地址与配对码；点「拒绝」则什么都不会发出去。",
+    requestBody: "这台设备想连接图库服务。请确认它是你自己的设备，且在同一局域网环境。",
     deviceOn: "设备：{name}（{ip}）",
     requestedAt: "请求时间 {time}",
     expiresIn: "请求将在 {seconds} 秒后自动过期",
@@ -522,9 +513,8 @@ export default {
     allow: "允许",
     deny: "拒绝",
     advanced: "高级 / 手动配对",
-    advancedHint: "扫码、局域网地址与配对码——配对窗口用不了时的退路。",
     actionFailed: "操作失败：{reason}",
-    unavailable: "读不到配对状态：{reason}",
+    unavailable: "未知配对状态：{reason}",
   },
 
 };

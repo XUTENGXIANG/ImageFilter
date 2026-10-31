@@ -17,7 +17,7 @@ import {
 function SkeletonRow({ depth, label }: { depth: number; label: string }) {
   return (
     <div
-      className="tree-row tree-row-skeleton flex items-center gap-1.5 rounded-md text-[12px] text-zinc-600"
+      className="tree-row tree-row-skeleton flex items-center gap-1.5 rounded-2xl text-[12px] text-zinc-600"
       style={{ paddingLeft: `${depth * 12 + 8}px`, paddingRight: "8px" }}
       role="status"
     >
@@ -112,7 +112,7 @@ export function FolderTreeItem({
         }}
         aria-expanded={canExpand ? open : undefined}
         data-selected={isActive}
-        className={`press-row tree-row relative w-full text-left rounded-md text-[12px] flex items-center gap-1.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/50 focus-visible:ring-offset-1 focus-visible:ring-offset-zinc-900 ${
+        className={`press-row tree-row relative w-full text-left rounded-2xl text-[12px] flex items-center gap-1.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/50 focus-visible:ring-offset-1 focus-visible:ring-offset-zinc-900 ${
           isActive
             ? "bg-emerald-500/10 text-emerald-300"
             : "text-zinc-400 hover:bg-zinc-800/60"
@@ -135,14 +135,14 @@ export function FolderTreeItem({
               <Movie
                 theme="filled"
                 size={10}
-                className={isActive ? "text-emerald-400/70" : "text-zinc-600"}
+                className={isActive ? "text-brand-hover/70" : "text-zinc-600"}
               />
-              <span className={`text-[10px] tabular-nums ${isActive ? "text-emerald-400/70" : "text-zinc-600"}`}>
+              <span className={`text-[10px] tabular-nums ${isActive ? "text-brand-hover/70" : "text-zinc-600"}`}>
                 {node.videoCount}
               </span>
             </span>
           )}
-          <span className={`text-[10px] tabular-nums ${isActive ? "text-emerald-400/70" : "text-zinc-600"}`}>
+          <span className={`text-[10px] tabular-nums ${isActive ? "text-brand-hover/70" : "text-zinc-600"}`}>
             {node.hasSubdirs
               ? t("devices.folders", { n: node.subfolderCount })
               : t("devices.photos", { n: node.photoCount })}

@@ -7,10 +7,10 @@
  * 这里放的是"容器与项"的形状，不含入场/出场动画（那由各自的数据属性驱动）。
  */
 export const MENU_CONTENT =
-  "min-w-[160px] bg-zinc-800 border border-zinc-700 rounded-lg p-1 shadow-2xl z-[100]";
+  "min-w-[160px] bg-zinc-800 border border-zinc-700 rounded-2xl p-1 shadow-2xl z-[100]";
 
 export const MENU_ITEM =
-  "group text-[11px] leading-none text-zinc-300 rounded-sm flex items-center h-7 px-2 relative select-none outline-none " +
+  "group text-[11px] leading-none text-zinc-300 rounded-xl flex items-center h-7 px-2 relative select-none outline-none " +
   "data-[disabled]:text-zinc-600 data-[disabled]:pointer-events-none " +
   "data-[highlighted]:bg-zinc-700 data-[highlighted]:text-zinc-100 cursor-pointer";
 

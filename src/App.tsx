@@ -1,6 +1,7 @@
 // Copyright (c) 2026 XUTENGXIANG
 // SPDX-License-Identifier: MIT
 import { useEffect, useState, useMemo, useRef, useCallback, memo } from "react";
+import { createPortal } from "react-dom";
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { useTranslation } from "react-i18next";
 import type { TFunction } from "i18next";
@@ -296,12 +297,13 @@ function App({ osCapabilities }: { osCapabilities: OsCapabilities }) {
   }, [lrcPhase]);
   // (位置在 Ctrl+Z effect 之前: 那个 effect 的依赖数组会被急切求值, showToast 若是
   //  const 声明在后面就触发 TDZ — 与 viewerIndex 是同一条纪律)
-  const [toast, setToast] = useState<string | null>(null);
+  type ToastTone = "success" | "error" | "info";
+  const [toast, setToast] = useState<{ text: string; tone: ToastTone } | null>(null);
   const toastTimer = useRef<number | undefined>(undefined);
-  // ms 默认 1200(既有手感不变); Phase 5 的边车失败提示传 4000 ——
-  // "写入 .xmp 失败：存储卡处于写保护（只读）" 这类长文案 1.2s 读不完(会话 ② 已记录)。
-  const showToast = (msg: string, ms = 1200) => {
-    setToast(msg);
+  // ms 默认 1200(既有手感不变); 失败提示传 4000 —— "写入 .xmp 失败：存储卡处于写保护（只读）"
+  // 这类长文案 1.2s 读不完(会话 ② 已记录)。tone 只影响配色；文案本身仍要说清成功/失败。
+  const showToast = (msg: string, ms = 1200, tone: ToastTone = "info") => {
+    setToast({ text: msg, tone });
     window.clearTimeout(toastTimer.current);
     toastTimer.current = window.setTimeout(() => setToast(null), ms);
   };
@@ -310,7 +312,7 @@ function App({ osCapabilities }: { osCapabilities: OsCapabilities }) {
   // hook 只给"发生了什么"(notice.seq 保证每次都重新触发), 文案在这里用 i18n 拼。
   useEffect(() => {
     if (!xmpNotice) return;
-    showToast(xmpNoticeText(t, xmpNotice), 4000);
+    showToast(xmpNoticeText(t, xmpNotice), 4000, xmpNotice.kind === "failed" ? "error" : "info");
     // 只依赖 notice 本身: seq 变了就是一次新提示
   }, [xmpNotice]);
 
@@ -318,7 +320,7 @@ function App({ osCapabilities }: { osCapabilities: OsCapabilities }) {
   // 它需要同时说明"发的是哪个文件夹"和"还有 N 个文件夹没发", 一句话 toast 装不下)。
   useEffect(() => {
     if (!lrcNotice) return;
-    showToast(lrcNoticeText(t, lrcNotice), 4000);
+    showToast(lrcNoticeText(t, lrcNotice), 4000, "error");
   }, [lrcNotice]);
 
   // Disable browser default context menu
@@ -739,17 +741,17 @@ function App({ osCapabilities }: { osCapabilities: OsCapabilities }) {
               d.driveType === "removable" ? { label: t("devices.eject"), action: () => {
                 invoke("eject_drive", { mountPoint: d.mountPoint })
                   .then(() => {
-                    showToast(t("devices.ejectOk", { dir: d.mountPoint }));
+                    showToast(t("devices.ejectOk", { dir: d.mountPoint }), 1500, "success");
                     setTimeout(detectDrives, 800); // 弹出后刷新设备列表
                   })
-                  .catch((e) => { console.error("eject failed:", e); showToast(t("devices.ejectFail")); });
+                  .catch((e) => { console.error("eject failed:", e); showToast(t("devices.ejectFail"), 4000, "error"); });
               } } : { label: t("devices.fixedDisk"), disabled: true },
               { label: t("devices.refreshList"), action: () => selectedDrive && browseDrive(selectedDrive!)  },
             ].filter(Boolean) as MenuItem[]}>
             <button
               onClick={() => browseDrive(d.mountPoint)}
               data-selected={selectedDrive === d.mountPoint}
-              className={`press-row relative w-full text-left pl-2 pr-1.5 py-1.5 rounded-md text-[12px] flex items-center gap-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/50 focus-visible:ring-offset-1 focus-visible:ring-offset-zinc-900 ${
+              className={`press-row relative w-full text-left pl-2 pr-1.5 py-1.5 rounded-2xl text-[12px] flex items-center gap-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/50 focus-visible:ring-offset-1 focus-visible:ring-offset-zinc-900 ${
                 selectedDrive === d.mountPoint
                   ? "bg-emerald-500/10 text-emerald-300"
                   : "hover:bg-zinc-800/60 text-zinc-400"
@@ -760,7 +762,7 @@ function App({ osCapabilities }: { osCapabilities: OsCapabilities }) {
               )}
               {/* 可移动设备=U盘图标, 固定磁盘=磁盘图标 (IconPark) */}
               {d.driveType === "removable"
-                ? <DiskOne theme="filled" size={14} strokeWidth={3} className="text-emerald-500 flex-shrink-0" />
+                ? <DiskOne theme="filled" size={14} strokeWidth={3} className="text-brand flex-shrink-0" />
                 : <Disk theme="filled" size={14} strokeWidth={3} className="text-zinc-500 flex-shrink-0" />}
               <span className="truncate">{d.label}</span>
               <span className="ml-auto max-w-[56px] shrink-0 truncate text-[10px] tabular-nums text-zinc-600">{d.mountPoint}</span>
@@ -780,7 +782,7 @@ function App({ osCapabilities }: { osCapabilities: OsCapabilities }) {
               门内留空, 外面就永远看不到中间态。 */}
           {browsing ? (
             showScanning ? (
-              <p className="text-[11px] text-emerald-500 px-1 animate-pulse">
+              <p className="text-[11px] text-brand px-1 animate-pulse">
                 {t("devices.scanning")}
               </p>
             ) : null
@@ -790,7 +792,7 @@ function App({ osCapabilities }: { osCapabilities: OsCapabilities }) {
               <button
                 onClick={() => loadFolder(folderTree.path)}
                 data-selected={activeFolder === folderTree.path}
-                className={`press-row relative w-full text-left pl-2 pr-2 py-1.5 rounded-md text-[12px] flex items-center gap-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/50 focus-visible:ring-offset-1 focus-visible:ring-offset-zinc-900 ${
+                className={`press-row relative w-full text-left pl-2 pr-2 py-1.5 rounded-2xl text-[12px] flex items-center gap-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/50 focus-visible:ring-offset-1 focus-visible:ring-offset-zinc-900 ${
                   activeFolder === folderTree.path
                     ? "bg-emerald-500/10 text-emerald-300"
                     : "text-zinc-400 hover:bg-zinc-800/60"
@@ -805,13 +807,13 @@ function App({ osCapabilities }: { osCapabilities: OsCapabilities }) {
                   <span className="ml-auto flex items-center gap-1.5 flex-shrink-0 whitespace-nowrap">
                     {folderTree.videoCount > 0 && (
                       <span className="flex items-center gap-0.5" title={t("devices.videos", { n: folderTree.videoCount })}>
-                        <Movie theme="filled" size={10} className={activeFolder === folderTree.path ? "text-emerald-400/70" : "text-zinc-600"} />
-                        <span className={`text-[10px] tabular-nums ${activeFolder === folderTree.path ? "text-emerald-400/70" : "text-zinc-600"}`}>
+                        <Movie theme="filled" size={10} className={activeFolder === folderTree.path ? "text-brand-hover/70" : "text-zinc-600"} />
+                        <span className={`text-[10px] tabular-nums ${activeFolder === folderTree.path ? "text-brand-hover/70" : "text-zinc-600"}`}>
                           {folderTree.videoCount}
                         </span>
                       </span>
                     )}
-                    <span className={`text-[10px] tabular-nums ${activeFolder === folderTree.path ? "text-emerald-400/70" : "text-zinc-600"}`}>
+                    <span className={`text-[10px] tabular-nums ${activeFolder === folderTree.path ? "text-brand-hover/70" : "text-zinc-600"}`}>
                       {folderTree.hasSubdirs
                         ? t("devices.folders", { n: folderTree.subfolderCount })
                         : t("devices.photos", { n: folderTree.photoCount })}
@@ -934,7 +936,7 @@ function App({ osCapabilities }: { osCapabilities: OsCapabilities }) {
             >
               {/* 维度③ 的提示: 只看分析结果、还有没分析过的照片时才出现(docs 4.2) */}
               {showPendingHint && (
-                <div className="mb-2 flex items-center gap-2 text-[11px] text-amber-200/90 bg-amber-500/10 border border-amber-500/20 rounded-lg px-3 py-1.5">
+                <div className="mb-2 flex items-center gap-2 text-[11px] text-amber-200/90 bg-amber-500/10 border border-amber-500/20 rounded-2xl px-3 py-1.5">
                   <span>{t("grid.pendingAnalysis", { n: pendingAnalysis.length })}</span>
                   <button
                     onClick={() => runAnalysis(pendingAnalysis)}
@@ -945,7 +947,7 @@ function App({ osCapabilities }: { osCapabilities: OsCapabilities }) {
               )}
               {/* 三维筛到 0 张的兜底: "未分析"提示盖不住"全分析完但没命中"这一支 */}
               {showNoMatch && (
-                <div className="mb-2 flex items-center gap-2 text-[11px] text-zinc-400 bg-zinc-800/40 border border-zinc-700/40 rounded-lg px-3 py-1.5">
+                <div className="mb-2 flex items-center gap-2 text-[11px] text-zinc-400 bg-zinc-800/40 border border-zinc-700/40 rounded-2xl px-3 py-1.5">
                   <span>{t("grid.noMatch")}</span>
                   <button
                     onClick={clearFilters}
@@ -1067,14 +1069,14 @@ function App({ osCapabilities }: { osCapabilities: OsCapabilities }) {
             <button
               type="button"
               onClick={() => resolveXmpAsk("off")}
-              className="px-3 py-1.5 rounded-md border border-border text-sm hover:bg-muted"
+              className="px-3 py-1.5 rounded-2xl border border-border text-sm hover:bg-muted"
             >
               {t("xmp.askNo")}
             </button>
             <button
               type="button"
               onClick={() => resolveXmpAsk("on")}
-              className="px-3 py-1.5 rounded-md bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-medium"
+              className="px-3 py-1.5 rounded-2xl bg-brand-strong hover:bg-brand text-white text-sm font-medium"
             >
               {t("xmp.askYes")}
             </button>
@@ -1099,7 +1101,7 @@ function App({ osCapabilities }: { osCapabilities: OsCapabilities }) {
             <button
               type="button"
               onClick={() => setLrcAlreadyRunning(false)}
-              className="px-3 py-1.5 rounded-md border border-border text-sm hover:bg-muted"
+              className="px-3 py-1.5 rounded-2xl border border-border text-sm hover:bg-muted"
             >
               {t("lrc.runningRetry")}
             </button>
@@ -1107,7 +1109,7 @@ function App({ osCapabilities }: { osCapabilities: OsCapabilities }) {
               type="button"
               disabled={lrcSending}
               onClick={forceCloseLightroomAndRetry}
-              className="px-3 py-1.5 rounded-md bg-red-600 hover:bg-red-500 disabled:bg-zinc-700 text-white text-sm font-medium"
+              className="px-3 py-1.5 rounded-2xl bg-danger-strong hover:bg-danger-strong/90 disabled:bg-zinc-700 text-white text-sm font-medium"
             >
               {lrcSending ? t("lrc.sending") : t("lrc.runningForce")}
             </button>
@@ -1131,14 +1133,28 @@ function App({ osCapabilities }: { osCapabilities: OsCapabilities }) {
           被看到 —— 请求只活 60 秒, 藏在任何面板里都等于错过。 */}
       <PairingDialogHost />
 
-      {/* 弹出提示浮窗 — 渐变出现停留1秒后消失 */}
-      <div
-        className={`fixed top-16 left-1/2 -translate-x-1/2 px-4 py-2 rounded-lg bg-emerald-600/90 text-white text-sm shadow-2xl z-[200] transition-all duration-300 ${
-          toast ? "opacity-100 scale-100" : "opacity-0 scale-95 pointer-events-none"
-        }`}
-      >
-        {toast}
-      </div>
+      {/* 轻提示 — 短暂出现、自动消失；失败红色 / 成功 emerald / 普通信息 zinc。
+          通过 portal 挂到 body 顶层：对话框 / 菜单 / 面板各建各的 stacking context，
+          留在应用根节点里时 z-index 再高也可能被盖住或被 overflow 裁掉。 */}
+      {createPortal(
+        <div
+          role="status"
+          aria-live="polite"
+          aria-atomic="true"
+          className={`fixed top-16 left-1/2 -translate-x-1/2 px-4 py-2 rounded-2xl text-white text-sm shadow-2xl z-[9999] transition-[opacity,transform] duration-300 ${
+            toast ? "opacity-100 scale-100" : "opacity-0 scale-95 pointer-events-none"
+          } ${
+            toast?.tone === "error"
+              ? "bg-danger-strong/90"
+              : toast?.tone === "success"
+                ? "bg-brand-strong/90"
+                : "bg-zinc-700/95"
+          }`}
+        >
+          {toast?.text}
+        </div>,
+        document.body,
+      )}
     </div>
   );
 }

@@ -9,7 +9,12 @@
 
 :root {
   color-scheme: dark;
-  font-family: Inter, system-ui, -apple-system, sans-serif;
+  /* 双语字体规则：
+     正文/界面用 --app-font-sans；展示性标题（DialogTitle / h1-h2）用 --app-font-serif。
+     Geist 只覆盖拉丁，中文必须显式落到系统黑体/宋体，不能让浏览器自己猜。 */
+  --app-font-sans: 'Geist Variable', 'Noto Sans SC', 'Microsoft YaHei', 'PingFang SC', 'Hiragino Sans GB', system-ui, sans-serif;
+  --app-font-serif: Georgia, 'Times New Roman', 'Source Han Serif SC', 'Noto Serif SC', 'Songti SC', 'STSong', SimSun, serif;
+  font-family: var(--app-font-sans);
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
@@ -19,6 +24,14 @@
   --background-opacity: 0%;
   --background-bg: color-mix(in oklab, var(--color-zinc-950) var(--background-opacity), transparent);
   --glass-fade: color-mix(in oklab, var(--color-zinc-950) var(--glass-opacity), transparent);
+  /* 语义色令牌：组件只引用角色，不直接写 emerald/red/amber 档位 */
+  --brand: var(--color-emerald-500);
+  --brand-hover: var(--color-emerald-400);
+  --brand-strong: var(--color-emerald-600);
+  --danger: var(--color-red-400);
+  --danger-strong: var(--color-red-600);
+  --warning: var(--color-amber-400);
+  --info: var(--color-sky-400);
   --background: oklch(1 0 0);
   --foreground: oklch(0.145 0 0);
   --card: oklch(1 0 0);
@@ -75,32 +88,28 @@ img {
 .no-scrollbar::-webkit-scrollbar { display: none; }
 .no-scrollbar { scrollbar-width: none; -ms-overflow-style: none; }
 
-/* 缩略图滑块 — 双色填充渐变 + 无边框球 */
-.thumb-slider {
-  -webkit-appearance: none;
-  appearance: none;
-  /* 视觉轨道仍保持 4px: 用 border-box 的 24px 高度 + 上下 padding 把命中区做到
-     WCAG 2.5.8 要求的 24×24; background-clip 让渐变只画在 4px 的 content box 上
-     (所以调用方的行内样式必须用 backgroundImage 而不是 background 简写,
-     否则简写会把 background-clip 重置回 border-box)。 */
-  height: 24px;
-  padding: 10px 0;
-  background-clip: content-box;
-  /* 圆角必须按 4px 轨道给小值(2px), 不能用 9999px —— 在 24px 高的盒子上
-     9999px 会被钳到 12px, 把 4px 的 content box 裁成两端削尖的梭形(视觉回归)。
-     2px 时曲率完全落在 padding 区, content box 保持原版的圆头轨道。 */
-  border-radius: 2px;
-  outline: none;
+/* 滑块：轨道由 Slider 组件画成 4px 圆头；input 只负责 24px 命中区和手柄。 */
+.slider-root {
   /* 默认(深色): 左灰右浅灰 */
   --thumb-left: #52525b;
   --thumb-right: #a1a1aa;
   --thumb-color: #52525b;
 }
-:root[data-theme="light"] .thumb-slider {
+:root[data-theme="light"] .slider-root {
   /* 浅色: 左灰 右淡灰 */
   --thumb-left: #71717a;
   --thumb-right: #d4d4d8;
   --thumb-color: #52525b;
+}
+.thumb-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  /* 24px 高度 + 上下 padding 把命中区做到 WCAG 2.5.8 的 24×24;
+     视觉轨道由 Slider 的兄弟节点画，input 自己的轨道背景设为透明。 */
+  height: 24px;
+  padding: 10px 0;
+  background: transparent;
+  outline: none;
 }
 .thumb-slider::-webkit-slider-thumb {
   -webkit-appearance: none;
@@ -110,7 +119,10 @@ img {
   background: var(--thumb-color);
   border: none;
   cursor: pointer;
+  transition: transform 120ms ease-out;
 }
+.thumb-slider:hover::-webkit-slider-thumb { transform: scale(1.1); }
+.thumb-slider:active::-webkit-slider-thumb { transform: scale(1.15); }
 /* 上面去掉了原生 outline, 必须给键盘用户留可见替代 (WCAG 2.4.7)。
    用 :focus-visible 而非 :focus —— 鼠标拖动滑块不显示轮廓。 */
 .thumb-slider:focus-visible {
@@ -291,31 +303,28 @@ img {
 @layer components {
   .tooltip-wrap { position: relative; }
 }
-.tooltip-wrap .tooltip {
-  position: absolute;
-  top: calc(100% + 8px);
-  left: 50%;
+.tooltip {
+  position: fixed;
   transform: translateX(-50%);
   background: rgba(0, 0, 0, 0.85);
   color: #e4e4e7;
   border-radius: 8px;
   padding: 4px 10px;
   font-size: 11px;
-  white-space: nowrap;
-  opacity: 0;
-  visibility: hidden;
-  transition: opacity 0.15s ease;
+  line-height: 1.35;
+  text-align: center;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  max-width: min(320px, calc(100vw - 16px));
   pointer-events: none;
-  z-index: 60;
-}
-.tooltip-wrap:hover .tooltip {
-  opacity: 1;
-  visibility: visible;
+  /* 层级：toast(portal, 9999) > tooltip(200) > menu(100) > dialog(50) > panel(20–40) */
+  z-index: 200;
 }
 
 @theme inline {
-  --font-heading: var(--font-sans);
-  --font-sans: 'Geist Variable', sans-serif;
+  --font-sans: var(--app-font-sans);
+  --font-serif: var(--app-font-serif);
+  --font-heading: var(--app-font-serif);
   --color-sidebar-ring: var(--sidebar-ring);
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
@@ -347,6 +356,13 @@ img {
   --color-card: var(--card);
   --color-foreground: var(--foreground);
   --color-background: var(--background);
+  --color-brand: var(--brand);
+  --color-brand-hover: var(--brand-hover);
+  --color-brand-strong: var(--brand-strong);
+  --color-danger: var(--danger);
+  --color-danger-strong: var(--danger-strong);
+  --color-warning: var(--warning);
+  --color-info: var(--info);
   --radius-sm: calc(var(--radius) * 0.6);
   --radius-md: calc(var(--radius) * 0.8);
   --radius-lg: var(--radius);
@@ -400,6 +416,10 @@ img {
   html {
     @apply font-sans;
   }
+  /* 展示性标题统一走衬线；h3 及以下的小标签保持无衬线，避免把分区标签也做成标题。 */
+  h1, h2 {
+    @apply font-heading;
+  }
 }
 
 /* ── 浅色主题：反转 zinc 色板，让硬编码类自动适配 ── */
@@ -425,6 +445,15 @@ img {
   --color-emerald-800: oklch(0.62 0.15 160.5);
   --color-emerald-700: oklch(0.58 0.13 159);
 
+  /* 语义色令牌：浅色底上加深，保证对比度 */
+  --brand: var(--color-emerald-600);
+  --brand-hover: var(--color-emerald-500);
+  --brand-strong: var(--color-emerald-700);
+  --danger: var(--color-red-600);
+  --danger-strong: var(--color-red-700);
+  --warning: var(--color-amber-600);
+  --info: var(--color-sky-600);
+
   /* 点阵背景在浅色下用暗点 */
   .bg-grid {
     background-image: radial-gradient(rgba(0,0,0,0.04) 1px, transparent 1px);
@@ -444,4 +473,5 @@ img {
     transition-duration: 0.01ms !important;
     scroll-behavior: auto !important;
   }
+  .thumb-slider::-webkit-slider-thumb { transition: none; }
 }

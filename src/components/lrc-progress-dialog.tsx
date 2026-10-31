@@ -59,7 +59,7 @@ export function LrcProgressDialog({
           <button
             type="button"
             onClick={() => onOpenChange(false)}
-            className="px-3 py-1.5 rounded-md border border-border text-sm hover:bg-muted"
+            className="px-3 py-1.5 rounded-2xl border border-border text-sm hover:bg-muted"
           >
             {t("lrc.keepInBackground")}
           </button>

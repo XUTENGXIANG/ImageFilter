@@ -10,7 +10,7 @@ export function ExifPanel({ photo, previewSrc }: { photo: ScannedPhoto; previewS
   return (
     <div className="space-y-4">
       {previewSrc && (
-        <div className="aspect-square rounded-lg bg-zinc-800 overflow-hidden">
+        <div className="aspect-square rounded-2xl bg-zinc-800 overflow-hidden">
           <img src={previewSrc} alt={photo.fileName} className="w-full h-full object-cover" />
         </div>
       )}

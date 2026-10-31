@@ -38,7 +38,7 @@ export function FloatingPanel({ side, title, defaultOpen = true, autoOpenKey, ch
               <Tip label={isLeft ? t("panel.collapseLeft") : t("panel.collapseRight")}>
               <button
                 onClick={() => setOpen(false)}
-                className="w-6 h-6 flex items-center justify-center rounded-md hover:bg-zinc-800 text-zinc-600 hover:text-zinc-300 transition-colors"
+                className="w-6 h-6 flex items-center justify-center rounded-2xl hover:bg-zinc-800 text-zinc-600 hover:text-zinc-300 transition-colors"
               >
                 {isLeft ? <Left theme="outline" size={12} strokeWidth={3} /> : <Right theme="outline" size={12} strokeWidth={3} />}
               </button>
@@ -56,7 +56,7 @@ export function FloatingPanel({ side, title, defaultOpen = true, autoOpenKey, ch
         <button
           onClick={() => setOpen(true)}
           className={`w-full h-10 border border-zinc-800 dark:border-white/[0.08] hover:bg-zinc-800 cursor-pointer flex items-center justify-center transition-colors duration-200 ${
-            isLeft ? "right-0 rounded-r-lg border-l-0" : "left-0 rounded-l-lg border-r-0"
+            isLeft ? "right-0 rounded-r-2xl border-l-0" : "left-0 rounded-l-2xl border-r-0"
           } bg-zinc-900`}
         >
           {isLeft ? <Right theme="outline" size={10} strokeWidth={3} className="text-zinc-500" /> : <Left theme="outline" size={10} strokeWidth={3} className="text-zinc-500" />}

@@ -5,7 +5,7 @@ import { useTranslation } from "react-i18next";
 import { UpOne, SortAmountUp, SortAmountDown } from "@icon-park/react";
 import { CollapsibleBar } from "./collapsible-bar";
 import { Collapse } from "./collapse";
-import { Dropdown } from "./ui/select";
+import { Select } from "./ui/select";
 import { ThumbSizeSlider } from "./thumb-size-slider";
 import { Tip } from "./tip";
 import { LABEL_BG, LABEL_ORDER, type Label } from "../labels";
@@ -85,7 +85,7 @@ export function PhotoToolbar({
           <button onClick={onSelectAll} className="relative hit-24 shrink-0 whitespace-nowrap text-[10px] text-zinc-500 hover:text-zinc-300">{t("toolbar.selectAll")}</button>
           <button onClick={onClearSelection} className="relative hit-24 shrink-0 whitespace-nowrap text-[10px] text-zinc-500 hover:text-zinc-300">{t("toolbar.clear")}</button>
           <span className="shrink-0 whitespace-nowrap text-[10px] text-zinc-600">{t("toolbar.selected", { n: selectedCount, total: photosCount })}</span>
-          <Dropdown
+          <Select
             value={sortBy}
             onValueChange={(v) => onSortByChange(v)}
             ariaLabel={t("toolbar.sortBy")}
@@ -111,7 +111,7 @@ export function PhotoToolbar({
           {/* 星级筛选收成一个下拉(实机反馈: 6 个 chip 一字排开占 ~250px, 窄窗口直接把那一行
               挤爆 —— 竖排或换行)。展开才呈现几星, 常态只占一个控件宽, 那一行因此能保持单行。
               语义没变: 仍是"至少 N 星"(0 = 全部); 选中态用琥珀色标出来, 免得忘了筛选还开着。 */}
-          <Dropdown
+          <Select
             value={starFilter}
             onValueChange={(v) => onStarFilterChange(v)}
             ariaLabel={t("toolbar.starFilterLabel")}
@@ -186,7 +186,7 @@ export function PhotoToolbar({
               />
             ))}
             <span className="shrink-0 whitespace-nowrap ml-2 text-zinc-500">{t("toolbar.flags")}</span>
-            <Dropdown
+            <Select
               value={flagFilter}
               onValueChange={(v) => onFlagFilterChange(v)}
               ariaLabel={t("toolbar.flags")}

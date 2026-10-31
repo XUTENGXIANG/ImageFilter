@@ -47,24 +47,24 @@ export function MacPermissionGuide({ isMac }: { isMac: boolean }) {
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-6">
-      <div className="w-full max-w-md rounded-xl border border-border bg-zinc-900 p-5 text-zinc-100 shadow-2xl">
+      <div className="w-full max-w-md rounded-2xl border border-border bg-zinc-900 p-5 text-zinc-100 shadow-2xl">
         <h2 className="text-sm font-semibold">{t("settings.macPermTitle")}</h2>
         <p className="mt-2 text-xs leading-5 text-zinc-400">{t("settings.macPermBody")}</p>
-        <p className="mt-2 rounded-md bg-zinc-800/70 px-2 py-1.5 text-[11px] leading-4 text-zinc-400">
+        <p className="mt-2 rounded-2xl bg-zinc-800/70 px-2 py-1.5 text-[11px] leading-4 text-zinc-400">
           {t("settings.macPermPath")}
         </p>
         <div className="mt-4 flex justify-end gap-2">
           <button
             type="button"
             onClick={dismiss}
-            className="rounded-md px-3 py-1.5 text-xs text-zinc-400 hover:bg-zinc-800"
+            className="rounded-2xl px-3 py-1.5 text-xs text-zinc-400 hover:bg-zinc-800"
           >
             {t("settings.macPermLater")}
           </button>
           <button
             type="button"
             onClick={openSettings}
-            className="rounded-md bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-500"
+            className="rounded-2xl bg-brand-strong px-3 py-1.5 text-xs font-medium text-white hover:bg-brand"
           >
             {t("settings.macPermOpen")}
           </button>

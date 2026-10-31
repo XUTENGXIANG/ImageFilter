@@ -174,7 +174,7 @@ export function PairingDialogHost() {
         </DialogHeader>
 
         <div className="space-y-2">
-          <div className="space-y-0.5 rounded-md border border-border bg-muted/40 px-2 py-1.5">
+          <div className="space-y-0.5 rounded-2xl border border-border bg-muted/40 px-2 py-1.5">
             <p className="text-sm text-foreground break-words">
               {t("pairing.deviceOn", { name: current.deviceName, ip: current.ip })}
             </p>
@@ -210,7 +210,7 @@ export function PairingDialogHost() {
             autoFocus
             disabled={busy}
             onClick={() => void resolve(false)}
-            className="px-3 py-1.5 rounded-md border border-border text-sm hover:bg-muted disabled:opacity-50 disabled:cursor-not-allowed"
+            className="px-3 py-1.5 rounded-2xl border border-border text-sm hover:bg-muted disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {t("pairing.deny")}
           </button>
@@ -218,7 +218,7 @@ export function PairingDialogHost() {
             type="button"
             disabled={busy}
             onClick={() => void resolve(true)}
-            className="px-3 py-1.5 rounded-md bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed"
+            className="px-3 py-1.5 rounded-2xl bg-brand-strong hover:bg-brand text-white text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {t("pairing.allow")}
           </button>

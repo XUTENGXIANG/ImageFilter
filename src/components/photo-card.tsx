@@ -48,9 +48,9 @@ export const PhotoCard = memo(function PhotoCard({
       onClick={onClick}
       onDoubleClick={onDoubleClick}
       onContextMenu={onContextMenu}
-      className={`relative aspect-square rounded-lg overflow-hidden cursor-pointer border-2 border-zinc-800 transition-all group ${
+      className={`relative aspect-square rounded-2xl overflow-hidden cursor-pointer border-2 border-zinc-800 transition-[border-color,box-shadow] group ${
         isSelected
-          ? "!border-emerald-400 shadow-lg shadow-emerald-500/20"
+          ? "!border-brand-hover shadow-lg shadow-brand/20"
           : ""
       }`}
     >

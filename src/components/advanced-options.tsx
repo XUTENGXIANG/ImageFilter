@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Collapse } from "./collapse";
-import { Dropdown } from "./ui/select";
+import { Select } from "./ui/select";
 import {
   isSeqRule, keepsOriginalWithSeq, schemeOptions, toggleKeepOriginalRule, toggleSeqRule,
   type ImportSchemeApi,
@@ -93,7 +93,7 @@ export function AdvancedOptions({
           {/* ── 命名方案(Phase 6 / 6.2) ── */}
           <div className="flex items-center gap-1.5 flex-wrap">
             <span className="text-[10px] text-zinc-400 shrink-0">{t("import.scheme")}</span>
-            <Dropdown
+            <Select
               value={scheme.name ?? ""}
               onValueChange={(v) => scheme.pick(v || null)}
               ariaLabel={t("import.scheme")}
@@ -120,7 +120,7 @@ export function AdvancedOptions({
                 <button
                   disabled={!newName.trim()}
                   onClick={saveAs}
-                  className="text-[10px] leading-4 px-1.5 py-1 rounded bg-emerald-700 hover:bg-emerald-600 disabled:bg-zinc-800 disabled:text-zinc-600 text-white shrink-0"
+                  className="text-[10px] leading-4 px-1.5 py-1 rounded bg-brand-strong hover:bg-brand disabled:bg-zinc-800 disabled:text-zinc-600 text-white shrink-0"
                 >
                   {t("import.schemeSave")}
                 </button>

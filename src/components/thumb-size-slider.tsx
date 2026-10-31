@@ -3,6 +3,7 @@
 import { useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import { useLocalStorageNumber } from "../hooks/use-local-storage-setting";
+import { Slider } from "./ui/slider";
 import { Tip } from "./tip";
 
 export function ThumbSizeSlider() {
@@ -15,21 +16,20 @@ export function ThumbSizeSlider() {
     if (!el) { el = document.createElement("style"); el.id = id; document.head.appendChild(el); }
     el.textContent = `.photo-grid { grid-template-columns: repeat(${cols}, minmax(0, 1fr)); }`;
   }, [cols]);
-  const pct = ((cols - 2) / (8 - 2)) * 100;
   return (
     <Tip label={t("toolbar.cols", { n: cols })} className="flex items-center shrink-0">
-    <input
-      type="range" min={2} max={8} value={cols}
-      onChange={(e) => setCols(Number(e.target.value))}
-      className="thumb-slider w-16 cursor-pointer shrink-0"
-      style={{
-        /* 必须用 backgroundImage 而非 background 简写 —— 简写会把 .thumb-slider 上的
-           background-clip: content-box 重置掉, 渐变就会糊满整个 24px 命中区 */
-        backgroundImage: `linear-gradient(to right,
-          var(--thumb-left) 0%, var(--thumb-left) ${pct}%,
-          var(--thumb-right) ${pct}%, var(--thumb-right) 100%)`,
-      }}
-    />
+      <Slider
+        value={cols}
+        min={2}
+        max={8}
+        onChange={setCols}
+        aria-label={t("toolbar.cols", { n: cols })}
+        aria-valuetext={t("toolbar.cols", { n: cols })}
+        valueText={String(cols)}
+        showValue
+        className="w-20"
+        valueClassName="w-3 text-right text-[10px] text-zinc-500"
+      />
     </Tip>
   );
 }

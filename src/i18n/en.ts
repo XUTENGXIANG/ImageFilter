@@ -42,7 +42,7 @@ export default {
     autoAdvance: "Auto-advance after rating",
     autoAdvanceDesc: "Auto-next after rating (← back)",
     showCounts: "Show folder counts",
-    showCountsDesc: "Show subfolder / photo / video counts in the left sidebar",
+    showCountsDesc: "Show counts in the left sidebar",
     labelKeys: "Color label shortcut",
     labelKeysDesc: "Label modifier (Alt if taken)",
     // Phase 5 · XMP sidecar (three-step switch, default "Ask" — changed from "Off" in session 6,
@@ -61,8 +61,8 @@ export default {
     // Phase 7 · Lightroom handoff (send mode in Settings; status text is appended to desc)
     lrcMode: "Lightroom handoff",
     lrcModeDialog: "Open import",
-    lrcModeSilent: "Silent import",
-    lrcModeSilentWhy: "Requires a watched folder configured in Lightroom's Auto Import; not supported yet",
+    lrcModeSilent: "Silent import (unsupported)",
+    lrcModeSilentWhy: "Requires Lightroom Auto Import (not supported yet)",
     lrcReprobe: "Re-detect",
     lrcProbing: "Detecting…",
     lrcNotFound: "Lightroom Classic not detected",
@@ -73,7 +73,7 @@ export default {
   transparentBgDescMac: "macOS transparent glass background",
   lrcUnsupportedMac: "Lightroom handoff is not supported on macOS (Windows only)",
   macPermTitle: "macOS needs file access permission",
-  macPermBody: "Reading your photos and writing .xmp sidecars triggers macOS's Files and Folders permission prompts. Grant Full Disk Access once and it stops asking.",
+  macPermBody: "Reading photos and writing .xmp triggers permission prompts. Grant Full Disk Access once to stop them.",
   macPermPath: "System Settings → Privacy & Security → Full Disk Access → enable ImageFilter",
   macPermOpen: "Open System Settings",
   macPermLater: "Later",
@@ -388,64 +388,63 @@ export default {
   // switch / listening state / pairing code / shared folders / troubleshooting list.
   // Status shape: ServerStatus in src-tauri/src/server/mod.rs (camelCase).
   server: {
-    title: "Gallery service (phone)",
-    switchDesc: "Master switch for phone access, off by default",
+    title: "LAN remote browsing",
+    switchDesc: "Remote service switch, off by default",
     on: "On",
     off: "Off",
     listening: "Listening on {url}",
     // Deliberately NOT rolling the switch back on a failed start (Task 8): "you asked for on,
     // it is not running" is a legal state — shown next to lastError, or the user just thinks
     // the click missed.
-    wantedNotRunning: "The switch is on, but the service is not running",
+    wantedNotRunning: "Service is not running",
     // "Off" is not instantaneous: after stop() the port still has a *bounded* settling window
     // (worst measured 63ms) during which a handshake can complete. Never promise more than that.
-    offNote: "Off (after stopping, the port stops accepting new connections within milliseconds)",
-    warn: "Once enabled, any device on the same network holding the pairing code can browse the folders you share. Do not expose it directly to the internet.",
+    offNote: "Off",
     lastError: "Last error",
     tokenLabel: "Pairing code",
-    tokenDesc: "Type this on your phone to pair; after rotating, every phone must pair again",
-    tokenEmpty: "No pairing code yet — one is generated when you enable the service",
+    tokenDesc: "Pair again after resetting",
+    tokenEmpty: "Generated when the service starts",
     copy: "Copy",
     copied: "Copied",
-    copyFailed: "Copy failed — select the pairing code and copy it manually",
-    rotate: "Rotate",
-    rotateConfirm: "Confirm rotate",
+    copyFailed: "Copy failed — copy manually",
+    rotate: "Reset",
+    rotateConfirm: "Confirm reset",
     sharesLabel: "Shared folders",
-    sharesDesc: "Only the folders listed here are reachable from your phone",
-    shareEmpty: "No shared folder yet — until you add one, the service answers “no permission” for every path (a deliberate safe default)",
-    pathPlaceholder: "Full path, or click “Browse…”",
+    sharesDesc: "Allowed folders",
+    shareEmpty: "No shared folders — the phone has no access",
+    pathPlaceholder: "Enter a folder path",
     browse: "Browse…",
     add: "Add",
     remove: "Remove",
-    unavailable: "Cannot read service status: {reason}",
+    unavailable: "Cannot get service status: {reason}",
     actionFailed: "Action failed: {reason}",
-    tipsTitle: "If your phone cannot connect, check these in order",
-    sleepTip: "The PC must not sleep during remote access: Settings → System → Power → Screen and sleep → set to “Never”",
-    firewallTip: "The first time you enable it, Windows asks about the firewall — you must allow “Private networks”",
+    tipsTitle: "Cannot connect?",
+    sleepTip: "Disable sleep (set it to “Never” in system power settings)",
+    firewallTip: "Allow “Private networks” in Windows Firewall on first launch",
     // M4′ Task 2: after the LAN-only decision (2026-10-07) there is **no tunnel option any more**
     // — the old “or both joined the same EasyTier/Tailscale network” wording is gone by decision.
-    appRunningTip: "If the phone cannot connect, check: ① the PC is not asleep ② ImageFilter is running ③ the service is enabled ④ the phone and the PC are on the same WiFi",
+    appRunningTip: "Check: PC sleep, app running, service started, same LAN",
 
     // ── M4′ Task 2 · LAN addresses / firewall / Public-network guard (LAN-only) ──
     // Rendered by ServerPanel; the data comes from `get_server_network_hints`
     // (NetHints, camelCase). Same rule as the Chinese side: no entry point for
     // tunnels / port forwarding / public exposure — this design only warns.
-    lanTitle: "LAN addresses (type one of these on the phone)",
-    lanDesc: "Phone and PC must be on the same WiFi. The name after each address is the network adapter — addresses on virtual adapters (VMware / WSL) usually will not work, so prefer “WLAN” or “Ethernet”.",
-    lanEmpty: "No LAN address detected — the phone cannot reach this PC right now. Check that the PC is connected to WiFi or a wired network.",
+    lanTitle: "LAN address",
+    lanDesc: "Phone and PC must be on the same LAN",
+    lanEmpty: "No LAN address detected",
     rescan: "Scan again",
-    firewallHintTitle: "Firewall (the #1 reason the phone cannot connect)",
-    firewallHint: "Windows Security → Firewall & network protection → Allow an app through firewall → find ImageFilter and tick “Private” — Private only, never Public.",
-    firewallHintGeneric: "Allow ImageFilter through Windows Firewall on the “Private” network profile — the #1 reason the phone cannot connect on a LAN.",
+    firewallHintTitle: "Firewall issue",
+    firewallHint: "Windows Security → Firewall & network protection → Allow an app through firewall → ImageFilter → tick “Private”.",
+    firewallHintGeneric: "Allow ImageFilter through Windows Firewall on the “Private” profile.",
     publicTitle: "Windows marks the current network as “Public”",
-    publicWarn: "“Public” means an untrusted network (a shared WiFi such as a café, office or hotel). Your pairing code travels as plain text there: any device on the same segment could sniff it and then read the folders you share.",
-    publicOffer: "The safer move is to enable the service again from a trusted home WiFi.",
+    publicWarn: "“Public” is an untrusted network — there is some risk",
+    publicOffer: "Use a private network instead",
     publicConfirm: "I understand the risk — turn it on anyway",
-    publicAck: "You accepted the network-guard risk at {time} (this run only; you will be asked again after a restart)",
-    publicAckNoTime: "You accepted the network-guard risk for this run (system clock unavailable)",
-    publicIpTitle: "Addresses outside your LAN detected",
-    publicIpWarn: "{list} — these may be reachable from outside your LAN. This service is meant for the same WiFi only; make sure you really need it running.",
-    profileUnknown: "The current network category cannot be read (Windows network list service unavailable, or no connected network). This is handled as untrusted: the service will not start until you confirm — not being able to read the category does not make the network trusted.",
+    publicAck: "Risk accepted at {time}",
+    publicAckNoTime: "Risk accepted for this run",
+    publicIpTitle: "Wrong LAN address",
+    publicIpWarn: "{list} may be exposed; risk acknowledged.",
+    profileUnknown: "Unknown network; risk acknowledged.",
 
     // ── M4′ Task 1 · pairing QR code (generated on the desktop) ──
     // Data comes from `get_server_pairing_qr` (PairingQr, camelCase); null = no QR code this time.
@@ -455,30 +454,23 @@ export default {
     // Fix 1: a QR code exists only while the service is actually listening (the backend
     // returns null otherwise). qrNotRunning explains that state and keeps the manual path —
     // a code for the configured port would point the phone at a port nobody is listening on.
-    qrTitle: "Pairing QR code",
-    qrScanHint: "Scan this with ImageFilter on your phone — the address and pairing code fill themselves in.",
-    qrNoToken: "No pairing code yet — one is generated when you enable the service, and the QR code appears here right after.",
-    qrNotRunning: "The service is not listening, so there is no QR code here — the phone cannot reach the configured port. Turn the switch above on and wait until the status says it is listening; meanwhile you can pair by hand with the address and pairing code below.",
+    qrShow: "Connect with QR code",
+    qrHide: "Hide QR code",
+    qrScanHint: "Scan with ImageFilter on the phone",
+    qrNoToken: "A pairing code and QR code are generated when the service starts.",
+    qrNotRunning: "Service error — check the service status, or pair manually below.",
     // Scanning is an enhancement, not the only path (M4′ Task 1 Step 4, item 3: refusing the
     // camera permission must still allow pairing by hand).
-    qrFallback: "If scanning does not work, that is fine: type the LAN address and pairing code below by hand — it works exactly the same.",
+    qrFallback: "Cannot use it? Try manual pairing.",
 
     // ── M4′ Task 3 · read-only mode ──
     // On = every write endpoint answers 403 forbiddenPath (the existing code, not a new one);
     // read endpoints keep working.
-    readOnly: "Read-only mode (phone can look, not change)",
-    readOnlyDesc: "When on, rating, changing labels and moving photos from the phone are refused by the PC; browsing and viewing full images are unaffected.",
-    readOnlyNote: "The phone shows “the PC does not allow this action”. After you turn this off, reconnect the phone and writing works again.",
+    readOnly: "Read-only mode",
+    readOnlyDesc: "Browse only on the phone",
 
     // ── M4′ Task 3 · who is connecting ──
     // Discipline: only what the HTTP layer really knows. Never invent a device name or location.
-    clientsTitle: "Recent connections (who is connecting)",
-    clientsRefresh: "Refresh",
-    clientsEmpty: "Nothing recorded yet — once the service is on, every phone request leaves a line here.",
-    clientsUnknownIp: "Source unknown",
-    clientsUnknownTime: "system clock unavailable",
-    clientsCount: "{recorded} in the buffer (keeps at most {capacity}); showing the latest {shown}",
-    clientsDesc: "This is a list of recent requests, not a list of online devices. An HTTP client never reports its own name or location, so all you get here is the source IP, the endpoint it requested and the time — a device name or a location simply cannot be read at this layer, and inventing one would only mislead. One phone may fill several lines, two devices may share one IP, and a phone's IP can change when it reconnects. To avoid leaking anything, the file paths carried in the query string are not recorded.",
   },
 
   // ── 2026-10-25 · mDNS pairing (desktop) ──
@@ -488,23 +480,22 @@ export default {
   // will think removing a device has kicked it offline (only Rotate does that).
   pairing: {
     sectionTitle: "Pair a new device",
-    windowHint: "When the phone and this computer are on the same WiFi, ImageFilter on the phone finds this computer. To actually pair a new device, open the pairing window here first (valid for 5 minutes); the pairing code is sent only after you click Allow.",
+    windowHint: "Click this button before pairing to receive pairing requests",
     openWindow: "Pair a new device",
     closeWindow: "Close pairing window",
     windowOpen: "Pairing window is open",
-    windowClosed: "Pairing window is closed — the phone can still see this computer but cannot request pairing",
-    serviceOff: "Turn on the gallery service first so the phone can find this computer",
+    windowClosed: "Pairing window is closed",
+    serviceOff: "Turn on the remote service first",
     remaining: "{time} left",
     pendingTitle: "Pending requests",
-    pendingDesc: "Unanswered requests expire after 60 seconds; at most 3 are kept at any time.",
+    pendingDesc: "Requests expire in 60 seconds",
     morePending: "{n} more pending request(s)",
     pairedDevices: "Paired devices",
-    noDevices: "No paired devices yet",
+    noDevices: "No paired devices",
     forget: "Forget",
-    forgetNote: "In v1, Forget only drops the record of this device — it does not revoke the pairing code. To make every device pair again, expand Advanced / manual pairing below and use Rotate.",
     lastSeen: "last seen {time}",
     requestTitle: "Pairing request",
-    requestBody: "This device wants to connect to your gallery service. Only after you click Allow does it receive the address and pairing code; Deny sends nothing.",
+    requestBody: "This device wants to connect. Confirm it is yours and on the same LAN.",
     deviceOn: "Device: {name} ({ip})",
     requestedAt: "Requested at {time}",
     expiresIn: "This request expires in {seconds}s",
@@ -512,9 +503,8 @@ export default {
     allow: "Allow",
     deny: "Deny",
     advanced: "Advanced / manual pairing",
-    advancedHint: "QR code, LAN address and pairing code — the fallback when the pairing window is not usable.",
     actionFailed: "Action failed: {reason}",
-    unavailable: "Cannot read pairing status: {reason}",
+    unavailable: "Unknown pairing status: {reason}",
   },
 
 };

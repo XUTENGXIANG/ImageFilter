@@ -67,7 +67,7 @@ export function ImportHistoryDialog({ open, onOpenChange, history, onOpenFolder 
 
         <div className="space-y-2">
           {items.map((h) => (
-            <div key={h.id} className="rounded-md border border-border px-2 py-1.5">
+            <div key={h.id} className="rounded-2xl border border-border px-2 py-1.5">
               <div className="flex items-baseline gap-2">
                 <span className="text-[9px] text-muted-foreground shrink-0">{t("import.historyColSource")}</span>
                 {/* min-w-0 是必需的: flex 子项默认 min-width:auto, 不加就不会收缩,
@@ -80,7 +80,7 @@ export function ImportHistoryDialog({ open, onOpenChange, history, onOpenFolder 
                   type="button"
                   onClick={() => onOpenFolder(dirOfPath(h.destPath))}
                   title={`${h.destPath}\n${t("import.historyOpenFolder")}`}
-                  className="text-[11px] truncate flex-1 min-w-0 text-left text-emerald-500/90 hover:text-emerald-400 hover:underline"
+                  className="text-[11px] truncate flex-1 min-w-0 text-left text-brand/90 hover:text-brand-hover hover:underline"
                 >
                   {h.destPath}
                 </button>
@@ -97,7 +97,7 @@ export function ImportHistoryDialog({ open, onOpenChange, history, onOpenFolder 
             type="button"
             disabled={loading}
             onClick={() => load(items.length + HISTORY_PAGE_SIZE)}
-            className="text-[11px] py-1.5 rounded-md border border-border hover:bg-muted disabled:opacity-50"
+            className="text-[11px] py-1.5 rounded-2xl border border-border hover:bg-muted disabled:opacity-50"
           >
             {t("import.historyLoadMore")}
           </button>

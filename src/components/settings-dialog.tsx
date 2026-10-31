@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 import { useCallback, useEffect, useLayoutEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Moon, Sun } from "@icon-park/react";
+import { Moon, ScanCode, Sun } from "@icon-park/react";
 import { getVersion } from "@tauri-apps/api/app";
 import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
@@ -13,7 +13,10 @@ import {
 } from "@/components/ui/dialog";
 import { Toggle } from "@/components/ui/toggle";
 import { Button } from "@/components/ui/button";
+import { DialogAction } from "@/components/ui/dialog-action";
 import { Input } from "@/components/ui/input";
+import { SegmentedControl } from "@/components/ui/segmented-control";
+import { Slider } from "@/components/ui/slider";
 import { Collapse } from "./collapse";
 import {
   approvePairing,
@@ -29,7 +32,7 @@ import {
 } from "../lib/pairing";
 import type { Lang } from "../i18n";
 import { xmpErrKey, type XmpMode, type XmpStatus } from "../xmp";
-import { isLrcModeUsable, type LrcSendMode } from "../lightroom";
+import type { LrcSendMode } from "../lightroom";
 import { checkForUpdate, type UpdateDetail, type UpdateState } from "../updater";
 import type { LightroomProbe } from "../types";
 
@@ -120,21 +123,6 @@ interface PairingQr {
 }
 
 /**
- * "谁在连我"(`server::routes::ClientsSnapshot`, serde camelCase)—— M4′ Task 3。
- *
- * ⚠️ **这不是在线设备清单**: `clients` 里每一行是**一次请求**。`ip` 是 `null` 时表示这一层
- * 拿不到来源地址(诚实地说"不知道", 而不是填一个假地址); 这一层**没有**设备名与位置 ——
- * 那两样 HTTP 读不到, 所以后端一个字段都不编(见 `server::routes::ClientRequest` 的注释)。
- */
-interface ClientsSnapshot {
-  clients: { ip: string | null; method: string; path: string; at: number }[];
-  /** 缓冲容量(最多留多少条)。 */
-  capacity: number;
-  /** 此刻缓冲里真正有多少条。 */
-  recorded: number;
-}
-
-/**
  * 本机"手机可能能用的地址"快照 —— 与 `src-tauri/src/server/network.rs` 的 `NetHints`
  * 一一对应(serde camelCase)。
  *
@@ -211,8 +199,6 @@ function ServerPanel({ open }: { open: boolean }) {
    * 少了它, 一次失败的调用会被面板说成"还没有配对码", 那就成了一句假话。
    */
   const [qrKnown, setQrKnown] = useState(false);
-  /** 最近连接(M4′ Task 3)。**不进 4 秒轮询** —— 手动刷新即可(计划 §Task 3 Step 2)。 */
-  const [clients, setClients] = useState<ClientsSnapshot | null>(null);
   /**
    * mDNS 配对状态(计划 2026-10-25 §0.3, 契约见 `src/lib/pairing.ts`)。
    * `null` = 还没读到(或后端还没实现) —— 那时**不**画"窗口已关闭", 因为"读不到"不是"关着"。
@@ -221,6 +207,8 @@ function ServerPanel({ open }: { open: boolean }) {
   const [pairError, setPairError] = useState<string | null>(null);
   /** 「高级 / 手动配对」折叠区。默认收起: 扫码与手输是退路, 不是主路径(计划 Task B3)。 */
   const [showAdvanced, setShowAdvanced] = useState(false);
+  /** 二维码默认收起：手动配置里先给一个醒目按钮，点开才显示。 */
+  const [showQr, setShowQr] = useState(false);
   /** 配对窗口倒计时的"现在"。只在窗口开着时每秒走一次(见下面的 effect)。 */
   const [pairNow, setPairNow] = useState(() => Date.now());
 
@@ -270,19 +258,6 @@ function ServerPanel({ open }: { open: boolean }) {
   }, []);
 
   /**
-   * 读最近连接。**纯内存读**(不碰磁盘、不碰网络), 所以它在打开面板与每次动作之后都读一次
-   * 是廉价的; 但它**不做定时刷新** —— 这个列表晚几秒对用户没有损失, 为它搭一条推送通道
-   * 不划算(计划 §Task 3 Step 2)。
-   */
-  const loadClients = useCallback(async () => {
-    try {
-      setClients(await invoke<ClientsSnapshot>("get_server_clients"));
-    } catch {
-      setClients(null);
-    }
-  }, []);
-
-  /**
    * 读配对状态(纯内存读, 与 `pairing_status` 一一对应)。同样不进 4 秒轮询:
    * 配对的变化只有两种来源 —— 用户在这个面板上动作, 或手机发来请求(有事件)。
    *
@@ -303,11 +278,10 @@ function ServerPanel({ open }: { open: boolean }) {
     void load();
     void loadHints();
     void loadQr();
-    void loadClients();
     void loadPairing();
     const id = window.setInterval(() => void load(), 4000);
     return () => window.clearInterval(id);
-  }, [open, load, loadHints, loadQr, loadClients, loadPairing]);
+  }, [open, load, loadHints, loadQr, loadPairing]);
 
   /**
    * 面板开着时跟随配对事件:
@@ -373,8 +347,6 @@ function ServerPanel({ open }: { open: boolean }) {
       // 变过**(被占就顺延)。不重读, 上一次那份 `qr` 会在服务重新起来之后被画出来 ——
       // 那正好是这次要消灭的那种"图上是 8765、真正绑的是 8766"。
       void loadQr();
-      // 一次动作之后"最近连接"里多半刚多了一行(例如刚被只读拦下的那次写), 顺带读一次。
-      void loadClients();
     }
   };
 
@@ -428,7 +400,7 @@ function ServerPanel({ open }: { open: boolean }) {
       );
     });
 
-  /** v1 的「移除」只是忘记; 不吊销 token(要吊销走轮换, 见 pairing.forgetNote)。 */
+  /** v1 的「移除」只是忘记; 不吊销 token(要吊销走「重置」)。 */
   const forgetDevice = (deviceId: string) =>
     runPairing(async () => {
       await forgetPairedDevice(deviceId);
@@ -624,7 +596,7 @@ function ServerPanel({ open }: { open: boolean }) {
           启动), 所以这里也只给标题 + 同一个确认入口 —— 两档都靠 `guardProfile` 驱动, 见上。
           确认**只对这一次开启有效** —— 它由后端记进状态(`publicAckAt`), 重启后重新问一次。 */}
       {guardProfile !== null && (
-        <div className="rounded-md border border-amber-500/50 bg-amber-500/10 px-2 py-1.5 text-xs text-muted-foreground space-y-1">
+        <div className="rounded-2xl border border-amber-500/50 bg-amber-500/10 px-2 py-1.5 text-xs text-muted-foreground space-y-1">
           <p className="font-medium text-foreground">
             {guardProfile === "public" ? t("server.publicTitle") : t("server.profileUnknown")}
           </p>
@@ -637,14 +609,13 @@ function ServerPanel({ open }: { open: boolean }) {
           {/* 二次确认按钮只在"没在跑"时出现: 已经在跑说明这一次开启**已经**确认过了(状态里那条
               `publicAckAt` 就是它), 再摆一个"仍要开启"只会让人以为哪里没点上。 */}
           {!status?.running && (
-            <button
-              type="button"
+            <DialogAction
+              variant="warning"
               disabled={busy}
               onClick={() => void confirmAndEnable()}
-              className="px-2 py-1 rounded-md border border-amber-500/60 text-xs text-foreground hover:bg-amber-500/20 disabled:opacity-50 disabled:cursor-not-allowed"
             >
               {t("server.publicConfirm")}
-            </button>
+            </DialogAction>
           )}
         </div>
       )}
@@ -655,7 +626,7 @@ function ServerPanel({ open }: { open: boolean }) {
       {/* 检测到不是局域网的地址: **只警告**。这里刻意没有任何"端口转发 / 公网暴露"入口
           (规格 §4.3 明确不做, 也不做成一键)。 */}
       {hints && hints.publicIpv4.length > 0 && (
-        <div className="rounded-md border-l-2 border-amber-500/70 bg-muted/40 px-2 py-1.5 text-xs text-muted-foreground space-y-0.5">
+        <div className="rounded-2xl border-l-2 border-amber-500/70 bg-muted/40 px-2 py-1.5 text-xs text-muted-foreground space-y-0.5">
           <p className="font-medium text-foreground">{t("server.publicIpTitle")}</p>
           <p className="break-words">
             {t("server.publicIpWarn", { list: hints.publicIpv4.join("、") })}
@@ -663,14 +634,8 @@ function ServerPanel({ open }: { open: boolean }) {
         </div>
       )}
 
-      {/* 安全警告: 左侧那条琥珀色竖线是"这是条警告"的唯一视觉信号 —— 文字色仍用
-          muted-foreground(两个主题下都过对比度, 不为一句文案另造一个颜色)。 */}
-      <p className="rounded-md border-l-2 border-amber-500/70 bg-muted/40 px-2 py-1.5 text-xs text-muted-foreground">
-        {t("server.warn")}
-      </p>
-
       {(problem || status?.lastError) && (
-        <div className="rounded-md border border-destructive/40 bg-destructive/10 px-2 py-1.5 text-xs text-destructive space-y-0.5">
+        <div className="rounded-2xl border border-destructive/40 bg-destructive/10 px-2 py-1.5 text-xs text-destructive space-y-0.5">
           {status?.lastError && (
             <p className="break-words">
               <span className="font-medium">{t("server.lastError")}: </span>
@@ -692,8 +657,7 @@ function ServerPanel({ open }: { open: boolean }) {
           这一块只做三件事, 每一件都对应 §0.3 的一条契约:
             · 配对窗口: 开 / 关 + 5 分钟倒计时(`open_pairing_window` / `close_pairing_window`);
             · 待确认请求: 允许 / 拒绝(`approve_pairing` / `deny_pairing`) —— 请求只活 60 秒;
-            · 已连接设备: 移除(`forget_paired_device`) —— v1 里移除**不吊销** token,
-              文案(pairing.forgetNote)必须把这件事说清, 否则用户会以为已经踢下线。
+            · 已连接设备: 移除(`forget_paired_device`) —— v1 里移除**不吊销** token。
           `pair === null`(还没读到 / 后端还没有这些命令)时**不**画"窗口已关闭": 读不到 ≠ 关着。
           扫码 / 地址 / 配对码整块收进下面的「高级 / 手动配对」, 行为与文案原样保留。 */}
       <div className="space-y-1">
@@ -710,34 +674,31 @@ function ServerPanel({ open }: { open: boolean }) {
           <>
             {pairingWindowActive ? (
               <div className="flex items-center justify-between gap-2">
-                <p className="text-xs text-emerald-600 dark:text-emerald-400 break-words">
+                <p className="text-xs text-brand-strong dark:text-brand-hover break-words">
                   {t("pairing.windowOpen")}
                   {pairingRemaining !== null
                     ? ` · ${t("pairing.remaining", { time: pairingRemaining })}`
                     : ""}
                 </p>
-                <button
-                  type="button"
+                <DialogAction
                   disabled={busy}
                   onClick={() => void closePairing()}
-                  className="shrink-0 px-2 py-1 rounded-md border border-border text-xs text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   {t("pairing.closeWindow")}
-                </button>
+                </DialogAction>
               </div>
             ) : (
               <div className="flex items-center justify-between gap-2">
                 <p className="text-xs text-muted-foreground break-words">
                   {status?.running ? t("pairing.windowClosed") : t("pairing.serviceOff")}
                 </p>
-                <button
-                  type="button"
+                <DialogAction
+                  variant="primary"
                   disabled={busy || !status?.running}
                   onClick={() => void openPairing()}
-                  className="shrink-0 px-2 py-1 rounded-md bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-medium disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   {t("pairing.openWindow")}
-                </button>
+                </DialogAction>
               </div>
             )}
 
@@ -755,22 +716,19 @@ function ServerPanel({ open }: { open: boolean }) {
                           {p.ip}
                         </p>
                       </div>
-                      <button
-                        type="button"
+                      <DialogAction
+                        variant="primary"
                         disabled={busy}
                         onClick={() => void resolvePairing(p.requestId, true)}
-                        className="shrink-0 px-2 py-1 rounded-md bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-medium disabled:opacity-50 disabled:cursor-not-allowed"
                       >
                         {t("pairing.allow")}
-                      </button>
-                      <button
-                        type="button"
+                      </DialogAction>
+                      <DialogAction
                         disabled={busy}
                         onClick={() => void resolvePairing(p.requestId, false)}
-                        className="shrink-0 px-2 py-1 rounded-md border border-border text-xs text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-50 disabled:cursor-not-allowed"
                       >
                         {t("pairing.deny")}
-                      </button>
+                      </DialogAction>
                     </li>
                   ))}
                 </ul>
@@ -796,20 +754,17 @@ function ServerPanel({ open }: { open: boolean }) {
                           })}
                         </span>
                       )}
-                      <button
-                        type="button"
+                      <DialogAction
                         disabled={busy}
                         aria-label={`${t("pairing.forget")}: ${d.name}`}
                         onClick={() => void forgetDevice(d.deviceId)}
-                        className="shrink-0 px-2 py-1 rounded-md border border-border text-xs text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-50 disabled:cursor-not-allowed"
                       >
                         {t("pairing.forget")}
-                      </button>
+                      </DialogAction>
                     </li>
                   ))}
                 </ul>
               )}
-              <p className="text-xs text-muted-foreground break-words">{t("pairing.forgetNote")}</p>
             </div>
           </>
         )}
@@ -835,9 +790,6 @@ function ServerPanel({ open }: { open: boolean }) {
           }
         />
       </div>
-      {status?.readOnly && (
-        <p className="text-xs text-muted-foreground break-words">{t("server.readOnlyNote")}</p>
-      )}
 
       {/* ── M4′ Task 2 · 防火墙(规格 §4.2 第 2 条: 局域网模式下"连不上"的第一大原因) ──
           文案按后端给的**机器码**查表(未知码落到通用那句), 所以它跟着界面语言走 ——
@@ -847,7 +799,7 @@ function ServerPanel({ open }: { open: boolean }) {
       {hints && (
         <div className="space-y-0.5">
           <p className="text-xs text-muted-foreground">{t("server.firewallHintTitle")}</p>
-          <p className="rounded-md border-l-2 border-amber-500/70 bg-muted/40 px-2 py-1.5 text-xs text-muted-foreground">
+          <p className="rounded-2xl border-l-2 border-amber-500/70 bg-muted/40 px-2 py-1.5 text-xs text-muted-foreground">
             {firewallHintText}
           </p>
         </div>
@@ -862,14 +814,13 @@ function ServerPanel({ open }: { open: boolean }) {
           type="button"
           aria-expanded={showAdvanced}
           onClick={() => setShowAdvanced((v) => !v)}
-          className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
+          className="-mx-1 flex w-full items-center gap-1 rounded-lg px-1 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
         >
           <span aria-hidden="true">{showAdvanced ? "▾" : "▸"}</span>
           {t("pairing.advanced")}
         </button>
         <Collapse open={showAdvanced}>
           <div className="space-y-2 pt-1">
-            <p className="text-xs text-muted-foreground break-words">{t("pairing.advancedHint")}</p>
 
       {/* ── M4′ Task 2 · 局域网地址: 手机配对时填的就是这里的地址(规格 §4.2 第 1 条) ──
           只列**私有网段**的地址(公网地址一个都不在这里, 只在上面的警告里); 每条后面是网卡名
@@ -880,17 +831,15 @@ function ServerPanel({ open }: { open: boolean }) {
         <div className="space-y-1">
           <div className="flex items-center justify-between gap-2">
             <p className="text-xs text-muted-foreground">{t("server.lanTitle")}</p>
-            <button
-              type="button"
+            <DialogAction
               disabled={busy}
               onClick={() => {
                 void loadHints();
                 void loadQr();
               }}
-              className="px-2 py-1 rounded-md border border-border text-xs text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-50 disabled:cursor-not-allowed"
             >
               {t("server.rescan")}
-            </button>
+            </DialogAction>
           </div>
           {hints.lan.length === 0 ? (
             <p className="text-xs text-muted-foreground">{t("server.lanEmpty")}</p>
@@ -901,7 +850,7 @@ function ServerPanel({ open }: { open: boolean }) {
                 return (
                   <li key={l.address} className="flex items-center gap-2 min-w-0">
                     <code
-                      className="flex-1 min-w-0 truncate rounded-md bg-muted/40 px-2 py-1 font-mono text-xs text-foreground select-all"
+                      className="flex-1 min-w-0 truncate rounded-2xl bg-muted/40 px-2 py-1 font-mono text-xs text-foreground select-all"
                       title={url}
                     >
                       {url}
@@ -912,15 +861,13 @@ function ServerPanel({ open }: { open: boolean }) {
                     >
                       {l.interface}
                     </span>
-                    <button
-                      type="button"
+                    <DialogAction
                       disabled={busy}
                       aria-label={`${t("server.copy")}: ${url}`}
                       onClick={() => void copyAddress(url)}
-                      className="shrink-0 px-2 py-1 rounded-md border border-border text-xs text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-50 disabled:cursor-not-allowed"
                     >
                       {copiedAddr === url ? t("server.copied") : t("server.copy")}
-                    </button>
+                    </DialogAction>
                   </li>
                 );
               })}
@@ -931,6 +878,7 @@ function ServerPanel({ open }: { open: boolean }) {
       )}
 
       {/* ── M4′ Task 1 · 配对二维码: 手机扫一下, 地址与配对码自动填好(规格 §4.2 第 3 条) ──
+          默认收起：手动配置里先给一个醒目按钮，点开才显示并重读一次。
           它与下面那两样是**同一份信息**的两种形态, 顺序也是刻意的: 先二维码(顺手的那条路),
           紧接着就是文本形式的地址与配对码(扫码失败时的退路, 计划 Step 2 明确要求保留)。
 
@@ -947,55 +895,61 @@ function ServerPanel({ open }: { open: boolean }) {
 
           `dangerouslySetInnerHTML` 在这里是安全的: 这段 SVG 是**后端自己用 `qrcode` 编出来的**,
           内容里只有地址与配对码, 不是任何外部输入。 */}
-      {status && !status.running ? (
-        // `status === null`(状态还没读到)时不走到这里: 那是"不知道", 不是"没在跑",
-        // 拿它当"没在跑"会在面板刚打开的那一瞬间说一句没根据的话。
-        <p className="text-xs text-muted-foreground break-words">{t("server.qrNotRunning")}</p>
-      ) : qr ? (
-        <div className="space-y-1">
-          <p className="text-xs text-muted-foreground">{t("server.qrTitle")}</p>
-          <div
-            // 尺寸只在这里定: 后端给的是**矢量**, 放大不糊, 所以显示盒子可以放心放大到
-            // 面板宽度(最多 256px)。`h-auto` + `w-full` 靠 SVG 自带的 viewBox 保持正方形。
-            // 白底是给静区兜底: 后端已经开了 quiet_zone, 这里只是不让深色主题把边距染灰。
-            className="w-full max-w-64 rounded-md bg-white p-1 [&>svg]:block [&>svg]:h-auto [&>svg]:w-full"
-            dangerouslySetInnerHTML={{ __html: qr.svg }}
-          />
-          <p className="text-xs text-muted-foreground break-words">{t("server.qrScanHint")}</p>
-          <p className="text-xs text-muted-foreground break-words">{t("server.qrFallback")}</p>
-        </div>
-      ) : qrKnown && hints && hints.lan.length > 0 ? (
-        <p className="text-xs text-muted-foreground break-words">{t("server.qrNoToken")}</p>
-      ) : null}
+      <button
+        type="button"
+        aria-expanded={showQr}
+        onClick={() => {
+          if (!showQr) void loadQr();
+          setShowQr((v) => !v);
+        }}
+        className="flex w-full items-center justify-center gap-1.5 rounded-2xl bg-brand-strong px-3 py-2 text-sm font-medium text-white transition-colors hover:bg-brand focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+      >
+        <ScanCode theme="filled" size={16} strokeWidth={3} />
+        {showQr ? t("server.qrHide") : t("server.qrShow")}
+      </button>
+      <Collapse open={showQr}>
+        {status && !status.running ? (
+          // `status === null`(状态还没读到)时不走到这里: 那是"不知道", 不是"没在跑",
+          // 拿它当"没在跑"会在面板刚打开的那一瞬间说一句没根据的话。
+          <p className="text-xs text-muted-foreground break-words">{t("server.qrNotRunning")}</p>
+        ) : qr ? (
+          <div className="space-y-1 pt-1">
+            <div
+              // 尺寸只在这里定: 后端给的是**矢量**, 放大不糊, 所以显示盒子可以放心放大到
+              // 面板宽度(最多 256px)。`h-auto` + `w-full` 靠 SVG 自带的 viewBox 保持正方形。
+              // 白底是给静区兜底: 后端已经开了 quiet_zone, 这里只是不让深色主题把边距染灰。
+              className="w-full max-w-64 rounded-2xl bg-white p-1 [&>svg]:block [&>svg]:h-auto [&>svg]:w-full"
+              dangerouslySetInnerHTML={{ __html: qr.svg }}
+            />
+            <p className="text-xs text-muted-foreground break-words">{t("server.qrScanHint")}</p>
+            <p className="text-xs text-muted-foreground break-words">{t("server.qrFallback")}</p>
+          </div>
+        ) : qrKnown && hints && hints.lan.length > 0 ? (
+          <p className="text-xs text-muted-foreground break-words pt-1">{t("server.qrNoToken")}</p>
+        ) : null}
+      </Collapse>
 
       {/* 配对码: 单行等宽 + 可选中; 复制与轮换各一个按钮(轮换要按两下)。 */}
       <div className="space-y-1">
         <div className="flex items-center justify-between gap-2">
           <p className="text-xs text-muted-foreground">{t("server.tokenLabel")}</p>
           <div className="flex items-center gap-1.5">
-            <button
-              type="button"
+            <DialogAction
               disabled={!token || busy}
               onClick={() => void copyToken()}
-              className="px-2 py-1 rounded-md border border-border text-xs text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-50 disabled:cursor-not-allowed"
             >
               {copied ? t("server.copied") : t("server.copy")}
-            </button>
-            <button
-              type="button"
+            </DialogAction>
+            <DialogAction
+              variant={confirmRotate ? "dangerOutline" : "default"}
               disabled={!token || busy}
               onClick={() => void rotateToken()}
-              className={`px-2 py-1 rounded-md border text-xs disabled:opacity-50 disabled:cursor-not-allowed ${
-                confirmRotate
-                  ? "border-destructive/50 text-destructive hover:bg-destructive/10"
-                  : "border-border text-muted-foreground hover:bg-muted hover:text-foreground"
-              }`}
             >
               {confirmRotate ? t("server.rotateConfirm") : t("server.rotate")}
-            </button>
+            </DialogAction>
           </div>
         </div>
-        <code className="block max-h-20 overflow-auto no-scrollbar rounded-md bg-muted/40 px-2 py-1 font-mono text-xs leading-4 text-foreground break-all select-all">
+        <code className="block max-h-20 overflow-auto no-scrollbar rounded-2xl bg-muted/40 px-2 py-1 font-mono text-xs leading-4 text-foreground break-all select-all">
           {token || t("server.tokenEmpty")}
         </code>
         <p className="text-xs text-muted-foreground">{t("server.tokenDesc")}</p>
@@ -1006,7 +960,7 @@ function ServerPanel({ open }: { open: boolean }) {
 
       {/* 共享目录: 列表可删 + 一行"输入 / 浏览 / 添加"。空列表不是"没问题", 而是
           "谁都访问不了" —— 所以说的是 shareEmpty 那句话, 而不是一个空框。 */}
-      <div className="space-y-1">
+      <div className="space-y-1 border-t border-border pt-2">
         <p className="text-xs text-muted-foreground">{t("server.sharesLabel")}</p>
         {shares.length === 0 ? (
           <p className="text-xs text-muted-foreground">{t("server.shareEmpty")}</p>
@@ -1015,15 +969,13 @@ function ServerPanel({ open }: { open: boolean }) {
             {shares.map((sh) => (
               <li key={sh} className="flex items-center gap-2 min-w-0">
                 <span className="flex-1 min-w-0 truncate text-xs text-foreground" title={sh}>{sh}</span>
-                <button
-                  type="button"
+                <DialogAction
                   disabled={busy}
                   aria-label={`${t("server.remove")}: ${sh}`}
                   onClick={() => void removeShare(sh)}
-                  className="shrink-0 px-2 py-1 rounded-md border border-border text-xs text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   {t("server.remove")}
-                </button>
+                </DialogAction>
               </li>
             ))}
           </ul>
@@ -1042,93 +994,30 @@ function ServerPanel({ open }: { open: boolean }) {
             }}
             className="h-7 flex-1 min-w-0 text-xs"
           />
-          <button
-            type="button"
+          <DialogAction
             disabled={busy}
             onClick={() => void browseForShare()}
-            className="shrink-0 px-2 py-1 rounded-md border border-border text-xs text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {t("server.browse")}
-          </button>
-          <button
-            type="button"
+          </DialogAction>
+          <DialogAction
             disabled={disabled || !draftPath.trim()}
             onClick={() => void addShare()}
-            className="shrink-0 px-2 py-1 rounded-md border border-border text-xs text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {t("server.add")}
-          </button>
+          </DialogAction>
         </div>
         <p className="text-xs text-muted-foreground">{t("server.sharesDesc")}</p>
       </div>
 
-      {/* ── M4′ Task 3 · 最近连接("谁在连我") ──
-          **手动刷新, 不做实时刷新**(计划 §Task 3 Step 2): 为一条低频信息搭推送通道不划算,
-          而这个列表晚几秒对用户没有损失。打开面板与每次动作之后会各读一次。
-
-          这里**只有** HTTP 这一层真的知道的三样: 来源 IP、请求的端点、时间。后端一个字段都
-          没编(没有设备名、没有位置), 所以下面的说明文字必须把这件事讲清楚 —— 否则用户会拿
-          一行 IP 当"设备清单"来读, 那比不显示更糟。查询串(里面是用户的文件路径)刻意不记。 */}
-      <div className="space-y-1">
-        <div className="flex items-center justify-between gap-2">
-          <p className="text-xs text-muted-foreground">{t("server.clientsTitle")}</p>
-          <button
-            type="button"
-            disabled={busy}
-            onClick={() => void loadClients()}
-            className="px-2 py-1 rounded-md border border-border text-xs text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            {t("server.clientsRefresh")}
-          </button>
-        </div>
-        {clients && clients.clients.length === 0 && (
-          <p className="text-xs text-muted-foreground">{t("server.clientsEmpty")}</p>
-        )}
-        {clients && clients.clients.length > 0 && (
-          <ul className="space-y-1 min-w-0">
-            {clients.clients.map((c, i) => (
-              // `at` 会撞(同一秒内好几条请求), 所以下标一起进 key —— 用得着"稳定且唯一"。
-              <li key={`${c.at}-${i}`} className="flex items-center gap-2 min-w-0">
-                <code className="shrink-0 rounded-md bg-muted/40 px-2 py-1 font-mono text-xs text-foreground">
-                  {/* `ip` 是 null = 这一层真的不知道来源(后端不编假值), 所以这里说"未知"。 */}
-                  {c.ip ?? t("server.clientsUnknownIp")}
-                </code>
-                <span
-                  className="flex-1 min-w-0 truncate text-xs text-muted-foreground"
-                  title={`${c.method} ${c.path}`}
-                >
-                  {c.method} {c.path}
-                </span>
-                <span className="shrink-0 text-xs text-muted-foreground">
-                  {/* 0 = 系统时钟读不出来(后端给 0), 显示成 1970 年会是句假话。 */}
-                  {c.at > 0
-                    ? new Date(c.at * 1000).toLocaleString()
-                    : t("server.clientsUnknownTime")}
-                </span>
-              </li>
-            ))}
-          </ul>
-        )}
-        {clients && clients.clients.length > 0 && (
-          <p className="text-xs text-muted-foreground">
-            {t("server.clientsCount", {
-              recorded: clients.recorded,
-              capacity: clients.capacity,
-              shown: clients.clients.length,
-            })}
-          </p>
-        )}
-        <p className="text-xs text-muted-foreground break-words">{t("server.clientsDesc")}</p>
-      </div>
-
       {/* 排查清单默认收起: 它不是每天都看的东西, 但连不上的时候要在同一屏里能找到
           (所以标题一直在, 点开就是那三条)。 */}
-      <div>
+      <div className="border-t border-border pt-2">
         <button
           type="button"
           aria-expanded={showTips}
           onClick={() => setShowTips((v) => !v)}
-          className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
+          className="-mx-1 flex w-full items-center gap-1 rounded-lg px-1 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
         >
           <span aria-hidden="true">{showTips ? "▾" : "▸"}</span>
           {t("server.tipsTitle")}
@@ -1164,19 +1053,19 @@ function SettingRow({
 
 /** 透明度滑块 */
 function OpacitySlider({
-  value, onChange, disabled,
+  value, onChange, disabled, label,
 }: {
-  value: number; onChange: (v: number) => void; disabled?: boolean;
+  value: number; onChange: (v: number) => void; disabled?: boolean; label: string;
 }) {
   return (
-    <>
-      <input
-        type="range" min={0} max={100} value={value} disabled={disabled}
-        onChange={(e) => onChange(Number(e.target.value))}
-        className="flex-1 thumb-slider"
-      />
-      <span className="text-xs text-muted-foreground w-8 text-right">{value}%</span>
-    </>
+    <Slider
+      value={value}
+      onChange={onChange}
+      disabled={disabled}
+      aria-label={label}
+      valueText={`${value}%`}
+      className="w-40"
+    />
   );
 }
 
@@ -1276,8 +1165,9 @@ export function SettingsDialog({
       {/* max-h 从 80vh 抬到 88vh + 行距 4→3: 让 9 行设置尽量一屏放下(会话 ③ 加了
           "颜色标签快捷键"那一行后, 内容超过 80vh → 右侧滚动条回来了)。
           no-scrollbar 兜底: 万一窗口太矮还是要滚, 滚轮/触控板照旧可用, 但不显示侧边滚动条。 */}
-      <DialogContent className="w-[420px] max-h-[88vh] overflow-auto no-scrollbar">
-        <DialogHeader>
+      <DialogContent className="flex w-[420px] sm:max-w-[420px] max-h-[88vh] flex-col gap-0 overflow-hidden p-0">
+        <div className="min-h-0 flex-1 overflow-auto no-scrollbar">
+        <DialogHeader className="sticky top-0 z-20 bg-popover/75 px-4 py-3 pr-10 backdrop-blur-[20px] backdrop-saturate-150 after:pointer-events-none after:absolute after:inset-x-0 after:top-full after:h-4 after:bg-gradient-to-b after:from-popover/75 after:to-transparent after:content-['']">
           <DialogTitle>{t("settings.title")}</DialogTitle>
           <DialogDescription>{t("settings.subtitle")}</DialogDescription>
         </DialogHeader>
@@ -1289,27 +1179,23 @@ export function SettingsDialog({
             撑到超过对话框的 420px, 内容横向溢出(滚动条又被 no-scrollbar 藏掉), 右侧的"移除"
             按钮直接跑到框外。给它一个 min-w-0, 轨道就老老实实按 420px 算, 里面的 truncate /
             break-words 才真的生效。 */}
-        <div className="min-w-0 space-y-2 py-2">
+        <div className="min-w-0 space-y-2 px-4 pb-4 pt-2">
           <SettingRow title={t("settings.language")} desc={t("settings.languageDesc")}>
-            <div className="flex rounded-md border border-border overflow-hidden text-sm">
-              {(["zh", "en"] as Lang[]).map((l) => (
-                <button
-                  key={l}
-                  type="button"
-                  onClick={() => onLangChange(l)}
-                  className={`px-3 py-1.5 transition-colors ${lang === l ? "bg-foreground text-background" : "hover:bg-muted text-muted-foreground"}`}
-                >
-                  {l === "zh" ? "中文" : "EN"}
-                </button>
-              ))}
-            </div>
+            <SegmentedControl
+              value={lang}
+              onChange={onLangChange}
+              options={[
+                { value: "zh", label: "中文" },
+                { value: "en", label: "EN" },
+              ] as const}
+            />
           </SettingRow>
 
           <SettingRow title={t("settings.theme")} desc={t("settings.themeDesc")}>
             <button
               type="button"
               onClick={() => onThemeChange(theme === "dark" ? "light" : "dark")}
-              className="px-3 py-1.5 rounded-md border border-border text-sm hover:bg-muted flex items-center gap-1.5"
+              className="px-3 py-1.5 rounded-2xl border border-border text-sm hover:bg-muted flex items-center gap-1.5 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
             >
               {theme === "dark"
                 ? <Moon theme="filled" size="15" strokeWidth={3} />
@@ -1333,18 +1219,14 @@ export function SettingsDialog({
           {/* Phase 4: 颜色标签的修饰键。分段按钮与上面的"语言"同一套写法。
               之所以让用户选: Tauri 的 WebView2 可能把 Ctrl+数字当浏览器加速键吃掉 */}
           <SettingRow title={t("settings.labelKeys")} desc={t("settings.labelKeysDesc")}>
-            <div className="flex rounded-md border border-border overflow-hidden text-sm">
-              {(["ctrl", "alt"] as const).map((m) => (
-                <button
-                  key={m}
-                  type="button"
-                  onClick={() => onLabelModifierChange(m)}
-                  className={`px-3 py-1.5 transition-colors ${labelModifier === m ? "bg-foreground text-background" : "hover:bg-muted text-muted-foreground"}`}
-                >
-                  {m === "ctrl" ? "Ctrl" : "Alt"}
-                </button>
-              ))}
-            </div>
+            <SegmentedControl
+              value={labelModifier}
+              onChange={onLabelModifierChange}
+              options={[
+                { value: "ctrl", label: "Ctrl" },
+                { value: "alt", label: "Alt" },
+              ] as const}
+            />
           </SettingRow>
 
           {/* Phase 5: XMP 边车三档。默认"询问"(会话 ⑥ 由"关闭"改来, 见 src/xmp.ts::DEFAULT_XMP_MODE) */}
@@ -1352,22 +1234,15 @@ export function SettingsDialog({
             title={t("settings.xmpMode")}
             desc={`${t("settings.xmpModeDesc")}${xmpStatusText ? ` · ${xmpStatusText}` : ""}`}
           >
-            <div className="flex rounded-md border border-border overflow-hidden text-sm">
-              {([
-                ["off", t("settings.xmpModeOff")],
-                ["ask", t("settings.xmpModeAsk")],
-                ["on", t("settings.xmpModeOn")],
-              ] as [XmpMode, string][]).map(([m, label]) => (
-                <button
-                  key={m}
-                  type="button"
-                  onClick={() => onXmpModeChange(m)}
-                  className={`px-3 py-1.5 transition-colors ${xmpMode === m ? "bg-foreground text-background" : "hover:bg-muted text-muted-foreground"}`}
-                >
-                  {label}
-                </button>
-              ))}
-            </div>
+            <SegmentedControl
+              value={xmpMode}
+              onChange={onXmpModeChange}
+              options={[
+                { value: "off", label: t("settings.xmpModeOff") },
+                { value: "ask", label: t("settings.xmpModeAsk") },
+                { value: "on", label: t("settings.xmpModeOn") },
+              ] as const}
+            />
           </SettingRow>
 
           {/* Phase 7: Lightroom 衔接。三段式与上面的 XMP 行同一套写法。
@@ -1384,39 +1259,33 @@ export function SettingsDialog({
               return `${lrcProbe.exe ?? ""} · ${where}`;
             })()}
           >
-            <div className="flex rounded-md border border-border overflow-hidden text-sm">
-              {([
-                ["dialog", t("settings.lrcModeDialog")],
-                ["silent", t("settings.lrcModeSilent")],
-              ] as [LrcSendMode, string][]).map(([m, label]) => {
-                const blocked = isMac || !isLrcModeUsable(m);
-                return (
-                  <button
-                    key={m}
-                    type="button"
-                    disabled={blocked}
-                    title={blocked ? t("settings.lrcModeSilentWhy") : undefined}
-                    onClick={() => onLrcModeChange(m)}
-                    className={`px-3 py-1 transition-colors ${
-                      blocked
-                        ? "text-muted-foreground/40 cursor-not-allowed"
-                        : lrcMode === m
-                          ? "bg-foreground text-background"
-                          : "hover:bg-muted text-muted-foreground"
-                    }`}
-                  >
-                    {label}
-                  </button>
-                );
-              })}
-              <button
-                type="button"
-                onClick={onReprobeLightroom}
-                className="px-2 py-1 border-l border-border hover:bg-muted text-muted-foreground"
-              >
-                {t("settings.lrcReprobe")}
-              </button>
-            </div>
+            <SegmentedControl
+              size="sm"
+              value={lrcMode}
+              onChange={onLrcModeChange}
+              options={[
+                {
+                  value: "dialog",
+                  label: t("settings.lrcModeDialog"),
+                  disabled: isMac,
+                },
+                {
+                  value: "silent",
+                  label: t("settings.lrcModeSilent"),
+                  disabled: true,
+                  title: t("settings.lrcModeSilentWhy"),
+                },
+              ] as const}
+              trailing={
+                <button
+                  type="button"
+                  onClick={onReprobeLightroom}
+                  className="px-2 py-1 border-l border-border hover:bg-muted text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+                >
+                  {t("settings.lrcReprobe")}
+                </button>
+              }
+            />
           </SettingRow>
 
           {/* Win10 置灰: Mica 在 build < 22000 上不存在, 这个开关打开也没有效果。
@@ -1429,15 +1298,21 @@ export function SettingsDialog({
           </SettingRow>
 
           <SettingRow title={t("settings.transparentBgOpacity")} desc={t("settings.transparentBgOpacityDesc")} dimmed={!transparentBg}>
-            <div className="w-40 flex items-center gap-2">
-              <OpacitySlider value={glassOpacity} onChange={onGlassOpacityChange} disabled={!transparentBg} />
-            </div>
+            <OpacitySlider
+              value={glassOpacity}
+              onChange={onGlassOpacityChange}
+              disabled={!transparentBg}
+              label={t("settings.transparentBgOpacity")}
+            />
           </SettingRow>
 
           <SettingRow title={t("settings.backgroundOpacity")} desc={t("settings.backgroundOpacityDesc")} dimmed={!transparentBg}>
-            <div className="w-40 flex items-center gap-2">
-              <OpacitySlider value={backgroundOpacity} onChange={onBackgroundOpacityChange} disabled={!transparentBg} />
-            </div>
+            <OpacitySlider
+              value={backgroundOpacity}
+              onChange={onBackgroundOpacityChange}
+              disabled={!transparentBg}
+              label={t("settings.backgroundOpacity")}
+            />
           </SettingRow>
 
           {/* Phase 8 · 图库服务(手机端)。放在最下面一行分隔线之上: 它是"整块"而不是一行设置,
@@ -1475,6 +1350,7 @@ export function SettingsDialog({
               </span>
             </div>
           </div>
+        </div>
         </div>
       </DialogContent>
     </Dialog>

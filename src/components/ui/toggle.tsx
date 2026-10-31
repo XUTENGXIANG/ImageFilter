@@ -16,13 +16,13 @@ export function Toggle({
       onClick={onChange}
       disabled={disabled}
       aria-pressed={checked}
-      className={`mt-0.5 w-10 h-6 rounded-full relative shrink-0 transition-colors ${
-        checked ? "bg-emerald-500" : "bg-muted"
+      className={`mt-0.5 w-10 h-6 rounded-full relative shrink-0 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 ${
+        checked ? "bg-brand" : "bg-muted"
       } disabled:opacity-50 disabled:cursor-not-allowed`}
     >
       <span
-        className={`absolute top-0.5 w-5 h-5 rounded-full bg-white shadow transition-all ${
-          checked ? "left-[18px]" : "left-0.5"
+        className={`absolute left-0.5 top-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform duration-150 ease-out motion-reduce:transition-none ${
+          checked ? "translate-x-4" : "translate-x-0"
         }`}
       />
     </button>
