@@ -63,7 +63,7 @@ A complete RAW first-pass culling workflow for photographers — insert the card
 
 ## Screenshots
 
-![ImageFilter UI](assets/screenshot.png)
+![ImageFilter UI](assets/screenshot.jpg)
 
 Double-click a photo to open the fullscreen viewer: scroll to zoom, drag to pan, rotate, and rate directly from the viewer. The UI supports dark / light themes, Chinese / English switching, and the Windows Mica glass background.
 

@@ -63,7 +63,7 @@
 
 ## 界面
 
-![ImageFilter 界面](assets/screenshot.png)
+![ImageFilter 界面](assets/screenshot.jpg)
 
 
 双击照片打开全屏查看器：滚轮缩放、拖动平移、旋转，查看器中直接评分。界面支持深色 / 浅色主题、中英文切换、Windows Mica 毛玻璃背景。
