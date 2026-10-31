@@ -148,7 +148,7 @@ fn ensure_within_rejects_symlink_escape() {
 //
 // 为什么必须有这一段: `get_full_image` / `get_thumbnail_path` 会把结果写进
 // `%LOCALAPPDATA%\image-filter\{full_v3,thumbnails_v2}` —— 那是**用户真实的应用数据**。
-// 修复前 `full_raw_verbatim_cache_with_exif_is_oriented_exactly_once` 直接往那里写,
+// 修复前 `full_raw_cache_is_physically_oriented_and_server_does_not_double_rotate` 直接往那里写,
 // 每跑一次就留下一个 6256 字节、带 EXIF 的条目(实测本机已堆了 10 个), 反复跑无限增长。
 // 测试不许动用户的应用数据。
 //
@@ -236,6 +236,15 @@ fn cached_jpg_count(root: &std::path::Path, subdir: &str) -> usize {
                 .count()
         })
         .unwrap_or(0)
+}
+
+/// 隔离根里某个缓存子目录下的第一条 jpg（方向断言要直接读缓存文件）。
+fn cached_jpg_path(root: &std::path::Path, subdir: &str) -> Option<std::path::PathBuf> {
+    std::fs::read_dir(root.join("image-filter").join(subdir))
+        .ok()?
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .find(|p| p.extension().and_then(|x| x.to_str()) == Some("jpg"))
 }
 
 // media(缩略图/预览字节)的画质契约 ─────────────────────────────────────────
@@ -422,20 +431,20 @@ async fn preview_orientation_matrix_matches_the_eight_exif_transforms() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
-/// **Fix 1 的回归护栏 —— 唯一会走到"源路径 ≠ 请求路径"分支的方向测试。**
+/// **全图缓存方向 + 服务端不二次旋转的回归护栏。**
 ///
 /// 构造: 一个 `.arw` 假 RAW, 里面装一张 3000x64 的内嵌 JPEG, 且**带 EXIF Orientation=6**。
-/// `get_full_image` 对"内嵌图长边 >= 3000"的 RAW 是把这个 JPEG **逐字节**拷进 `full_v3`
-/// 缓存(`extract_largest_preview_full` 的那个分支), 既不物理旋转也不剥掉 EXIF。
-/// 于是服务端拿到的是 `source != requested` 的、**方向根本没校正过**的文件。
-/// 旧实现把"路径相同"当作"已经校正过"的代理, 在这个分支上**一次都不校正**:
-/// 手机拿到躺着的 3000x64, 而桌面端因为 CSS `image-orientation: from-image` 显示是对的。
+/// `get_full_image` 对"内嵌图长边 >= 3000"的 RAW 现在会先按 RAW 的 Orientation
+/// **物理旋转**再以 q95 写 `full_v3` —— 因为桌面端 `<img>` 直接读这份缓存，
+/// 不能假设内嵌 JPEG 自己带着 Orientation 标签。
+/// 服务端随后对缓存调用 `apply_exif_orientation` 时，q95 编码器写出的缓存没有 EXIF，
+/// 于是不会二次旋转。
 ///
 /// 连查两次(第一次写缓存、第二次命中缓存)都断言尺寸与象限位置 —— 0 次或 2 次校正都会红。
-/// 注意本测试依赖 `images.rs` 里 `>= 3000` 这个阈值来命中那个逐字节拷贝分支;
-/// 如果将来阈值变了, 这条仍然是有意义的方向测试, 但需要重新构造夹具才能继续覆盖该分支。
+/// 另外**直接读缓存文件**断言它已经是 64x3000：只测 HTTP 输出会漏掉
+/// "服务端输出对、桌面缓存还是横的"这一类回归。
 #[tokio::test]
-async fn full_raw_verbatim_cache_with_exif_is_oriented_exactly_once() {
+async fn full_raw_cache_is_physically_oriented_and_server_does_not_double_rotate() {
     // Fix B: 这条测试会驱动 `get_full_image`, 它的缓存目录是**用户真实的**应用数据
     // (`%LOCALAPPDATA%\image-filter\full_v3`)。修复前它直接往那里写, 每跑一次留一个
     // 6256 字节、带 EXIF 的条目(实测已堆 10 个, 每次跑测试再涨一个)。
@@ -450,7 +459,7 @@ async fn full_raw_verbatim_cache_with_exif_is_oriented_exactly_once() {
     let path = p.to_str().unwrap().to_string();
 
     for label in [
-        "第 1 次(full=1 首次, 逐字节写入 full_v3 缓存)",
+        "第 1 次(full=1 首次, 物理旋转后写入 full_v3 缓存)",
         "第 2 次(同一缓存命中)",
     ] {
         let got = image_filter_lib::server::media::preview_bytes(&path, 5000, true)
@@ -458,6 +467,15 @@ async fn full_raw_verbatim_cache_with_exif_is_oriented_exactly_once() {
             .unwrap();
         assert_orientation_transform(&got, 3000, 64, 6, label);
     }
+
+    // 桌面端 `<img>` 直接读这份缓存，所以它必须**已经是竖的**。
+    // 旧实现逐字节拷贝 3000x64，这条会红；服务端输出仍然是 64x3000，只有这条能抓住。
+    let cache_file = cached_jpg_path(&cache_root, "full_v3").expect("full cache entry");
+    assert_eq!(
+        image::image_dimensions(&cache_file).expect("cache jpg dimensions"),
+        (64, 3000),
+        "full_v3 缓存必须已物理旋转（桌面端没有第二道 EXIF 校正）"
+    );
 
     // 隔离必须**真的生效**: 缓存条目要落在临时根里。没有这条断言的话, 万一哪天
     // `cache_dir()` 不再看平台变量, 这条测试会**静默**回去写用户目录。

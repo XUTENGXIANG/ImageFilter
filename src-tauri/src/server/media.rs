@@ -549,9 +549,10 @@ pub async fn preview_bytes(path: &str, max: u32, full: bool) -> Result<Vec<u8>, 
 
         // 方向只能上一次 —— 但"上没上过"**不能靠比路径**。旧实现把
         // `source == requested` 当作"还是原图, 所以方向没校正过"的代理, 这个代理是错的:
-        //   · `get_full_image` 对内嵌预览长边 >= 3000 的 RAW, 是把内嵌 JPEG **逐字节**
-        //     拷进 `full_v3` 缓存(`extract_largest_preview_full` 那个分支), 既不物理旋转
-        //     也不剥掉 EXIF Orientation —— 于是 `source != requested` 也可能是"没校正过"。
+        //   · `get_full_image` 对内嵌预览长边 >= 3000 的 RAW 有两种缓存形态:
+        //     · Orientation = 1/缺失 → 逐字节拷贝(缓存可能仍带内嵌 JPEG 的 EXIF);
+        //     · Orientation != 1 → 按 RAW 方向物理旋转后 q95 重编码(缓存不带 EXIF)。
+        //     所以 `source != requested` 不代表"校正过"; 正确判据仍然是**缓存文件自己的** EXIF。
         //     (补一句为什么不动 images.rs: 桌面端 `<img>` 靠 CSS
         //      `image-orientation: from-image`(src/index.css) 自动应用这个标签, 在 images.rs
         //      里物理旋转会让桌面端**转两次** —— 那才是改桌面行为。)

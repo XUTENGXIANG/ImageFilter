@@ -224,7 +224,10 @@ pub async fn get_full_image(file_path: String) -> Result<String, String> {
         .and_then(|m| m.modified())
         .map(|t| t.duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs())
         .unwrap_or(0);
-    let cache_name = format!("{:016x}_full.jpg", cache_hash(&file_path, mtime));
+    // `_full_v2`: v1 的全图缓存可能是"内嵌 JPEG 逐字节拷贝"(没有物理旋转、EXIF 也
+    // 可能没有 Orientation), 桌面端 `<img>` 就会把竖图显示成横的。v2 起对
+    // Orientation != 1 的源做**物理旋转后再编码**, 旧文件名自然失效。
+    let cache_name = format!("{:016x}_full_v2.jpg", cache_hash(&file_path, mtime));
     let cache_path = cache_dir.join(&cache_name);
 
     if cache_path.exists() {
@@ -301,6 +304,9 @@ pub async fn get_full_image(file_path: String) -> Result<String, String> {
             if !is_full_res_image(&img) {
                 return Err("DNG full decode returned low resolution".into());
             }
+            // 全图缓存是给桌面 `<img>` 直接读的: 必须在**这里**把 RAW 的方向烧进像素,
+            // 否则 CSS 没有 EXIF Orientation 可依赖, 竖图会开成横的。
+            let img = apply_exif_orientation(std::path::Path::new(&src_path), img);
             let img = resize_max_edge(img, 5000);
             img.save(&cache_path_clone).map_err(|e| format!("Save: {}", e))?;
             Ok::<(), String>(())
@@ -312,8 +318,23 @@ pub async fn get_full_image(file_path: String) -> Result<String, String> {
 
     if let Some((w, h, bytes)) = extract_largest_preview_full(&src_path) {
         if w.max(h) >= 3000 {
-            if std::fs::write(&cache_path_clone, &bytes).is_ok() {
-                return Ok(cache_path_clone.to_string_lossy().to_string());
+            // 内嵌 JPEG **不一定**带 EXIF Orientation: 有的相机只在 RAW 容器的 TIFF 里
+            // 写方向。直接逐字节拷贝会让桌面 `<img>` 的 `image-orientation: from-image`
+            // 无从下手 —— 竖图横着显示。所以 Orientation != 1 时先解出来、烧进像素、
+            // 再以 q95 写回缓存; 只有方向本来就是 1/缺失时才保留逐字节拷贝。
+            let orientation = crate::exif_common::orientation(&src_path);
+            if orientation.is_none() || orientation == Some(1) {
+                if std::fs::write(&cache_path_clone, &bytes).is_ok() {
+                    return Ok(cache_path_clone.to_string_lossy().to_string());
+                }
+            } else if let Ok(img) = image::load_from_memory(&bytes) {
+                let img = apply_exif_orientation(&src_path, img);
+                let img = resize_max_edge(img, 5000);
+                // 全图缓存是 1:1 验焦用的, 不能掉回默认 q75; q95 与源内嵌 JPEG 的
+                // 画质差距在屏幕上不可见, 却能把方向一次校正干净。
+                if is_full_res_image(&img) && save_jpeg_quality(&img, &cache_path_clone, 95).is_ok() {
+                    return Ok(cache_path_clone.to_string_lossy().to_string());
+                }
             }
         }
     }
@@ -353,6 +374,8 @@ pub async fn get_full_image(file_path: String) -> Result<String, String> {
         if !is_full_res_image(&img) {
             return Err("RAW full decode returned low resolution".into());
         }
+        // 与 DNG 分支同理: 方向必须烧进缓存像素, 桌面端没有第二道 EXIF 校正。
+        let img = apply_exif_orientation(std::path::Path::new(&src_path), img);
         let img = resize_max_edge(img, 5000);
         img.save(&cache_path_clone).map_err(|e| format!("Save: {}", e))?;
         Ok::<(), String>(())

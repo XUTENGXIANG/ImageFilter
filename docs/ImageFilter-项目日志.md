@@ -5,7 +5,7 @@
 > 这份是**工程侧的账本**，写给人回忆用。
 >
 > 最近更新：2026-10-31 · 对应 `HEAD 4190048` · 版本 **1.2.1** · 分支 `feat/android-gallery-service`
-> 工作区另有未提交的 **mDNS 配对 + 浅色主题 + 高清提速**（见 §十一 / §十二）。
+> 工作区另有未提交的 **mDNS 配对 + 浅色主题 + 高清提速 + 竖屏方向修复**（见 §十一 / §十二 / §十三）。
 
 ---
 
@@ -342,3 +342,38 @@ SIMD 缩放 + 双闸门 + 全图缓存。用户验收“差不多了挺快的”
 - 新 APK：`release/android/ImageFilter-Mobile-1.2.1.apk`
   （`versionCode=3`，SHA-256 `80c5dc62…5c65de2c`；未设置签名环境变量时仍是 debug 签名回退）。
 - 高清文案已改成“内嵌大预览优先，不够才全解码”。
+
+---
+
+## 十三、2026-10-31 · 竖屏照片方向修复
+
+### 13.1 症状
+
+一部分竖屏 RAW 在桌面查看器里会先显示正确（内嵌预览），约 600ms 后后台全图替换上去，
+照片**翻成横的**。
+
+### 13.2 根因
+
+- 非 DNG、内嵌预览长边 ≥3000 的 RAW：`get_full_image` 把内嵌 JPEG **逐字节**拷进
+  `full_v3`，不物理旋转；桌面 `<img>` 靠 CSS `image-orientation: from-image` 读缓存里的
+  EXIF Orientation。
+- 有些相机的内嵌 JPEG **不带** Orientation 标签（方向只写在 RAW 容器的 TIFF 里）→
+  缓存既没有转向、也没有可以读的 EXIF → 竖图横着。
+- DNG 与 RAW 的全解码兜底分支也没有 `apply_exif_orientation`，同一类问题。
+
+### 13.3 修法
+
+- 全图缓存文件名加 `_full_v2` 后缀 → 旧的不带方向的缓存自然失效。
+- 内嵌分支：RAW Orientation ≠ 1 时解码 → `apply_exif_orientation` → `resize_max_edge(5000)`
+  → **q95** 重编码（缓存不带 EXIF，桌面端不会二次旋转）；Orientation=1/缺失时保留
+  逐字节拷贝（内嵌 JPEG 自带 EXIF 时 CSS 照旧生效）。
+- DNG 与 RAW 的全解码兜底分支都补 `apply_exif_orientation`。
+- 预览/缩略图路径原本已经校正，不动。
+
+### 13.4 证明
+
+- 新增集成测试 `full_raw_cache_is_physically_oriented_and_server_does_not_double_rotate`：
+  3000×64 + Orientation 6 的假 `.arw` → 断言 `full_v3` 缓存尺寸 **64×3000**
+  （旧实现是 3000×64）；同时 HTTP 输出仍然只旋转一次。
+- Rust：`cargo test --lib` **196/0/4**、`--test server_contract` **65/0/0**。
+- 用户实机待验：打开原先会横过来的竖屏照片；第一次会重建 `_full_v2` 缓存，可能慢一次。
