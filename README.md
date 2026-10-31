@@ -10,6 +10,8 @@
 
 <p align="center">
   <a href="https://github.com/XUTENGXIANG/ImageFilter/releases/latest"><img src="https://img.shields.io/github/v/release/XUTENGXIANG/ImageFilter?sort=semver&amp;color=1f883d" alt="Release"></a>
+  <a href="https://github.com/XUTENGXIANG/ImageFilter/actions/workflows/build.yml"><img src="https://github.com/XUTENGXIANG/ImageFilter/actions/workflows/build.yml/badge.svg" alt="Build"></a>
+  <a href="https://github.com/XUTENGXIANG/ImageFilter/actions/workflows/android.yml"><img src="https://github.com/XUTENGXIANG/ImageFilter/actions/workflows/android.yml/badge.svg" alt="Android"></a>
   <a href="#"><img src="https://img.shields.io/badge/platform-Windows%2010%2F11%20%7C%20macOS%20%7C%20Android-lightgrey" alt="Platform"></a>
   <a href="LICENSE"><img src="https://img.shields.io/github/license/XUTENGXIANG/ImageFilter" alt="License"></a>
   <a href="https://github.com/XUTENGXIANG/ImageFilter/releases/latest"><img src="https://img.shields.io/badge/download-latest-green" alt="Download"></a>
@@ -23,7 +25,23 @@
 
 ---
 
+## 目录
+
+- [简介](#简介)
+- [界面](#界面)
+- [安装](#安装)
+- [快速上手](#快速上手)
+- [技术栈](#技术栈)
+- [开发](#开发)
+- [项目结构](#项目结构)
+- [文档](#文档)
+- [已知限制](#已知限制)
+- [参与开发](#参与开发)
+- [许可](#许可)
+
 ## 简介
+
+传统流程是先把整张卡导入 Lightroom，再在几千张里筛。ImageFilter 把初筛放在导入之前：插卡直接看，用星级 / `J` / `X` 快速筛，最后只把保留的照片复制到目标目录。
 
 为摄影师打造的 RAW 初筛工作流 —— 插卡识别、秒级预览、星级筛选、AI 辅助、一键归档
 
@@ -108,7 +126,7 @@ Android 客户端通过局域网连到桌面端：在桌面端 **设置 → 图�
 
 ## 开发
 
-环境要求：Node.js 18+、Rust stable、MSVC Build Tools。
+环境要求：Node.js 20+、Rust stable、MSVC Build Tools。
 
 ```bash
 # 克隆仓库
@@ -126,16 +144,6 @@ npx tauri build
 ```
 
 构建产物输出到 `src-tauri/target/release/bundle/`。
-
-> **参与开发 / 接手这个项目，请先读 [docs/ImageFilter-交接与上手.md](docs/ImageFilter-交接与上手.md)** —— 代码地图、关键机制（三级解码链、查看器状态机、并发与取消模式）、必守坑位、未修问题与优化建议、发版计划。
-
----
-### dev 启动
-
-`npx tauri dev` 
----
-
-
 
 ## 项目结构
 
@@ -164,6 +172,19 @@ docs/                 # 交接文档、项目日志、SDD 计划与证据
 - [交接与上手](docs/ImageFilter-交接与上手.md) — 开发 / 接手先读
 - [文档索引](docs/README.md) — 全部文档、归档与 SDD
 - [更新说明](docs/ImageFilter-更新说明.md) — 版本变更
+
+## 已知限制
+
+- macOS 版尚未充分实机验证；遇到问题请附系统版本和复现步骤。
+- Android 客户端只做局域网：桌面端需开启「图库服务」，手机与电脑在同一网络。
+- Lightroom 衔接仅 Windows；「静默导入」尚未支持。
+- 不提供删除功能；XMP 只写边车，不改原图。
+
+## 参与开发
+
+接手前先读 [交接与上手](docs/ImageFilter-交接与上手.md) —— 代码地图、关键机制、必守坑位和验证工具都在里面。
+
+提 issue 请附版本、系统、复现步骤；改 UI 请附截图或录屏，改导入 / 边车请附测试文件和结果。
 
 ## 许可
 

@@ -10,6 +10,8 @@
 
 <p align="center">
   <a href="https://github.com/XUTENGXIANG/ImageFilter/releases/latest"><img src="https://img.shields.io/github/v/release/XUTENGXIANG/ImageFilter?sort=semver&amp;color=1f883d" alt="Release"></a>
+  <a href="https://github.com/XUTENGXIANG/ImageFilter/actions/workflows/build.yml"><img src="https://github.com/XUTENGXIANG/ImageFilter/actions/workflows/build.yml/badge.svg" alt="Build"></a>
+  <a href="https://github.com/XUTENGXIANG/ImageFilter/actions/workflows/android.yml"><img src="https://github.com/XUTENGXIANG/ImageFilter/actions/workflows/android.yml/badge.svg" alt="Android"></a>
   <a href="#"><img src="https://img.shields.io/badge/platform-Windows%2010%2F11%20%7C%20macOS%20%7C%20Android-lightgrey" alt="Platform"></a>
   <a href="LICENSE"><img src="https://img.shields.io/github/license/XUTENGXIANG/ImageFilter" alt="License"></a>
   <a href="https://github.com/XUTENGXIANG/ImageFilter/releases/latest"><img src="https://img.shields.io/badge/download-latest-green" alt="Download"></a>
@@ -23,7 +25,23 @@
 
 ---
 
+## Contents
+
+- [Overview](#overview)
+- [Screenshots](#screenshots)
+- [Installation](#installation)
+- [Quick Start](#quick-start)
+- [Tech Stack](#tech-stack)
+- [Development](#development)
+- [Project Structure](#project-structure)
+- [Docs](#docs)
+- [Known limitations](#known-limitations)
+- [Contributing](#contributing)
+- [License](#license)
+
 ## Overview
+
+The usual workflow imports the whole card into Lightroom first, then culls through thousands of photos. ImageFilter culls before import: browse straight from the card, rate with stars / `J` / `X`, then copy only the keepers to the destination folder.
 
 A complete RAW first-pass culling workflow for photographers — insert the card, preview, rate, and archive.
 
@@ -108,7 +126,7 @@ Example: `{date}/{camera}/{seq}.{ext}` produces `2026-08-10/Sony_A7M4/0001.ARW`
 
 ## Development
 
-Requirements: Node.js 18+, stable Rust, MSVC Build Tools.
+Requirements: Node.js 20+, stable Rust, MSVC Build Tools.
 
 ```bash
 # Clone the repository
@@ -154,10 +172,10 @@ tasklist | findstr image-filter    # confirm the window process is up
 
 **Hot reload**: frontend changes apply instantly via Vite HMR; Rust changes trigger an incremental rebuild and window restart. Before touching `viewer.tsx`'s loading state machine, read section 5 of `docs/ImageFilter-交接与上手.md` (every branch exists to fix a visual bug — don't "simplify" them).
 
-**Versioning**: bump the version in `package.json`, `tauri.conf.json`, `src-tauri/Cargo.toml`
-and `src/components/settings-dialog.tsx` together; Android reads `android/version.properties`
-and the Gradle build verifies it matches the desktop files. Mark a pending release with
-`git tag vX.Y.Z` and push the tag. Installers are produced by the GitHub Actions workflow.
+**Versioning**: bump `package.json`, `tauri.conf.json` and `src-tauri/Cargo.toml` together;
+Android reads `android/version.properties` and the Gradle build verifies it matches the
+desktop files. Increment `versionCode` for every Android release. Tag `vX.Y.Z` and push;
+the GitHub Actions workflows build the installers and APK.
 
 ## Project Structure
 
@@ -186,6 +204,19 @@ docs/                 # Handoff docs, project log, SDD plans and evidence
 - [Handoff & onboarding](docs/ImageFilter-交接与上手.md) — read this first
 - [Documentation index](docs/README.md) — all docs, archive and SDD
 - [Release notes](docs/ImageFilter-更新说明.md) — version changes
+
+## Known limitations
+
+- macOS builds are not fully verified on real hardware; include the OS version and reproduction steps in issues.
+- The Android client is LAN-only: enable Gallery Service on the desktop and keep both devices on the same network.
+- Lightroom handoff is Windows-only; silent import is not supported yet.
+- There is no delete action; XMP writes only sidecars and never modifies originals.
+
+## Contributing
+
+Read [Handoff & onboarding](docs/ImageFilter-交接与上手.md) first — the code map, invariants and verification tools live there.
+
+For issues, include the version, OS and reproduction steps. For UI changes, attach a screenshot or recording; for import or sidecar changes, include the test files and results.
 
 ## License
 
