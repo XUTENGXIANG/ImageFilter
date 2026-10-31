@@ -1271,6 +1271,8 @@ async fn paths_inside_a_share_are_served_with_the_frontend_field_names() {
     assert_eq!(res.status(), StatusCode::OK);
     let v = json_of(res).await;
     assert_eq!(v["photoCount"], 1, "note.txt 不是照片, 只有 a.jpg 该被计入");
+    assert_eq!(v["videoCount"], 0);
+    assert_eq!(v["subfolderCount"], 2);
     assert_eq!(v["hasSubdirs"], true);
     let names: Vec<String> = v["subfolders"]
         .as_array()
@@ -1280,9 +1282,11 @@ async fn paths_inside_a_share_are_served_with_the_frontend_field_names() {
         .collect();
     assert_eq!(names, vec!["sub".to_string(), "子目录".to_string()]);
     assert_eq!(
-        v["subfolders"][0]["photoCount"], 0,
-        "与桌面端同语义: 子目录计数不递归(保持 0)"
+        v["subfolders"][0]["photoCount"], 1,
+        "子目录显示**直接**照片数(不递归), sub 里有一张 b.jpg"
     );
+    assert_eq!(v["subfolders"][0]["subfolderCount"], 0);
+    assert_eq!(v["subfolders"][0]["videoCount"], 0);
 
     // ── /scan: 只列照片, 且有稳定的字段名 ──
     let res = app

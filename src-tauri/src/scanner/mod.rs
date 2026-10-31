@@ -54,7 +54,17 @@ pub struct ScannedPhoto {
 pub struct FolderEntry {
     pub path: String,
     pub name: String,
+    /// **直接**照片文件数(不含视频、不含子目录里的照片)。
     pub photo_count: u32,
+    /// **直接**视频文件数。界面可以用它单独显示视频数量。
+    pub video_count: u32,
+    /// **直接**子目录数。有子目录时界面显示这个, 而不是递归照片总数。
+    pub subfolder_count: u32,
     pub has_subdirs: bool,
     pub subfolders: Vec<FolderEntry>,
+}
+
+/// 视频扩展名判定 —— `scan_directory` 与目录计数共用同一份, 不允许两边各写一套。
+pub(crate) fn is_video_ext(ext: &str) -> bool {
+    matches!(ext, "mp4" | "mov" | "avi" | "mkv")
 }

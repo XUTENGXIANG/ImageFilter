@@ -141,6 +141,8 @@ export default {
     loading: "加载中...",
     counting: "正在读取照片...",
     photos: "{n} 张",
+    folders: "{n} 文件夹",
+    videos: "{n} 视频",
     ready: "就绪",
   },
 

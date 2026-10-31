@@ -138,6 +138,8 @@ export default {
     loading: "Loading...",
     counting: "Counting photos...",
     photos: "{n} photos",
+    folders: "{n} folders",
+    videos: "{n} videos",
     ready: "Ready",
   },
 

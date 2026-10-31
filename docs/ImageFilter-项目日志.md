@@ -5,7 +5,7 @@
 > 这份是**工程侧的账本**，写给人回忆用。
 >
 > 最近更新：2026-10-31 · 对应 `HEAD 4190048` · 版本 **1.2.1** · 分支 `feat/android-gallery-service`
-> 工作区另有未提交的 **mDNS 配对 + 浅色主题 + 高清提速 + 竖屏方向修复**（见 §十一 / §十二 / §十三）。
+> 工作区另有未提交的 **mDNS 配对 + 浅色主题 + 高清提速 + 竖屏方向修复 + 目录计数口径**（见 §十一 / §十二 / §十三 / §十四）。
 
 ---
 
@@ -377,3 +377,32 @@ SIMD 缩放 + 双闸门 + 全图缓存。用户验收“差不多了挺快的”
   （旧实现是 3000×64）；同时 HTTP 输出仍然只旋转一次。
 - Rust：`cargo test --lib` **196/0/4**、`--test server_contract` **65/0/0**。
 - 用户实机待验：打开原先会横过来的竖屏照片；第一次会重建 `_full_v2` 缓存，可能慢一次。
+
+---
+
+## 十四、2026-10-31 · 目录计数口径 + 开发期规则
+
+### 14.1 计数规则
+
+- **有子目录的文件夹**：显示**直接子目录数**（`N 文件夹`）。
+- **没有子目录的文件夹**：显示**直接照片数**（`N 张`）。
+- **视频数**：单独显示（`Movie` 图标 + 数字），接口保留在 `FolderEntry.videoCount` /
+  `FolderNode.videoCount` / `FolderEntryDto.videoCount`。
+- 计数来自 `browse_directory` 的**一层扫描**：每个子目录直接读一次，数子目录/照片/视频。
+  不再使用 `count_folders` 的递归照片总数（C:\Users 那种目录要跑 18 秒，且展示口径不对）。
+
+### 14.2 开发期规则（用户明确要求）
+
+- 当前项目处于**开发阶段**：**禁止为旧历史数据写兼容代码分支**。
+- 旧数据/旧缓存可以直接丢弃，用新数据测试；需要失效就改缓存版本/文件名，不写迁移。
+- Git 提交按修改量自行判断；确保功能不丢失，但不要无脑跑全套测试。
+
+### 14.3 改动与验证
+
+- Rust `FolderEntry` 增加 `video_count`/`subfolder_count`；`photo_count` 只算照片；
+  `browse_directory` 对每个子目录做一层计数；`is_video_ext` 与 `scan_directory` 共用。
+- 桌面：`FolderNode`/`FolderTreeItem` 按上述规则显示；根目录行也显示；
+  视频数用 `Movie` 图标 + 数字。`count_folders` 的前端调用与 `counting` 状态移除。
+- 安卓：`FolderEntryDto` 增加 `videoCount`/`subfolderCount`；`secondaryLabel` 同步规则，
+  有视频追加 `· N 视频`。
+- 验证：Rust **196 + 65**；桌面 `tsc`/`build`；安卓 `--tests '*Browse*'` + `assembleDebug`。

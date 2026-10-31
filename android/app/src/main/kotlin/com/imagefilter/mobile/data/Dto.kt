@@ -54,9 +54,14 @@ data class DriveDto(
 data class FolderEntryDto(
     val path: String = "",
     val name: String = "",
+    /** 直接照片文件数（不含视频、不含子目录）。 */
     val photoCount: Int = 0,
     val hasSubdirs: Boolean = false,
     val subfolders: List<FolderEntryDto> = emptyList(),
+    /** 直接视频文件数；界面可单独显示。 */
+    val videoCount: Int = 0,
+    /** 直接子目录数；有子目录时界面显示这个。 */
+    val subfolderCount: Int = 0,
 )
 
 /** 对应 `scanner/mod.rs::PhotoExif` —— 全部可空, 因为桌面端只有在能读到时才填。 */

@@ -105,16 +105,28 @@ private const val VERBATIM_PREFIX = "\\\\?\\"
 fun rootEntries(shares: List<String>): List<FolderEntryDto> =
     shares.filter { it.isNotBlank() }.map { FolderEntryDto(path = it, name = displayNameOf(it)) }
 
-/** 服务端 `browse` 一律给 0 —— 0 **不许**被说成"没有照片", 只有 `scan` 才有真数。 */
-fun photoCountLabel(photoCount: Int): String =
-    if (photoCount > 0) "$photoCount 张" else NOT_COUNTED
+/**
+ * 叶子文件夹的直接照片数。服务端 `browse` 现在给出**直接照片数**(不是递归总数)，
+ * 所以 0 是一句诚实的话；负数(服务端不该发)按 0 处理。
+ */
+fun photoCountLabel(photoCount: Int): String = "${photoCount.coerceAtLeast(0)} 张"
 
-/** "张数未统计" 这个说法的**唯一出处**(测试用它断言 UI 不许出现"0 张")。 */
+/** "张数未统计" 仍用于筛选栏：那里的 0 确实可能意味着"这次没读到"。 */
 const val NOT_COUNTED = "张数未统计"
 
-/** 列表行的次级信息: 共享根显示它的**原路径**(尾段名不足以说明是哪个根), 其余显示张数。 */
-fun secondaryLabel(entry: FolderEntryDto, isRoot: Boolean): String =
-    if (isRoot) entry.path else photoCountLabel(entry.photoCount)
+/**
+ * 列表行的次级信息: 共享根显示原路径；有子目录显示子目录数；叶子显示照片数；
+ * 有视频时再补一段视频数(视频数量的显示入口保留在这里)。
+ */
+fun secondaryLabel(entry: FolderEntryDto, isRoot: Boolean): String {
+    if (isRoot) return entry.path
+    val base = if (entry.hasSubdirs) {
+        "${entry.subfolderCount} 个文件夹"
+    } else {
+        photoCountLabel(entry.photoCount)
+    }
+    return if (entry.videoCount > 0) "$base · ${entry.videoCount} 视频" else base
+}
 
 /** 抽屉树里的一行。 */
 data class TreeRow(val entry: FolderEntryDto, val depth: Int, val isRoot: Boolean)

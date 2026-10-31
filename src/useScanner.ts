@@ -31,6 +31,8 @@ function entryToNode(entry: FolderEntry): FolderNode {
     name: entry.name,
     path: entry.path,
     photoCount: entry.photoCount,
+    videoCount: entry.videoCount,
+    subfolderCount: entry.subfolderCount,
     hasSubdirs: entry.hasSubdirs,
     children: entry.subfolders.map(entryToNode),
   };
@@ -45,15 +47,6 @@ function updateHasSubdirs(root: FolderNode | null, path: string, val: boolean): 
   if (!root) return null;
   if (root.path === path) return { ...root, hasSubdirs: val };
   return { ...root, children: root.children.map((c) => updateHasSubdirs(c, path, val)!).filter(Boolean) };
-}
-
-function applyCounts(root: FolderNode | null, counts: Record<string, number>): FolderNode | null {
-  if (!root) return null;
-  return {
-    ...root,
-    photoCount: counts[root.path] ?? root.photoCount,
-    children: root.children.map((c) => applyCounts(c, counts)!).filter(Boolean),
-  };
 }
 
 function mergeChildren(
@@ -83,7 +76,6 @@ export function useScanner() {
   const [thumbnails, setThumbnails] = useState<Record<string, string>>({});
   const [browsing, setBrowsing] = useState(false);
   const [loadingFolder, setLoadingFolder] = useState(false);
-  const [counting, setCounting] = useState(false);
 
   // Multi-select state (Windows Explorer style)
   const [selectedPaths, setSelectedPaths] = useState<Set<string>>(new Set());
@@ -106,7 +98,6 @@ export function useScanner() {
   }, []);
 
   // 后台计数请求代次 — 只有最新一次设备切换的计数结果才允许写回(见 browseDrive)
-  const countGenRef = useRef(0);
 
   // ═══ Phase 5 · XMP 边车(档位 / 待同步队列 / 合并 / 可写性探测) ═══════
   // 这一整块是"边车"的**唯一**入口: 想读盘/写盘/改档位都走这里。
@@ -130,7 +121,7 @@ export function useScanner() {
    * 而手机的事件恰好可能落在里面(见 isXmpPending 与 src/xmp.ts::remapRemoteDecisions)。
    */
   const xmpInFlightPathsRef = useRef<Set<string>>(new Set());
-  // 代次: 切文件夹后旧读盘结果必须整体丢弃(与 countGenRef 同款纪律)
+  // 代次: 切文件夹后旧读盘结果必须整体丢弃
   const xmpGenRef = useRef(0);
   const xmpSeqRef = useRef(0);
   const xmpFailedRef = useRef<Set<string>>(new Set());
@@ -968,30 +959,15 @@ export function useScanner() {
     try {
       const entry = await invoke<FolderEntry>("browse_directory", { dirPath: mountPoint });
       const root: FolderNode = {
-        name: i18n.t("devices.root"), path: mountPoint, photoCount: entry.photoCount,
-        hasSubdirs: entry.hasSubdirs, children: entry.subfolders.map(entryToNode),
+        name: i18n.t("devices.root"),
+        path: mountPoint,
+        photoCount: entry.photoCount,
+        videoCount: entry.videoCount,
+        subfolderCount: entry.subfolderCount,
+        hasSubdirs: entry.hasSubdirs,
+        children: entry.subfolders.map(entryToNode),
       };
       setFolderTree(root);
-
-      // Background: count folder photos
-      // 只有最新一次切换的结果才允许写回: 连续切换设备时旧请求会晚到,
-      // 若直接 applyCounts 会把已经换掉的设备树覆盖成旧数据。
-      // (真正省 CPU 的是后端: count_folders 内部有代次取消 + 固定/网络盘跳过递归计数)
-      const folderPaths = entry.subfolders.map((f) => f.path);
-      if (folderPaths.length > 0) {
-        const myGen = ++countGenRef.current;
-        setCounting(true);
-        invoke<Record<string, number>>("count_folders", { folderPaths })
-          .then((map) => {
-            if (myGen !== countGenRef.current) return; // 已被后续切换取代
-            setFolderTree((prev) => applyCounts(prev, map));
-            setCounting(false);
-          })
-          .catch((err) => {
-            console.error("count_folders:", err);
-            if (myGen === countGenRef.current) setCounting(false);
-          });
-      }
     } catch (err) {
       console.error("browse_directory failed:", err);
     } finally {
@@ -1351,7 +1327,7 @@ export function useScanner() {
 
   return {
     drives, selectedDrive, folderTree, activeFolder, photos,
-    selectedPhoto, thumbnails, browsing, loadingFolder, counting,
+    selectedPhoto, thumbnails, browsing, loadingFolder,
     detectDrives, browseDrive, loadFolder, loadThumbnail, loadExif, setSelectedPhoto,
     importing, importProgress, importDone, importError, importResult, destDir,
     // Phase 6 / 6.1: 导入历史(列表 + 总数 + 加载入口)。组件只读它, 不许自己 invoke。

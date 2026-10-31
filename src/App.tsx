@@ -35,7 +35,7 @@ import {
 //    支持 theme="outline|filled|two-tone|multi-color" size fill 等
 //    请不要混用 emoji/文字符号 等其他图标方案
 // ═══════════════════════════════════════════════════════════════════
-import { Disk, DiskOne, FolderClose, Rotate } from "@icon-park/react";
+import { Disk, DiskOne, FolderClose, Movie, Rotate } from "@icon-park/react";
 import type { ScannedPhoto, AnalysisResult, FlagFilter } from "./types";
 import type { Patch } from "./undo";
 import { LABEL_ORDER, isLabelChord, type Label } from "./labels";
@@ -180,7 +180,6 @@ function App({ osCapabilities }: { osCapabilities: OsCapabilities }) {
     thumbnails,
     browsing,
     loadingFolder,
-    counting,
     detectDrives,
     browseDrive,
     loadFolder,
@@ -776,6 +775,21 @@ function App({ osCapabilities }: { osCapabilities: OsCapabilities }) {
                 )}
                 <FolderClose theme="filled" size={12} className="flex-shrink-0 text-zinc-500" />
                 <span className="truncate">{t("devices.root")}</span>
+                <span className="ml-auto flex items-center gap-1.5 flex-shrink-0 whitespace-nowrap">
+                  {folderTree.videoCount > 0 && (
+                    <span className="flex items-center gap-0.5" title={t("devices.videos", { n: folderTree.videoCount })}>
+                      <Movie theme="filled" size={10} className={activeFolder === folderTree.path ? "text-emerald-400/70" : "text-zinc-600"} />
+                      <span className={`text-[10px] tabular-nums ${activeFolder === folderTree.path ? "text-emerald-400/70" : "text-zinc-600"}`}>
+                        {folderTree.videoCount}
+                      </span>
+                    </span>
+                  )}
+                  <span className={`text-[10px] tabular-nums ${activeFolder === folderTree.path ? "text-emerald-400/70" : "text-zinc-600"}`}>
+                    {folderTree.hasSubdirs
+                      ? t("devices.folders", { n: folderTree.subfolderCount })
+                      : t("devices.photos", { n: folderTree.photoCount })}
+                  </span>
+                </span>
               </button>
               {folderTree.children.map((child) => (
                 <FolderTreeItem
@@ -784,7 +798,6 @@ function App({ osCapabilities }: { osCapabilities: OsCapabilities }) {
                   activeFolder={activeFolder}
                   onSelect={loadFolder}
                   depth={1}
-                  counting={counting}
                 />
               ))}
             </div>
@@ -798,7 +811,7 @@ function App({ osCapabilities }: { osCapabilities: OsCapabilities }) {
         <div className="px-3 py-2 border-t border-zinc-800/60 dark:border-white/[0.06] flex items-center gap-2 text-[10px] text-zinc-500">
           <span
             className={`w-1.5 h-1.5 rounded-full shrink-0 ${
-              browsing || loadingFolder || counting
+              browsing || loadingFolder
                 ? "bg-amber-400"
                 : selectedDrive
                   ? "bg-emerald-500"
@@ -807,7 +820,7 @@ function App({ osCapabilities }: { osCapabilities: OsCapabilities }) {
             aria-hidden="true"
           />
           <span className="truncate tabular-nums">
-            {browsing ? t("devices.browsing") : loadingFolder ? t("devices.loading") : counting ? t("devices.counting") : selectedDrive ? t("devices.photos", { n: photos.length }) : t("devices.ready")}
+            {browsing ? t("devices.browsing") : loadingFolder ? t("devices.loading") : selectedDrive ? t("devices.photos", { n: photos.length }) : t("devices.ready")}
           </span>
         </div>
         </PixelMenu>

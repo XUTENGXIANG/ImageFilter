@@ -3,7 +3,6 @@
 package com.imagefilter.mobile
 
 import com.imagefilter.mobile.data.FolderEntryDto
-import com.imagefilter.mobile.ui.NOT_COUNTED
 import com.imagefilter.mobile.ui.childrenOf
 import com.imagefilter.mobile.ui.displayNameOf
 import com.imagefilter.mobile.ui.mergeChildren
@@ -114,19 +113,24 @@ class BrowseMergeTest {
         assertEquals(verbatim, rootEntries(listOf(verbatim)).single().path)
     }
 
-    // ── 次级信息: 张数 ──────────────────────────────────────────────────────
+    // ── 次级信息: 子目录数 / 照片数 / 视频数 ────────────────────────────────
 
     @Test
-    fun the_secondary_line_never_claims_a_zero_photo_count() {
-        // `browse` 的 photoCount 一律是 0(只有 `scan` 才有真数), 而 0 既可能是"没有"
-        // 也可能是"没数" —— 所以这一层只能说实话: 未统计。
-        assertEquals(NOT_COUNTED, photoCountLabel(0))
-        assertFalse("0 张是一句手机上验证不了的假话", photoCountLabel(0).contains("0"))
+    fun the_secondary_line_reports_folders_photos_and_videos() {
+        // browse 现在给**直接**照片数, 所以 0 是一句诚实的话; 负数按 0 处理。
+        assertEquals("0 张", photoCountLabel(0))
         assertEquals("7 张", photoCountLabel(7))
-        assertEquals("负数(服务端不该发)也要退到'未统计'而不是'-1 张'", NOT_COUNTED, photoCountLabel(-1))
+        assertEquals("0 张", photoCountLabel(-1))
 
-        val folder = FolderEntryDto(path = "D:\\p\\a", name = "a", photoCount = 0)
-        assertEquals(NOT_COUNTED, secondaryLabel(folder, isRoot = false))
+        val leaf = FolderEntryDto(path = "D:\\p\\a", name = "a", photoCount = 7, videoCount = 2)
+        assertEquals("7 张 · 2 视频", secondaryLabel(leaf, isRoot = false))
+
+        val parent = FolderEntryDto(
+            path = "D:\\p\\b", name = "b",
+            hasSubdirs = true, subfolderCount = 3, videoCount = 1,
+        )
+        assertEquals("3 个文件夹 · 1 视频", secondaryLabel(parent, isRoot = false))
+
         assertEquals(
             "共享根的尾段名不足以说明是哪个根, 次级信息给的必须是原路径",
             "D:\\p",

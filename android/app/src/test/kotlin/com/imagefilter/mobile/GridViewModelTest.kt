@@ -199,8 +199,8 @@ class GridViewModelTest {
         assertEquals("0 张", s.countLabel)
         assertEquals("空文件夹的文案只有一处出处", GRID_EMPTY, s.emptyMessage)
         assertTrue("空文件夹也要给一句人话: $GRID_EMPTY", GRID_EMPTY.length >= 30)
-        // 这一条是刻意的: 浏览页的 photoCountLabel 把 0 说成"张数未统计"(那里 0 本来就没有权威值),
-        // 而网格的张数来自 scan 的**返回长度** —— 这里的 0 就是真的 0 张。
+        // 网格的张数来自 scan 的**返回长度** —— 这里的 0 就是真的 0 张，
+        // 不许照抄任何"未统计"的说法。
         assertNotEquals(
             "scan 的 0 是真的 0 张, 不许照抄浏览页那句",
             "张数未统计",

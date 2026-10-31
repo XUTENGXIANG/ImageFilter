@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { FolderClose } from "@icon-park/react";
+import { FolderClose, Movie } from "@icon-park/react";
 import type { FolderNode } from "../types";
 import {
   treePhase,
@@ -30,10 +30,10 @@ function SkeletonRow({ depth, label }: { depth: number; label: string }) {
 }
 
 export function FolderTreeItem({
-  node, activeFolder, onSelect, depth, counting,
+  node, activeFolder, onSelect, depth,
 }: {
   node: FolderNode; activeFolder: string; onSelect: (path: string) => void;
-  depth: number; counting: boolean;
+  depth: number;
 }) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
@@ -125,11 +125,28 @@ export function FolderTreeItem({
           {canExpand ? <i>▶</i> : <FolderClose theme="filled" size={12} />}
         </span>
         <span className="truncate min-w-0">{node.name}</span>
-        {!(counting && node.photoCount === 0) && (
-          <span className={`ml-auto flex-shrink-0 text-[10px] tabular-nums ${isActive ? "text-emerald-400/70" : "text-zinc-600"}`}>
-            {node.photoCount}
+        <span className="ml-auto flex items-center gap-1.5 flex-shrink-0 whitespace-nowrap">
+          {node.videoCount > 0 && (
+            <span
+              className="flex items-center gap-0.5"
+              title={t("devices.videos", { n: node.videoCount })}
+            >
+              <Movie
+                theme="filled"
+                size={10}
+                className={isActive ? "text-emerald-400/70" : "text-zinc-600"}
+              />
+              <span className={`text-[10px] tabular-nums ${isActive ? "text-emerald-400/70" : "text-zinc-600"}`}>
+                {node.videoCount}
+              </span>
+            </span>
+          )}
+          <span className={`text-[10px] tabular-nums ${isActive ? "text-emerald-400/70" : "text-zinc-600"}`}>
+            {node.hasSubdirs
+              ? t("devices.folders", { n: node.subfolderCount })
+              : t("devices.photos", { n: node.photoCount })}
           </span>
-        )}
+        </span>
       </button>
       {/* 子树常驻挂载: 这是高度动画的前提, 也正因为常驻, 收起时必须 inert + aria-hidden,
           否则收起的子行会漏进 Tab 顺序与无障碍树(WCAG 4.1.2)。
@@ -147,7 +164,6 @@ export function FolderTreeItem({
                   activeFolder={activeFolder}
                   onSelect={onSelect}
                   depth={depth + 1}
-                  counting={counting}
                 />
               ))
             )}

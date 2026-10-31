@@ -34,7 +34,12 @@ export interface ScannedPhoto {
 export interface FolderEntry {
   path: string;
   name: string;
+  /** 直接照片文件数（不含视频、不含子目录）。 */
   photoCount: number;
+  /** 直接视频文件数；界面可单独显示。 */
+  videoCount: number;
+  /** 直接子目录数；有子目录时界面显示这个。 */
+  subfolderCount: number;
   hasSubdirs: boolean;
   subfolders: FolderEntry[];
 }
@@ -95,6 +100,8 @@ export interface FolderNode {
   path: string;
   children: FolderNode[];
   photoCount: number;
+  videoCount: number;
+  subfolderCount: number;
   hasSubdirs: boolean;
 }
 

@@ -75,9 +75,8 @@ fun gridItems(api: ApiClient, photos: List<ScannedPhotoDto>): List<GridItem> = p
 /**
  * 顶部张数。
  *
- * ⚠️ **不要复用浏览页的 [photoCountLabel]**: 那个的 0 显示成"张数未统计", 因为
- * `browse` 的 `photoCount` 在这一层本来就没有权威值。而网格的张数来自 `scan` 的
- * **返回长度** —— 这里的 0 就是真的 0 张, 说成"未统计"才是撒谎。
+ * 网格的张数来自 `scan` 的**返回长度** —— 这里的 0 就是真的 0 张。
+ * 浏览页现在也显示 `browse` 给的直接照片数，不再有"0 = 未统计"那一层。
  */
 fun gridCountLabel(count: Int): String = "$count 张"
 

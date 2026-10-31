@@ -1,9 +1,41 @@
 // Copyright (c) 2026 XUTENGXIANG
 // SPDX-License-Identifier: MIT
-use super::{FolderEntry, PhotoExif, RAW_EXTENSIONS, SUPPORTED_EXTENSIONS, ScannedPhoto};
+use super::{is_video_ext, FolderEntry, PhotoExif, RAW_EXTENSIONS, SUPPORTED_EXTENSIONS, ScannedPhoto};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-/// Instant browse: tree structure only, count=0 for subfolders.
+/// 一层目录的直接计数。**不递归**: 界面在有子目录时显示子目录数, 没子目录时显示照片数,
+/// 递归照片总数不再需要 —— 也正是它让 C:\Users 这种目录要跑 18 秒。
+#[derive(Default)]
+struct ChildCounts {
+    subfolders: u32,
+    photos: u32,
+    videos: u32,
+}
+
+fn child_counts(path: &std::path::Path) -> ChildCounts {
+    let mut out = ChildCounts::default();
+    let Ok(entries) = std::fs::read_dir(path) else {
+        return out; // 读不动就是 0; 不猜、不递归
+    };
+    for entry in entries.flatten() {
+        let Ok(ft) = entry.file_type() else { continue };
+        if ft.is_dir() {
+            out.subfolders += 1;
+        } else if ft.is_file() {
+            let file_path = entry.path();
+            let Some(ext) = file_path.extension().and_then(|e| e.to_str()) else { continue };
+            let ext = ext.to_lowercase();
+            if is_video_ext(&ext) {
+                out.videos += 1;
+            } else if SUPPORTED_EXTENSIONS.contains(&ext.as_str()) {
+                out.photos += 1;
+            }
+        }
+    }
+    out
+}
+
+/// Instant browse: 一层目录 + 每个子目录的**直接**计数(子目录/照片/视频)。
 #[tauri::command]
 pub async fn browse_directory(dir_path: String) -> Result<FolderEntry, String> {
     let path = std::path::Path::new(&dir_path);
@@ -12,6 +44,7 @@ pub async fn browse_directory(dir_path: String) -> Result<FolderEntry, String> {
     }
 
     let mut photo_count: u32 = 0;
+    let mut video_count: u32 = 0;
     let mut subfolders: Vec<FolderEntry> = Vec::new();
 
     let entries = std::fs::read_dir(path).map_err(|e| format!("Read dir: {}", e))?;
@@ -24,17 +57,22 @@ pub async fn browse_directory(dir_path: String) -> Result<FolderEntry, String> {
 
         if ft.is_dir() {
             let child_path = entry.path();
-            let has_subdirs = has_subdirectories(&child_path);
+            let counts = child_counts(&child_path);
             subfolders.push(FolderEntry {
                 path: child_path.to_string_lossy().to_string(),
                 name: entry.file_name().to_string_lossy().to_string(),
-                photo_count: 0,
-                has_subdirs,
+                photo_count: counts.photos,
+                video_count: counts.videos,
+                subfolder_count: counts.subfolders,
+                has_subdirs: counts.subfolders > 0,
                 subfolders: vec![],
             });
         } else if ft.is_file() {
             if let Some(ext) = entry.path().extension().and_then(|e| e.to_str()) {
-                if SUPPORTED_EXTENSIONS.contains(&ext.to_lowercase().as_str()) {
+                let ext = ext.to_lowercase();
+                if is_video_ext(&ext) {
+                    video_count += 1;
+                } else if SUPPORTED_EXTENSIONS.contains(&ext.as_str()) {
                     photo_count += 1;
                 }
             }
@@ -47,6 +85,8 @@ pub async fn browse_directory(dir_path: String) -> Result<FolderEntry, String> {
         path: path.to_string_lossy().to_string(),
         name: path.file_name().unwrap_or_default().to_string_lossy().to_string(),
         photo_count,
+        video_count,
+        subfolder_count: subfolders.len() as u32,
         has_subdirs: !subfolders.is_empty(),
         subfolders,
     })
@@ -116,18 +156,6 @@ pub async fn count_folders(
     })
     .await
     .map_err(|e| format!("计数任务失败: {}", e))
-}
-
-/// Check if directory contains any subdirectory (1 level only, fast)
-fn has_subdirectories(path: &std::path::Path) -> bool {
-    if let Ok(entries) = std::fs::read_dir(path) {
-        for entry in entries.flatten() {
-            if let Ok(ft) = entry.file_type() {
-                if ft.is_dir() { return true; }
-            }
-        }
-    }
-    false
 }
 
 /// Count ALL photos in directory tree.
@@ -227,7 +255,7 @@ pub async fn scan_directory(dir_path: String) -> Vec<ScannedPhoto> {
 
         let file_size = metadata.len();
         let is_raw = RAW_EXTENSIONS.contains(&ext.as_str());
-        let is_video = matches!(ext.as_str(), "mp4" | "mov" | "avi" | "mkv");
+        let is_video = is_video_ext(&ext);
         let modified_at = metadata
             .modified()
             .map(|t| t.duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis() as i64)
