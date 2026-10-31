@@ -8,6 +8,7 @@ import { PixelMenu, SEPARATOR, type MenuItem } from "./contextmenu";
 import { FloatingPanel } from "./panel";
 import { PhotoViewer } from "./viewer";
 import { useScanner } from "./useScanner";
+import { useLocalStorageBoolean } from "./hooks/use-local-storage-setting";
 import { TitleBar } from "./components/title-bar";
 import { MacPermissionGuide } from "./components/macos-permission-guide";
 import { PairingDialogHost } from "./components/pairing-dialog";
@@ -170,6 +171,8 @@ const PhotoGridItem = memo(function PhotoGridItem({
 
 function App({ osCapabilities }: { osCapabilities: OsCapabilities }) {
   const { t } = useTranslation();
+  // 目录树里的数量显示开关。默认开; 只影响显示, 不影响扫描/计数。
+  const [showCounts, setShowCounts] = useLocalStorageBoolean("imagefilter-show-counts", true);
   const {
     drives,
     selectedDrive,
@@ -668,6 +671,8 @@ function App({ osCapabilities }: { osCapabilities: OsCapabilities }) {
         onTogglePreloadFull={togglePreloadFull}
         autoAdvance={autoAdvance}
         onToggleAutoAdvance={toggleAutoAdvance}
+        showCounts={showCounts}
+        onToggleShowCounts={() => setShowCounts(!showCounts)}
         labelModifier={labelModifier}
         onLabelModifierChange={setLabelModifier}
         xmpMode={xmpMode}
@@ -775,21 +780,23 @@ function App({ osCapabilities }: { osCapabilities: OsCapabilities }) {
                 )}
                 <FolderClose theme="filled" size={12} className="flex-shrink-0 text-zinc-500" />
                 <span className="truncate">{t("devices.root")}</span>
-                <span className="ml-auto flex items-center gap-1.5 flex-shrink-0 whitespace-nowrap">
-                  {folderTree.videoCount > 0 && (
-                    <span className="flex items-center gap-0.5" title={t("devices.videos", { n: folderTree.videoCount })}>
-                      <Movie theme="filled" size={10} className={activeFolder === folderTree.path ? "text-emerald-400/70" : "text-zinc-600"} />
-                      <span className={`text-[10px] tabular-nums ${activeFolder === folderTree.path ? "text-emerald-400/70" : "text-zinc-600"}`}>
-                        {folderTree.videoCount}
+                {showCounts && (
+                  <span className="ml-auto flex items-center gap-1.5 flex-shrink-0 whitespace-nowrap">
+                    {folderTree.videoCount > 0 && (
+                      <span className="flex items-center gap-0.5" title={t("devices.videos", { n: folderTree.videoCount })}>
+                        <Movie theme="filled" size={10} className={activeFolder === folderTree.path ? "text-emerald-400/70" : "text-zinc-600"} />
+                        <span className={`text-[10px] tabular-nums ${activeFolder === folderTree.path ? "text-emerald-400/70" : "text-zinc-600"}`}>
+                          {folderTree.videoCount}
+                        </span>
                       </span>
+                    )}
+                    <span className={`text-[10px] tabular-nums ${activeFolder === folderTree.path ? "text-emerald-400/70" : "text-zinc-600"}`}>
+                      {folderTree.hasSubdirs
+                        ? t("devices.folders", { n: folderTree.subfolderCount })
+                        : t("devices.photos", { n: folderTree.photoCount })}
                     </span>
-                  )}
-                  <span className={`text-[10px] tabular-nums ${activeFolder === folderTree.path ? "text-emerald-400/70" : "text-zinc-600"}`}>
-                    {folderTree.hasSubdirs
-                      ? t("devices.folders", { n: folderTree.subfolderCount })
-                      : t("devices.photos", { n: folderTree.photoCount })}
                   </span>
-                </span>
+                )}
               </button>
               {folderTree.children.map((child) => (
                 <FolderTreeItem
@@ -798,6 +805,7 @@ function App({ osCapabilities }: { osCapabilities: OsCapabilities }) {
                   activeFolder={activeFolder}
                   onSelect={loadFolder}
                   depth={1}
+                  showCounts={showCounts}
                 />
               ))}
             </div>

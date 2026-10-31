@@ -43,6 +43,8 @@ export default {
     preloadDesc: "预载可见区域原图，打开查看器更快",
     autoAdvance: "评分后自动前进",
     autoAdvanceDesc: "评分后自动下一张（← 回退）",
+    showCounts: "显示目录数量",
+    showCountsDesc: "在左侧目录树显示子文件夹 / 照片 / 视频数量",
     labelKeys: "颜色标签快捷键",
     labelKeysDesc: "打标修饰键（被占用换 Alt）",
     // Phase 5 · XMP 边车(三档开关, 默认"询问" —— 会话 ⑥ 由"关闭"改来, 见 src/xmp.ts)

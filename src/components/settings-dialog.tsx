@@ -44,6 +44,9 @@ interface Props {
   onTogglePreloadFull: () => void;
   autoAdvance: boolean;
   onToggleAutoAdvance: () => void;
+  /** 左侧目录树是否显示子文件夹/照片/视频数量。只影响显示。 */
+  showCounts: boolean;
+  onToggleShowCounts: () => void;
   /** Phase 4: 颜色标签用哪个修饰键(Ctrl / Alt)。见 docs 4.1 */
   labelModifier: "ctrl" | "alt";
   onLabelModifierChange: (v: "ctrl" | "alt") => void;
@@ -1181,6 +1184,7 @@ export function SettingsDialog({
   open, onOpenChange, theme, onThemeChange, lang, onLangChange,
   preloadFull, onTogglePreloadFull, transparentBg, onToggleTransparentBg, micaUnsupported, platform,
   autoAdvance, onToggleAutoAdvance,
+  showCounts, onToggleShowCounts,
   labelModifier, onLabelModifierChange,
   xmpMode, onXmpModeChange, xmpStatus,
   lrcProbe, lrcMode, onLrcModeChange, onReprobeLightroom,
@@ -1320,6 +1324,10 @@ export function SettingsDialog({
 
           <SettingRow title={t("settings.autoAdvance")} desc={t("settings.autoAdvanceDesc")}>
             <Toggle checked={autoAdvance} onChange={onToggleAutoAdvance} />
+          </SettingRow>
+
+          <SettingRow title={t("settings.showCounts")} desc={t("settings.showCountsDesc")}>
+            <Toggle checked={showCounts} onChange={onToggleShowCounts} />
           </SettingRow>
 
           {/* Phase 4: 颜色标签的修饰键。分段按钮与上面的"语言"同一套写法。

@@ -405,4 +405,6 @@ SIMD 缩放 + 双闸门 + 全图缓存。用户验收“差不多了挺快的”
   视频数用 `Movie` 图标 + 数字。`count_folders` 的前端调用与 `counting` 状态移除。
 - 安卓：`FolderEntryDto` 增加 `videoCount`/`subfolderCount`；`secondaryLabel` 同步规则，
   有视频追加 `· N 视频`。
+- 设置 → **显示目录数量**：控制左侧目录树与根目录的数量角标（默认开，存
+  `imagefilter-show-counts`）；只影响显示，不影响扫描/计数。
 - 验证：Rust **196 + 65**；桌面 `tsc`/`build`；安卓 `--tests '*Browse*'` + `assembleDebug`。

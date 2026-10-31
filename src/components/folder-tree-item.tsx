@@ -30,10 +30,11 @@ function SkeletonRow({ depth, label }: { depth: number; label: string }) {
 }
 
 export function FolderTreeItem({
-  node, activeFolder, onSelect, depth,
+  node, activeFolder, onSelect, depth, showCounts,
 }: {
   node: FolderNode; activeFolder: string; onSelect: (path: string) => void;
   depth: number;
+  showCounts: boolean;
 }) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
@@ -125,7 +126,7 @@ export function FolderTreeItem({
           {canExpand ? <i>▶</i> : <FolderClose theme="filled" size={12} />}
         </span>
         <span className="truncate min-w-0">{node.name}</span>
-        <span className="ml-auto flex items-center gap-1.5 flex-shrink-0 whitespace-nowrap">
+        {showCounts && <span className="ml-auto flex items-center gap-1.5 flex-shrink-0 whitespace-nowrap">
           {node.videoCount > 0 && (
             <span
               className="flex items-center gap-0.5"
@@ -146,7 +147,7 @@ export function FolderTreeItem({
               ? t("devices.folders", { n: node.subfolderCount })
               : t("devices.photos", { n: node.photoCount })}
           </span>
-        </span>
+        </span>}
       </button>
       {/* 子树常驻挂载: 这是高度动画的前提, 也正因为常驻, 收起时必须 inert + aria-hidden,
           否则收起的子行会漏进 Tab 顺序与无障碍树(WCAG 4.1.2)。
@@ -164,6 +165,7 @@ export function FolderTreeItem({
                   activeFolder={activeFolder}
                   onSelect={onSelect}
                   depth={depth + 1}
+                  showCounts={showCounts}
                 />
               ))
             )}

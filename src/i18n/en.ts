@@ -41,6 +41,8 @@ export default {
     preloadDesc: "Preload visible photos for a faster viewer",
     autoAdvance: "Auto-advance after rating",
     autoAdvanceDesc: "Auto-next after rating (← back)",
+    showCounts: "Show folder counts",
+    showCountsDesc: "Show subfolder / photo / video counts in the left sidebar",
     labelKeys: "Color label shortcut",
     labelKeysDesc: "Label modifier (Alt if taken)",
     // Phase 5 · XMP sidecar (three-step switch, default "Ask" — changed from "Off" in session 6,

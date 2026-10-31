@@ -29,6 +29,33 @@ export function useLocalStorageSetting<T>(key: string, initial: T): [T, (v: T) =
   return [value, set];
 }
 
+/**
+ * 布尔设置。`useLocalStorageSetting<boolean>` 会把字符串 "false" 当成真值
+ * （它原样 cast，不解析），所以布尔必须单独走这一条。
+ */
+export function useLocalStorageBoolean(key: string, initial: boolean): [boolean, (v: boolean) => void] {
+  const [value, setValue] = useState<boolean>(() => {
+    try {
+      const raw = localStorage.getItem(key);
+      return raw === null ? initial : raw === "true";
+    } catch {
+      return initial;
+    }
+  });
+  const set = useCallback(
+    (v: boolean) => {
+      setValue(v);
+      try {
+        localStorage.setItem(key, String(v));
+      } catch {
+        /* 忽略写入失败 */
+      }
+    },
+    [key]
+  );
+  return [value, set];
+}
+
 /** 数值型设置: 读取时校验 Number.isFinite 并 clamp 到 [min, max], 防损坏数据产生 NaN */
 export function useLocalStorageNumber(
   key: string,

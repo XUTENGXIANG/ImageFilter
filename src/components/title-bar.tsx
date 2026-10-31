@@ -26,6 +26,8 @@ export function TitleBar({
   onTogglePreloadFull,
   autoAdvance,
   onToggleAutoAdvance,
+  showCounts,
+  onToggleShowCounts,
   labelModifier,
   onLabelModifierChange,
   xmpMode,
@@ -46,6 +48,8 @@ export function TitleBar({
   onTogglePreloadFull: () => void;
   autoAdvance: boolean;
   onToggleAutoAdvance: () => void;
+  showCounts: boolean;
+  onToggleShowCounts: () => void;
   labelModifier: "ctrl" | "alt";
   onLabelModifierChange: (v: "ctrl" | "alt") => void;
   /** Phase 5: XMP 边车档位与状态(只透传给设置对话框) */
@@ -237,6 +241,8 @@ export function TitleBar({
         onTogglePreloadFull={onTogglePreloadFull}
         autoAdvance={autoAdvance}
         onToggleAutoAdvance={onToggleAutoAdvance}
+        showCounts={showCounts}
+        onToggleShowCounts={onToggleShowCounts}
         labelModifier={labelModifier}
         onLabelModifierChange={onLabelModifierChange}
         xmpMode={xmpMode}
