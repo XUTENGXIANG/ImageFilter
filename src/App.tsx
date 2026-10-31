@@ -37,7 +37,7 @@ import {
 //    请不要混用 emoji/文字符号 等其他图标方案
 // ═══════════════════════════════════════════════════════════════════
 import { Disk, DiskOne, FolderClose, Movie, Rotate } from "@icon-park/react";
-import type { ScannedPhoto, AnalysisResult, FlagFilter } from "./types";
+import type { ScannedPhoto, AnalysisResult, FlagFilter, FolderNode } from "./types";
 import type { Patch } from "./undo";
 import { LABEL_ORDER, isLabelChord, type Label } from "./labels";
 import { xmpErrKey, type XmpNotice } from "./xmp";
@@ -63,6 +63,17 @@ function patchToast(t: TFunction, p: Patch, kind: "undo" | "redo"): string {
     what = t("toast.selectionChange", { n: p.next.length });
   }
   return `${verb}：${what}`;
+}
+
+/** 在已加载的目录树里找当前文件夹节点；找不到 = 不是叶子/还没加载。 */
+function findFolderNode(root: FolderNode | null, path: string): FolderNode | null {
+  if (!root) return null;
+  if (root.path === path) return root;
+  for (const child of root.children) {
+    const hit = findFolderNode(child, path);
+    if (hit) return hit;
+  }
+  return null;
 }
 
 /**
@@ -658,6 +669,16 @@ function App({ osCapabilities }: { osCapabilities: OsCapabilities }) {
         : convertFileSrc(selectedPhoto.path))
     : null;
 
+  const activeNode = activeFolder ? findFolderNode(folderTree, activeFolder) : null;
+  // 只有"数量显示开着 + 选了叶子文件夹 + 真的有照片"才显示张数。
+  // 未选目录、选中有子目录的文件夹、数量显示关闭、空目录 —— 一律显示状态。
+  // 视频不算进"张"; 它们的数量在目录树的视频角标上单独显示。
+  const activePhotoCount = photos.filter((p) => !p.isVideo).length;
+  const footerPhotoCount =
+    showCounts && activeNode !== null && !activeNode.hasSubdirs && activePhotoCount > 0
+      ? activePhotoCount
+      : null;
+
   return (
     <div
       className={`flex flex-col h-screen w-screen overflow-hidden text-zinc-100 transition-colors duration-200 ${isMac ? "rounded-xl" : ""} ${transparentBg ? "" : "bg-zinc-950"}`}
@@ -828,7 +849,13 @@ function App({ osCapabilities }: { osCapabilities: OsCapabilities }) {
             aria-hidden="true"
           />
           <span className="truncate tabular-nums">
-            {browsing ? t("devices.browsing") : loadingFolder ? t("devices.loading") : selectedDrive ? t("devices.photos", { n: photos.length }) : t("devices.ready")}
+            {browsing
+              ? t("devices.browsing")
+              : loadingFolder
+                ? t("devices.loading")
+                : footerPhotoCount !== null
+                  ? t("devices.photos", { n: footerPhotoCount })
+                  : t("devices.ready")}
           </span>
         </div>
         </PixelMenu>
