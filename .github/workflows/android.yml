@@ -43,7 +43,7 @@ jobs:
           java-version: '21'
 
       - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
+        uses: android-actions/setup-android@v4.0.4
 
       # 仓库是在 Windows 上提交的, gradlew 可能没带上可执行位。
       - name: Ensure gradlew is executable
