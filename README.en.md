@@ -37,6 +37,7 @@
 - [Docs](#docs)
 - [Known limitations](#known-limitations)
 - [Contributing](#contributing)
+- [Feedback & acknowledgements](#feedback--acknowledgements)
 - [License](#license)
 
 ## Overview
@@ -110,6 +111,17 @@ Organize files automatically on import with templates:
 - `{original}` — original file name
 
 Example: `{date}/{camera}/{seq}.{ext}` produces `2026-08-10/Sony_A7M4/0001.ARW`
+
+Resulting folder after import:
+
+```text
+2026-08-10/
+  Sony_A7M4/
+    0001.ARW
+    0001.xmp
+    0002.ARW
+    0002.xmp
+```
 
 ## Tech Stack
 
@@ -217,6 +229,12 @@ docs/                 # Handoff docs, project log, SDD plans and evidence
 Read [Handoff & onboarding](docs/ImageFilter-交接与上手.md) first — the code map, invariants and verification tools live there.
 
 For issues, include the version, OS and reproduction steps. For UI changes, attach a screenshot or recording; for import or sidecar changes, include the test files and results.
+
+## Feedback & acknowledgements
+
+Report issues and suggestions via [GitHub Issues](https://github.com/XUTENGXIANG/ImageFilter/issues).
+
+The project builds on Tauri, rawler, image_hasher, axum and other open-source projects; thanks to their maintainers.
 
 ## License
 
