@@ -63,8 +63,16 @@
 
 ## 界面
 
-![ImageFilter 界面](assets/screenshot.jpg)
-
+<table>
+  <tr>
+    <td align="center" width="50%"><a href="assets/screenshot-light-grid.jpg"><img src="assets/screenshot-light-grid.jpg" alt="浅色 · 主界面"></a><br><sub>浅色 · 主界面</sub></td>
+    <td align="center" width="50%"><a href="assets/screenshot-light-clean.jpg"><img src="assets/screenshot-light-clean.jpg" alt="浅色 · 网格"></a><br><sub>浅色 · 网格</sub></td>
+  </tr>
+  <tr>
+    <td align="center" width="50%"><a href="assets/screenshot-light-empty.jpg"><img src="assets/screenshot-light-empty.jpg" alt="浅色 · 空状态"></a><br><sub>浅色 · 空状态</sub></td>
+    <td align="center" width="50%"><a href="assets/screenshot-dark-empty.jpg"><img src="assets/screenshot-dark-empty.jpg" alt="深色 · 空状态"></a><br><sub>深色 · 空状态</sub></td>
+  </tr>
+</table>
 
 双击照片打开全屏查看器：滚轮缩放、拖动平移、旋转，查看器中直接评分。界面支持深色 / 浅色主题、中英文切换、Windows Mica 毛玻璃背景。
 
