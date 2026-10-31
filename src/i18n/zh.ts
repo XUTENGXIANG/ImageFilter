@@ -124,6 +124,7 @@ export default {
   // ── 设备面板 ──
   devices: {
     panel: "设备",
+    disks: "磁盘",
     refresh: "刷新",
     open: "打开",
     eject: "弹出设备",

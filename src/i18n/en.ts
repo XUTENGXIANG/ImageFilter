@@ -121,6 +121,7 @@ export default {
 
   devices: {
     panel: "Devices",
+    disks: "Disks",
     refresh: "Refresh",
     open: "Open",
     eject: "Eject",

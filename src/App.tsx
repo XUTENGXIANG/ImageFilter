@@ -15,6 +15,7 @@ import { ExifPanel } from "./components/exif-panel";
 import { WelcomeGuide } from "./components/welcome-guide";
 import { ScrollFadeZone } from "./components/scroll-fade-zone";
 import { FolderTreeItem } from "./components/folder-tree-item";
+import { Tip } from "./components/tip";
 import { PhotoCard } from "./components/photo-card";
 import {
   osDefaultGlass,
@@ -34,7 +35,7 @@ import {
 //    支持 theme="outline|filled|two-tone|multi-color" size fill 等
 //    请不要混用 emoji/文字符号 等其他图标方案
 // ═══════════════════════════════════════════════════════════════════
-import { Disk, DiskOne } from "@icon-park/react";
+import { Disk, DiskOne, FolderClose, Rotate } from "@icon-park/react";
 import type { ScannedPhoto, AnalysisResult, FlagFilter } from "./types";
 import type { Patch } from "./undo";
 import { LABEL_ORDER, isLabelChord, type Label } from "./labels";
@@ -691,11 +692,22 @@ function App({ osCapabilities }: { osCapabilities: OsCapabilities }) {
           { label: t("devices.refresh"), action: () => selectedDrive && browseDrive(selectedDrive!) },
           //{ label: "刷新设备列表", action: detectDrives },
         ]}>
-        <div className="px-3 pt-2 pb-1 flex items-center">
-          <button onClick={() => selectedDrive && browseDrive(selectedDrive!)} className="press-solid text-[10px] leading-4 px-3 py-1 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-400 transition-colors">{t("devices.refresh")}</button>
+        <div className="flex items-center justify-between px-2.5 pt-2 pb-1">
+          <span className="text-[10px] font-medium tracking-[0.12em] text-zinc-600">
+            {t("devices.disks")}
+          </span>
+          <Tip label={t("devices.refresh")}>
+            <button
+              onClick={() => selectedDrive && browseDrive(selectedDrive!)}
+              disabled={!selectedDrive}
+              className="w-5 h-5 flex items-center justify-center rounded text-zinc-600 hover:text-zinc-300 hover:bg-zinc-800 disabled:opacity-30 disabled:pointer-events-none transition-colors"
+            >
+              <Rotate theme="outline" size={12} strokeWidth={3} />
+            </button>
+          </Tip>
         </div>
         {/* 设备列表 — 每个设备独立右键菜单, 可移动设备含"弹出设备" */}
-        <div className="px-2.5 pb-1 space-y-0.5 max-h-36 overflow-auto no-scrollbar">
+        <div className="px-2.5 pb-1.5 space-y-0.5 max-h-40 overflow-auto no-scrollbar">
             {drives.map((d) => (
             <PixelMenu key={d.mountPoint} items={[
               { label: t("devices.open"), action: () => browseDrive(d.mountPoint) },
@@ -712,26 +724,30 @@ function App({ osCapabilities }: { osCapabilities: OsCapabilities }) {
             <button
               onClick={() => browseDrive(d.mountPoint)}
               data-selected={selectedDrive === d.mountPoint}
-              className={`press-row w-full text-left px-1.5 py-1.5 rounded text-xs flex items-center gap-1.5 ${
+              className={`press-row relative w-full text-left pl-2 pr-1.5 py-1.5 rounded-md text-[12px] flex items-center gap-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/50 focus-visible:ring-offset-1 focus-visible:ring-offset-zinc-900 ${
                 selectedDrive === d.mountPoint
-                  ? "bg-emerald-900/30 text-emerald-300"
-                  : "hover:bg-zinc-800/50 text-zinc-400"
+                  ? "bg-emerald-500/10 text-emerald-300"
+                  : "hover:bg-zinc-800/60 text-zinc-400"
               }`}
             >
+              {selectedDrive === d.mountPoint && (
+                <span className="absolute left-0 top-1/2 -translate-y-1/2 h-3.5 w-[2px] rounded-full bg-emerald-400" aria-hidden="true" />
+              )}
               {/* 可移动设备=U盘图标, 固定磁盘=磁盘图标 (IconPark) */}
               {d.driveType === "removable"
-                ? <DiskOne theme="filled" size="15" strokeWidth={3} className="text-emerald-500 flex-shrink-0" />
-                : <Disk theme="filled" size="15" strokeWidth={3} className="text-zinc-500 flex-shrink-0" />}
+                ? <DiskOne theme="filled" size={14} strokeWidth={3} className="text-emerald-500 flex-shrink-0" />
+                : <Disk theme="filled" size={14} strokeWidth={3} className="text-zinc-500 flex-shrink-0" />}
               <span className="truncate">{d.label}</span>
+              <span className="ml-auto max-w-[56px] shrink-0 truncate text-[10px] tabular-nums text-zinc-600">{d.mountPoint}</span>
             </button>
             </PixelMenu>
           ))}
           {drives.length === 0 && (
-            <p className="text-zinc-600 text-[11px] px-2">{t("devices.noDevices")}</p>
+            <p className="text-zinc-600 text-[11px] px-2 py-2">{t("devices.noDevices")}</p>
           )}
         </div>
 
-        <div className="flex-1 overflow-auto px-1.5 py-1.5 no-scrollbar">
+        <div className="flex-1 overflow-auto px-2 py-1.5 no-scrollbar">
           {/* 整个区域由 browsing 把门：正在扫描时, 除了"等久了才出现"的提示, 什么都不显示。
               为什么必须这么写: 这条链是 扫描中 → 树 → 未扫描/选择设备。如果把"扫描中"改成
               延迟出现却不把门, 那 150ms 里链子就会掉到最后一段 —— 而 browseDrive 已经设上了
@@ -745,17 +761,21 @@ function App({ osCapabilities }: { osCapabilities: OsCapabilities }) {
             ) : null
           ) : folderTree ? (
             <div className="tree-enter">
-              <div className="border-t border-zinc-800/50 mb-1.5" />
+              <div className="border-t border-zinc-800/60 dark:border-white/[0.06] my-1.5" />
               <button
                 onClick={() => loadFolder(folderTree.path)}
                 data-selected={activeFolder === folderTree.path}
-                className={`press-row w-full text-left px-2 py-1 rounded border text-[11px] mb-1 ${
+                className={`press-row relative w-full text-left pl-2 pr-2 py-1.5 rounded-md text-[12px] flex items-center gap-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/50 focus-visible:ring-offset-1 focus-visible:ring-offset-zinc-900 ${
                   activeFolder === folderTree.path
-                    ? "bg-emerald-900/30 border-emerald-800/50 text-emerald-300"
-                    : "bg-zinc-800/20 border-zinc-800/30 text-zinc-400 hover:bg-zinc-800/40"
+                    ? "bg-emerald-500/10 text-emerald-300"
+                    : "text-zinc-400 hover:bg-zinc-800/60"
                 }`}
               >
-                {t("devices.root")}
+                {activeFolder === folderTree.path && (
+                  <span className="absolute left-0 top-1/2 -translate-y-1/2 h-3.5 w-[2px] rounded-full bg-emerald-400" aria-hidden="true" />
+                )}
+                <FolderClose theme="filled" size={12} className="flex-shrink-0 text-zinc-500" />
+                <span className="truncate">{t("devices.root")}</span>
               </button>
               {folderTree.children.map((child) => (
                 <FolderTreeItem
@@ -769,14 +789,26 @@ function App({ osCapabilities }: { osCapabilities: OsCapabilities }) {
               ))}
             </div>
           ) : (
-            <p className="text-zinc-600 text-[11px] px-1">
+            <p className="text-zinc-600 text-[11px] px-2 py-2">
               {selectedDrive ? t("devices.notScanned") : t("devices.selectDevice")}
             </p>
           )}
         </div>
 
-        <div className="p-2 border-t border-zinc-800 text-[10px] text-zinc-600">
-          {browsing ? t("devices.browsing") : loadingFolder ? t("devices.loading") : counting ? t("devices.counting") : selectedDrive ? t("devices.photos", { n: photos.length }) : t("devices.ready")}
+        <div className="px-3 py-2 border-t border-zinc-800/60 dark:border-white/[0.06] flex items-center gap-2 text-[10px] text-zinc-500">
+          <span
+            className={`w-1.5 h-1.5 rounded-full shrink-0 ${
+              browsing || loadingFolder || counting
+                ? "bg-amber-400"
+                : selectedDrive
+                  ? "bg-emerald-500"
+                  : "bg-zinc-600"
+            }`}
+            aria-hidden="true"
+          />
+          <span className="truncate tabular-nums">
+            {browsing ? t("devices.browsing") : loadingFolder ? t("devices.loading") : counting ? t("devices.counting") : selectedDrive ? t("devices.photos", { n: photos.length }) : t("devices.ready")}
+          </span>
         </div>
         </PixelMenu>
       </FloatingPanel>

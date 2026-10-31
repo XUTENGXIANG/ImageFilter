@@ -125,7 +125,7 @@ img {
    树行高度只在这一处声明 —— 占位行复用 .tree-row, 所以自动同高,
    JS 里不需要知道这个数(子树高度一律由 scrollHeight 实测)。 */
 .tree-row {
-  height: 24px;
+  height: 28px;
 }
 
 /* 箭头改成同一个 ▶ 字形旋转, 而不是 ▶/▼ 换字形。
@@ -152,7 +152,7 @@ img {
    --color-* 变量, emerald-800 在本项目里没有任何地方用到, 写 var() 会解析成空值、
    按下时直接没反应(这个坑 .badge-glass 那段已经踩过一次)。 */
 .press-row {
-  transition: background-color 100ms ease-out, color 100ms ease-out;
+  transition: background-color 150ms ease-out, color 150ms ease-out;
 }
 .press-row:active {
   background-color: #3f3f46b3; /* zinc-700 @70% */

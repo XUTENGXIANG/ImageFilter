@@ -17,8 +17,8 @@ import {
 function SkeletonRow({ depth, label }: { depth: number; label: string }) {
   return (
     <div
-      className="tree-row tree-row-skeleton flex items-center gap-1 rounded text-[11px] text-zinc-600"
-      style={{ paddingLeft: `${depth * 12 + 8}px`, paddingRight: "4px" }}
+      className="tree-row tree-row-skeleton flex items-center gap-1.5 rounded-md text-[12px] text-zinc-600"
+      style={{ paddingLeft: `${depth * 12 + 8}px`, paddingRight: "8px" }}
       role="status"
     >
       <span className="sr-only">{label}</span>
@@ -111,19 +111,22 @@ export function FolderTreeItem({
         }}
         aria-expanded={canExpand ? open : undefined}
         data-selected={isActive}
-        className={`press-row tree-row w-full text-left rounded text-[11px] flex items-center gap-1 ${
+        className={`press-row tree-row relative w-full text-left rounded-md text-[12px] flex items-center gap-1.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/50 focus-visible:ring-offset-1 focus-visible:ring-offset-zinc-900 ${
           isActive
-            ? "bg-emerald-900/30 text-emerald-300"
-            : "text-zinc-400 hover:bg-zinc-800/50"
+            ? "bg-emerald-500/10 text-emerald-300"
+            : "text-zinc-400 hover:bg-zinc-800/60"
         }`}
-        style={{ paddingLeft: `${depth * 12 + 8}px`, paddingRight: "4px" }}
+        style={{ paddingLeft: `${depth * 12 + 8}px`, paddingRight: "8px" }}
       >
-        <span className="tree-caret text-[10px] w-3 flex-shrink-0 flex items-center justify-center" aria-hidden="true">
+        {isActive && (
+          <span className="absolute left-0 top-1/2 -translate-y-1/2 h-3.5 w-[2px] rounded-full bg-emerald-400" aria-hidden="true" />
+        )}
+        <span className="tree-caret text-[9px] w-3 flex-shrink-0 flex items-center justify-center" aria-hidden="true">
           {canExpand ? <i>▶</i> : <FolderClose theme="filled" size={12} />}
         </span>
-        <span className="truncate">{node.name}</span>
+        <span className="truncate min-w-0">{node.name}</span>
         {!(counting && node.photoCount === 0) && (
-          <span className="text-zinc-600 ml-auto flex-shrink-0">
+          <span className={`ml-auto flex-shrink-0 text-[10px] tabular-nums ${isActive ? "text-emerald-400/70" : "text-zinc-600"}`}>
             {node.photoCount}
           </span>
         )}
