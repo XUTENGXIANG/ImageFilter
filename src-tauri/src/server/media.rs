@@ -55,29 +55,45 @@ const PREVIEW_MAX_MAX: u32 = 5000;
 /// `Arc`), 两边不共享任何状态 —— 收放这里的预算不会改变桌面端的并发(红线)。
 const THUMBNAIL_CONCURRENCY: usize = 4;
 
-/// **预览 / 全图**闸门的预算: 1。
+/// **普通预览**闸门的预算: 2。
 ///
-/// 为什么是 1: 这条路上一次请求 = 一次全尺寸解码 + Lanczos3 重采样 + 重编码, 峰值常驻内存
-/// 几十到几百 MB, 而机器是用户**正在用**的那台(本项目的头号红线)。规格对这一条的原话就是
-/// "走 Semaphore(1) 闸门, UI 上表现为『加载中』, 绝不阻塞其他请求"。
-/// 而且 `get_full_image` 对 RAW 传感器解码本来就有 `RAW_DECODE_SEM(1)` 串行化, 第二个许可
-/// 几乎换不来吞吐, 只换来**第二份**解码结果常驻内存。
+/// 为什么把它和全图拆开: 修复前"预览 / 全图"共用一个 `Semaphore(1)`。G1 之后两条路的成本
+/// 不再一样 ——
+///   · `full=false`(手机上的默认预览)只解一张内嵌预览(RAW)或原图(非 RAW);
+///   · `full=true`(高清)在内嵌预览不够大时会触发 `get_full_image` 的 RAW 传感器全解码,
+///     峰值常驻内存几十到几百 MB。
+/// 共用 1 个许可意味着"一张 DNG 正在全解码"会挡住下一张照片的默认预览 —— 手机端看到的
+/// 就是"划到下一张就转圈"。所以轻路径给 2: 允许"当前一张在编码、下一张已经开始解码",
+/// 而内嵌预览的像素量通常只有几 MP, 两份同时在解仍在用户机的安全范围内。
 ///
-/// 最关键的一点: 这 1 个许可**绝不能**和缩略图共享。修复前两条路共用一个 `MEDIA_SEM(2)`,
-/// 两个 `full=1` 请求就能把两个许可全部占住, 于是所有缩略图请求排在两次全解码之后 ——
-/// 手机的滚动列表整整卡住, 而规格明确承诺"绝不阻塞其他请求"。
-///
-/// 死锁: 两条闸门互不嵌套(一次请求只进其中一条), 桌面端的 `RAW_DECODE_SEM(1)` 是**内层**,
+/// 死锁: 三条闸门互不嵌套(一次请求只进其中一条), 桌面端的 `RAW_DECODE_SEM(1)` 是**内层**,
 /// 方向只有"外层 → 内层"一个, 无环。
 ///
 /// 每个客户端各自的限额**不在这一层**: 那需要客户端身份, 属于路由层(Task 8)。
 /// 这里只管"整个进程一共允许多少重活同时在跑"。
-const PREVIEW_CONCURRENCY: usize = 1;
+const PREVIEW_CONCURRENCY: usize = 2;
 
-/// 缩略图闸门。**独立**预算 —— 与预览闸门不共享任何状态。
+/// **高清全解码**闸门的预算: 1。
+///
+/// `full=true` 且内嵌预览不够大时走 `get_full_image`: RAW 传感器解码 + 5000 长边缓存,
+/// 峰值常驻内存几十到几百 MB, 而机器是用户**正在用**的那台(本项目的头号红线)。
+/// 而且 `get_full_image` 对 RAW 本来就有 `RAW_DECODE_SEM(1)` 串行化, 第二个许可几乎换不来
+/// 吞吐, 只换来**第二份**解码结果常驻内存。
+///
+/// 高清请求即使最终选了内嵌预览源, 也仍然走这条闸门: 源选择发生在闸门**之内**, 进闸门前
+/// 无法知道要不要全解码。保守地串行化高清请求不影响默认预览(那是另一条闸门), 只是同一
+/// 时刻只服务一个"查看原图"的用户操作。
+///
+/// 最关键的一点(与修复前相同): 任何一条闸门都**绝不能**和缩略图共享。手机滚动列表的
+/// 缩略图必须永远不排在解码/重编码后面 —— 规格明确承诺"绝不阻塞其他请求"。
+const FULL_CONCURRENCY: usize = 1;
+
+/// 缩略图闸门。**独立**预算 —— 与下面两条闸门不共享任何状态。
 static THUMBNAIL_SEM: OnceLock<Semaphore> = OnceLock::new();
-/// 预览/全图闸门。同上, 独立预算。
+/// 普通预览闸门。同上, 独立预算。
 static PREVIEW_SEM: OnceLock<Semaphore> = OnceLock::new();
+/// 高清全解码闸门。同上, 独立预算。
+static FULL_SEM: OnceLock<Semaphore> = OnceLock::new();
 
 fn thumbnail_sem() -> &'static Semaphore {
     THUMBNAIL_SEM.get_or_init(|| Semaphore::new(THUMBNAIL_CONCURRENCY))
@@ -87,12 +103,17 @@ fn preview_sem() -> &'static Semaphore {
     PREVIEW_SEM.get_or_init(|| Semaphore::new(PREVIEW_CONCURRENCY))
 }
 
+fn full_sem() -> &'static Semaphore {
+    FULL_SEM.get_or_init(|| Semaphore::new(FULL_CONCURRENCY))
+}
+
 /// 闸门种类。生产代码里它只是个被忽略的标记(进哪条闸门已经由调用哪个 `*_sem()` 决定),
-/// 存在的唯一理由是让**测试探针**把两条闸门的在飞计数分开观测。
+/// 存在的唯一理由是让**测试探针**把三条闸门的在飞计数分开观测。
 #[derive(Clone, Copy)]
 enum GateKind {
     Thumbnail,
     Preview,
+    Full,
 }
 
 /// 并发闸门的**测试观测点**(生产编译里不存在): 每条闸门各自的实时在飞数 + 历史峰值。
@@ -117,6 +138,8 @@ mod gate_probe {
         static THUMB_PEAK_IN_FLIGHT: Cell<usize> = Cell::new(0);
         static PREVIEW_IN_FLIGHT: Cell<usize> = Cell::new(0);
         static PREVIEW_PEAK_IN_FLIGHT: Cell<usize> = Cell::new(0);
+        static FULL_IN_FLIGHT: Cell<usize> = Cell::new(0);
+        static FULL_PEAK_IN_FLIGHT: Cell<usize> = Cell::new(0);
     }
 
     fn cells(
@@ -128,6 +151,7 @@ mod gate_probe {
         match kind {
             GateKind::Thumbnail => (&THUMB_IN_FLIGHT, &THUMB_PEAK_IN_FLIGHT),
             GateKind::Preview => (&PREVIEW_IN_FLIGHT, &PREVIEW_PEAK_IN_FLIGHT),
+            GateKind::Full => (&FULL_IN_FLIGHT, &FULL_PEAK_IN_FLIGHT),
         }
     }
 
@@ -206,9 +230,14 @@ impl MediaGate {
         Self::new(thumbnail_sem().acquire().await.ok(), GateKind::Thumbnail)
     }
 
-    /// 进**预览/全图**闸门。同上。
+    /// 进**普通预览**闸门。同上。
     async fn preview() -> Self {
         Self::new(preview_sem().acquire().await.ok(), GateKind::Preview)
+    }
+
+    /// 进**高清全解码**闸门。同上。`full=true` 的请求走这一条(见 `FULL_CONCURRENCY`)。
+    async fn full() -> Self {
+        Self::new(full_sem().acquire().await.ok(), GateKind::Full)
     }
 }
 
@@ -274,13 +303,86 @@ fn source_error(requested: &str, msg: &str) -> ApiError {
     }
 }
 
+/// 高清请求的源选择判据(G1): 内嵌预览长边 ≥ 请求长边的 90% 就用它。
+///
+/// 为什么是 90%: 内嵌预览只解一张 JPEG(毫秒级), 而 DNG/RAW 全解码是秒级、还要占住全解码
+/// 闸门, 并且会走"全解码 → 5000 缓存 → 再缩到 2048"两次缩放。差 10% 以内的像素在手机上
+/// (查看器还会按视图再缩放)几乎看不出来; 再小就不行 —— 拿 1600 冒充 2048 会让"高清"名不
+/// 副实, 所以宁可老实全解码。
+///
+/// **不放大**: 选中的源仍交给 `encode_preview` 的只降不升降采样, 输出长边 ≤ 请求值。
+/// 用 `u64` 做乘法, 避免任何尺寸下的溢出。
+fn prefer_embedded(preview_max_edge: u32, requested_max: u32) -> bool {
+    u64::from(preview_max_edge) * 10 >= u64::from(requested_max) * 9
+}
+
+/// 预览降采样后的目标尺寸(长边 = `max`, 另一边按比例四舍五入, 最小 1)。
+///
+/// 与 `image::DynamicImage::resize(max, max, …)` 的取整**逐位一致**: image 0.25 里
+/// `resize_dimensions` 是 `pub(crate)`, 不能直接调, 所以公式抄自 `image::math::utils`。
+/// `resize_max_edge` 只在原图长边 > max 时才 resize, 所以这里的比例恒 < 1, 绝不会放大。
+fn preview_target_dimensions(w: u32, h: u32, max: u32) -> (u32, u32) {
+    let ratio = f64::min(f64::from(max) / f64::from(w), f64::from(max) / f64::from(h));
+    let nw = ((f64::from(w) * ratio).round() as u64).max(1);
+    let nh = ((f64::from(h) * ratio).round() as u64).max(1);
+    (nw as u32, nh as u32)
+}
+
+/// RGB8 的 SIMD 降采样(`fast_image_resize`, Lanczos3)。失败时回退 image crate ——
+/// 性能优化**绝不**把一张本来能出的预览变成错误。
+fn fast_downscale_rgb8(rgb: image::RgbImage, max: u32) -> image::DynamicImage {
+    use fast_image_resize::{images::Image, FilterType, ResizeAlg, ResizeOptions, Resizer};
+
+    let (w, h) = (rgb.width(), rgb.height());
+    let (tw, th) = preview_target_dimensions(w, h, max);
+    let mut rgb = rgb;
+    let src = match Image::from_slice_u8(w, h, &mut rgb, fast_image_resize::PixelType::U8x3) {
+        Ok(src) => src,
+        Err(_) => {
+            return crate::scanner::images::resize_max_edge(
+                image::DynamicImage::ImageRgb8(rgb),
+                max,
+            )
+        }
+    };
+    let mut dst = Image::new(tw, th, fast_image_resize::PixelType::U8x3);
+    let options = ResizeOptions::new()
+        .resize_alg(ResizeAlg::Convolution(FilterType::Lanczos3));
+    let resized = Resizer::new().resize(&src, &mut dst, &options);
+    drop(src); // 释放对 rgb 的可变借用, 失败时才能把原图交回 image crate
+    if resized.is_err() {
+        return crate::scanner::images::resize_max_edge(image::DynamicImage::ImageRgb8(rgb), max);
+    }
+    match image::RgbImage::from_raw(tw, th, dst.into_vec()) {
+        Some(out) => image::DynamicImage::ImageRgb8(out),
+        None => crate::scanner::images::resize_max_edge(image::DynamicImage::ImageRgb8(rgb), max),
+    }
+}
+
+/// 把预览降到长边 ≤ `max`。**只降不升**(契约)。
+///
+/// RGB8(JPEG / RAW 解码后的常态)走 SIMD 实现; 其他颜色类型(灰度 / RGBA / 16 位 / 浮点)
+/// 仍走 image crate, 保持输出颜色类型与既有的重采样行为不变。
+///
+/// **`resize_max_edge` 本身没有改**: 桌面缩略图与 `full_v3` 的 5000 长边缓存仍用它,
+/// 这次性能改动只作用于 HTTP 预览。
+fn downscale_for_preview(img: image::DynamicImage, max: u32) -> image::DynamicImage {
+    if img.width().max(img.height()) <= max {
+        return img;
+    }
+    match img {
+        image::DynamicImage::ImageRgb8(rgb) => fast_downscale_rgb8(rgb, max),
+        other => crate::scanner::images::resize_max_edge(other, max),
+    }
+}
+
 /// 降采样 + 用**共享编码器**编成内存 JPEG。
 ///
 /// 编码参数只允许有这一处: 掉回 `img.save()` 会走 crate 默认质量(≈75), 手机上的预览
 /// 立刻变糙, 而尺寸/方向断言对此完全无感 —— 所以有专门的量化表测试盯着它。
 /// 顺序: 调用方先按 `source` 校方向, 这里才降采样(长边 ≤ max 是对**校正后**的图算的)。
 fn encode_preview(img: image::DynamicImage, max: u32) -> Result<Vec<u8>, ApiError> {
-    let img = crate::scanner::images::resize_max_edge(img, max);
+    let img = downscale_for_preview(img, max);
     let mut out = Vec::with_capacity(256 * 1024);
     crate::scanner::images::encode_jpeg_quality(&img, &mut out, PREVIEW_JPEG_QUALITY)
         .map_err(|_| ApiError::Internal)?;
@@ -306,33 +408,127 @@ pub async fn thumbnail_bytes(path: &str, size: u32) -> Result<Vec<u8>, ApiError>
         .map_err(|_| ApiError::NotFound)
 }
 
-/// 预览字节。`full = true` 时走全解码链（`get_full_image`）。
+/// 预览请求实际用的源。**只在 debug 构建里存在**(给 G2 的计时日志用);
+/// release 构建里这个类型、它的 label 和所有计时变量都随 `#[cfg]` 一起消失。
+#[cfg(debug_assertions)]
+#[derive(Clone, Copy)]
+enum SourceKind {
+    /// `full=false` 的普通预览: 非 RAW 的原图, 或 RAW 的内嵌预览。
+    Preview,
+    /// `full=true` 且内嵌预览够大 —— 直接用它, 不做 RAW 传感器解码。
+    Embedded,
+    /// `full=true` 且内嵌预览不够大/不可用 —— 回退 `get_full_image`。
+    Full,
+}
+
+#[cfg(debug_assertions)]
+impl SourceKind {
+    fn label(self) -> &'static str {
+        match self {
+            SourceKind::Preview => "preview",
+            SourceKind::Embedded => "embedded",
+            SourceKind::Full => "full",
+        }
+    }
+}
+
+/// G1 的快路径: 取内嵌预览并**只读文件头**得到像素尺寸(`image::image_dimensions`,
+/// 不解码像素)。返回 `Some((源路径, 尺寸))` 当且仅当长边 ≥ 请求长边的 90%;
+/// 任何一步失败(RAW 没有内嵌预览 / 尺寸读不出来)都返回 `None`, 调用方回退
+/// `get_full_image` —— 与改动前 full=true 的行为一致, 不会把可打开的文件变成错误。
+async fn embedded_preview_if_big_enough(
+    requested: &str,
+    max: u32,
+) -> Option<(String, (u32, u32))> {
+    let preview = crate::scanner::images::get_preview_image(requested.to_string())
+        .await
+        .ok()?;
+    let for_dims = preview.clone();
+    // 只读头部的 I/O 也不该占着 async 线程(可能是网络盘/慢盘)。
+    let (w, h) = tokio::task::spawn_blocking(move || image::image_dimensions(&for_dims))
+        .await
+        .ok()?
+        .ok()?;
+    prefer_embedded(w.max(h), max).then_some((preview, (w, h)))
+}
+
+/// 预览字节。`full = true`(高清)时**先看内嵌预览够不够大**, 够了直接用它
+/// (RAW/DNG 免全解码), 不够才回退 `get_full_image` 的全解码链。
 ///
 /// **不做路径白名单校验** —— 由路由层负责(见模块文档)。
+///
+/// G2: debug 构建里每个成功请求打一行 `[preview] …`(格式见下面 `eprintln!`);
+/// release 构建完全没有这些变量与输出。
 pub async fn preview_bytes(path: &str, max: u32, full: bool) -> Result<Vec<u8>, ApiError> {
     // 参数校验放在拿许可之前: 注定要 400 的请求不该占着闸门。
     if !(PREVIEW_MAX_MIN..=PREVIEW_MAX_MAX).contains(&max) {
         return Err(ApiError::BadRequest);
     }
-    // 闸门罩住整段: 取源图路径(RAW 可能触发全解码) + 解码 + 重采样 + 重编码。
-    // `full` 与非 full 都走**预览/全图**闸门: 两者都是全尺寸解码 + Lanczos + 重编码, 一样重;
-    // 这条闸门与缩略图那条**不共享状态**, 所以它满着也不会挡住手机的缩略图列表。
-    let _gate = MediaGate::preview().await;
+
+    // G2: total_ms 从**进闸门前**开始计时, 所以它包含排队等待 —— 如果"高清很慢"其实是
+    // 卡在闸门上(而不是解码/编码), 这一行能直接看出来。
+    #[cfg(debug_assertions)]
+    let started = std::time::Instant::now();
+
+    // G4: 按请求类型选闸门 —— 普通预览 2 个许可, 高清全解码 1 个(见两条常量的注释)。
+    // 一次请求只进其中一条, 两条闸门互不嵌套; 都与缩略图闸门独立。
+    let _gate = if full {
+        MediaGate::full().await
+    } else {
+        MediaGate::preview().await
+    };
+
+    #[cfg(debug_assertions)]
+    let source_started = std::time::Instant::now();
     let requested = path.to_string();
 
-    // 1) 借既有命令拿到"源图路径"（RAW → 缓存过的内嵌 JPEG; 非 RAW → 原图路径）
+    #[cfg(debug_assertions)]
+    let mut source_kind = SourceKind::Preview;
+    #[cfg(debug_assertions)]
+    let mut source_dims: Option<(u32, u32)> = None;
+
+    // 1) 取"源图路径"。
+    //    · full=false: 非 RAW → 原图; RAW → 缓存过的内嵌 JPEG。
+    //    · full=true : G1 —— 内嵌预览够大(≥ 90% 请求长边)就直接用它; 否则回退全解码。
+    //      内嵌预览不可用也回退, 所以"先试预览"不会让原本能打开的文件变成错误。
     let source = if full {
-        crate::scanner::images::get_full_image(requested.clone())
-            .await
-            .map_err(|e| source_error(&requested, &e))?
+        match embedded_preview_if_big_enough(&requested, max).await {
+            Some((preview, dims)) => {
+                #[cfg(debug_assertions)]
+                {
+                    source_kind = SourceKind::Embedded;
+                    source_dims = Some(dims);
+                }
+                // release 构建里尺寸只被上面的日志块使用(整个块已被 cfg 掉)
+                #[cfg(not(debug_assertions))]
+                let _ = dims;
+                preview
+            }
+            None => {
+                #[cfg(debug_assertions)]
+                {
+                    source_kind = SourceKind::Full;
+                }
+                crate::scanner::images::get_full_image(requested.clone())
+                    .await
+                    .map_err(|e| source_error(&requested, &e))?
+            }
+        }
     } else {
         crate::scanner::images::get_preview_image(requested.clone())
             .await
             .map_err(|e| source_error(&requested, &e))?
     };
 
+    #[cfg(debug_assertions)]
+    let source_ms = source_started.elapsed().as_millis();
+    #[cfg(debug_assertions)]
+    let log_path = requested;
+
     // 2) 解码 → 校方向 → 降采样 → 编进内存。**重活必须离开 async 线程。**
     tokio::task::spawn_blocking(move || {
+        #[cfg(debug_assertions)]
+        let open_started = std::time::Instant::now();
         let img = image::open(&source).map_err(|e| {
             // "读不出来"和"解不了"是两码事, 而且这一次**不用猜**: `image::ImageError` 自带类别。
             //   · 源文件已经不在(取完路径后被删/被移走) → notFound, 这条信息对手机最有用;
@@ -346,6 +542,10 @@ pub async fn preview_bytes(path: &str, max: u32, full: bool) -> Result<Vec<u8>, 
                 ApiError::UnsupportedForm
             }
         })?;
+        #[cfg(debug_assertions)]
+        let open_ms = open_started.elapsed().as_millis();
+        #[cfg(debug_assertions)]
+        let dims = source_dims.unwrap_or((img.width(), img.height()));
 
         // 方向只能上一次 —— 但"上没上过"**不能靠比路径**。旧实现把
         // `source == requested` 当作"还是原图, 所以方向没校正过"的代理, 这个代理是错的:
@@ -361,7 +561,36 @@ pub async fn preview_bytes(path: &str, max: u32, full: bool) -> Result<Vec<u8>, 
         // 于是"原图 / 逐字节拷来的 RAW 缓存 / 编码器写的缓存"三条分支共用同一次调用就是对的,
         // 路径比较可以整个删掉 —— 也就不会因为将来某个函数改返回规范化路径而**静默**丢掉校正。
         let img = crate::scanner::images::apply_exif_orientation(Path::new(&source), img);
-        encode_preview(img, max)
+
+        #[cfg(debug_assertions)]
+        let encode_started = std::time::Instant::now();
+        let out = encode_preview(img, max)?;
+        #[cfg(debug_assertions)]
+        let encode_ms = encode_started.elapsed().as_millis();
+
+        // G2: 一行请求一行日志。字段含义:
+        //   source    = embedded(内嵌预览够大) | full(回退全解码) | preview(普通预览)
+        //   dims      = **源图**尺寸(选源时读的文件头; 普通预览退回解码尺寸)
+        //   source_ms = 取源耗时(含 DNG 全解码 —— 它发生在 get_full_image 里)
+        //   open_ms   = image::open 解码耗时
+        //   encode_ms = 降采样 + q88 编码耗时
+        //   total_ms  = 从进闸门前到编码完成(含排队等待)
+        #[cfg(debug_assertions)]
+        eprintln!(
+            "[preview] path={} max={} full={} source={} dims={}x{} source_ms={} open_ms={} encode_ms={} total_ms={} bytes={}",
+            log_path,
+            max,
+            full,
+            source_kind.label(),
+            dims.0,
+            dims.1,
+            source_ms,
+            open_ms,
+            encode_ms,
+            started.elapsed().as_millis(),
+            out.len(),
+        );
+        Ok(out)
     })
     .await
     .map_err(|_| ApiError::Internal)?
@@ -385,6 +614,32 @@ mod tests {
     fn write_plain_jpeg(path: &std::path::Path, w: u32, h: u32) {
         let file = std::fs::File::create(path).expect("建文件");
         crate::scanner::images::encode_jpeg_quality(&plain_image(w, h), file, 90).expect("编码");
+    }
+
+    /// 同一张图的 JPEG 字节。用来伪造"RAW/DNG 里的内嵌预览"(扩展名决定走哪条分支,
+    /// 内容只需是一段合法的 JPEG 流)。
+    fn plain_jpeg_bytes(w: u32, h: u32) -> Vec<u8> {
+        let mut out = Vec::new();
+        crate::scanner::images::encode_jpeg_quality(&plain_image(w, h), &mut out, 90)
+            .expect("编码");
+        out
+    }
+
+    /// 从**产出字节**再解一次尺寸 —— 不信任服务端自报的数字。
+    fn jpeg_dimensions_from_bytes(bytes: &[u8]) -> (u32, u32) {
+        let img = image::load_from_memory(bytes).expect("返回的必须是可解码的 JPEG");
+        (img.width(), img.height())
+    }
+
+    /// 隔离缓存根里某个子目录下的 jpg 条目数(证明"有没有走某条缓存路径")。
+    fn cached_jpg_count(root: &std::path::Path, subdir: &str) -> usize {
+        std::fs::read_dir(root.join("image-filter").join(subdir))
+            .map(|rd| {
+                rd.filter_map(|e| e.ok())
+                    .filter(|e| e.path().extension().and_then(|x| x.to_str()) == Some("jpg"))
+                    .count()
+            })
+            .unwrap_or(0)
     }
 
     fn tmp_dir(tag: &str) -> std::path::PathBuf {
@@ -656,6 +911,164 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    // ── G1: 高清请求的源选择 ────────────────────────────────────────────────────
+
+    /// 90% 判据本身: 2048 请求下 1920 够, 1600 / 256 不够; 边界用整数比较, 没有浮点误差。
+    #[test]
+    fn prefer_embedded_requires_at_least_ninety_percent() {
+        assert!(prefer_embedded(1920, 2048), "1920 是 2048 的 93.75% → 够");
+        assert!(prefer_embedded(2048, 2048));
+        assert!(prefer_embedded(4096, 2048), "比请求还大的源也够(之后只降不升)");
+        assert!(!prefer_embedded(1600, 2048), "1600 只有 78% → 不够");
+        assert!(!prefer_embedded(256, 2048));
+        // 2048 * 0.9 = 1843.2 → 1844 够, 1843 不够
+        assert!(prefer_embedded(1844, 2048));
+        assert!(!prefer_embedded(1843, 2048));
+    }
+
+    /// 阈值在**真实文件**上端到端成立: 内嵌预览的长边读数来自文件头, 不是调用方猜的。
+    /// 用 `.dng` 扩展名触发 `get_preview_image` 的内嵌 JPEG 提取(内容就是一段普通 JPEG)。
+    #[tokio::test]
+    async fn embedded_preview_selection_threshold_end_to_end() {
+        let _cache = TempCacheRoot::new("dngthreshold");
+        let dir = tmp_dir("dngthreshold");
+
+        for (w, h, max, want) in [
+            (1920, 1280, 2048, true),
+            (1844, 1000, 2048, true),
+            (1843, 1000, 2048, false),
+            (1600, 1200, 2048, false),
+            (256, 256, 2048, false), // < 600 长边: get_preview_image 直接报"没有预览"
+        ] {
+            let p = dir.join(format!("p{}x{}.dng", w, h));
+            std::fs::write(&p, plain_jpeg_bytes(w, h)).unwrap();
+            let got = embedded_preview_if_big_enough(p.to_str().unwrap(), max).await;
+            assert_eq!(
+                got.is_some(),
+                want,
+                "{}x{} 对 max={} 的选择结果不对(阈值: 长边 ≥ 90%)",
+                w,
+                h,
+                max
+            );
+            if let Some((_, dims)) = got {
+                assert_eq!(dims, (w, h), "读到的必须是文件头里的真实尺寸");
+            }
+        }
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// **G1 的端到端主证明**: full=1 + 2048 请求遇到 1920 内嵌预览时直接用它。
+    ///
+    /// 判据不是"这次成功了"(假 DNG 万一被系统的 WIC JPEG codec 解出来也能成功), 而是
+    /// `full_v3` 缓存里**一条都没有** —— `get_full_image` 一次都没被调用。
+    /// 同时输出尺寸必须是 1920x1280(不放大)。
+    #[tokio::test]
+    async fn full_request_prefers_a_large_embedded_preview_without_full_decode() {
+        let cache = TempCacheRoot::new("dngembed");
+        let cache_root = cache.root.clone();
+        let dir = tmp_dir("dngembed");
+        let p = dir.join("fake.dng");
+        std::fs::write(&p, plain_jpeg_bytes(1920, 1280)).unwrap();
+
+        let got = preview_bytes(p.to_str().unwrap(), 2048, true)
+            .await
+            .expect("内嵌预览够大时高清必须成功");
+        assert_eq!(
+            jpeg_dimensions_from_bytes(&got),
+            (1920, 1280),
+            "1920 < 2048 → 绝不放大, 必须原尺寸返回内嵌预览"
+        );
+        assert_eq!(
+            cached_jpg_count(&cache_root, "full_v3"),
+            0,
+            "走内嵌预览就不许调用 get_full_image —— 否则 full_v3 里会留下一条缓存"
+        );
+        assert_eq!(
+            cached_jpg_count(&cache_root, "preview_v4"),
+            1,
+            "这次请求应当把内嵌预览写进 preview_v4(证明源确实来自内嵌预览提取)"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// full=1 的大图(非 RAW)必须仍遵守 `max`: 4000x3000 → 2048x1536。
+    /// 这条同时覆盖"请求感知的源选择"在非 RAW 上的落点(原图即预览源)。
+    #[tokio::test]
+    async fn full_request_on_a_large_plain_image_respects_max() {
+        let dir = tmp_dir("fullbig");
+        let p = dir.join("big.jpg");
+        write_plain_jpeg(&p, 4000, 3000);
+
+        let got = preview_bytes(p.to_str().unwrap(), 2048, true).await.unwrap();
+        assert_eq!(
+            jpeg_dimensions_from_bytes(&got),
+            (2048, 1536),
+            "长边必须正好是 max 且保持宽高比"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 小图(< max)不触发降采样时, full=1 回退路径的字节必须仍与共享 q88 编码器逐字节一致
+    /// —— 保证 G1/G3 没有偷偷换编码器或质量。
+    #[tokio::test]
+    async fn full_request_on_a_small_image_matches_the_shared_encoder_bytes() {
+        let dir = tmp_dir("fullsmall");
+        let p = dir.join("small.jpg");
+        write_plain_jpeg(&p, 320, 240);
+
+        let got = preview_bytes(p.to_str().unwrap(), 2048, true).await.unwrap();
+
+        let src = image::open(&p).unwrap();
+        let mut want: Vec<u8> = Vec::new();
+        crate::scanner::images::encode_jpeg_quality(&src, &mut want, SPEC_Q88).unwrap();
+        assert_eq!(
+            got, want,
+            "不放大时高清路径的字节必须与共享编码器 q88 逐字节相同"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// G3: SIMD 降采样的**输出尺寸**必须与 `resize_max_edge`(image crate)完全一致,
+    /// 覆盖偶/奇、横/竖与极端长宽比 —— 客户端据此算缩放比, 差一像素都不行。
+    #[test]
+    fn fast_downscale_keeps_resize_max_edge_dimensions() {
+        for (w, h, max) in [
+            (4000, 3000, 2048),
+            (3000, 4000, 2048),
+            (4001, 2999, 2048),
+            (2500, 1667, 1024),
+            (1200, 900, 600),
+            (4000, 500, 2048),
+            (500, 4000, 2048),
+        ] {
+            let want = crate::scanner::images::resize_max_edge(plain_image(w, h), max)
+                .dimensions();
+            let got = encode_preview(plain_image(w, h), max).expect("编码应成功");
+            let (gw, gh) = jpeg_dimensions_from_bytes(&got);
+            assert_eq!(
+                (gw, gh),
+                want,
+                "{}x{} → max {}: 新路径的尺寸必须与 resize_max_edge 一致",
+                w,
+                h,
+                max
+            );
+            assert!(
+                gw.max(gh) <= max,
+                "{}x{} → max {}: 输出长边 {} 超过请求值",
+                w,
+                h,
+                max,
+                gw.max(gh)
+            );
+        }
+    }
+
     // ── 方向规则的承重假设 ──────────────────────────────────────────────────────
 
     /// **"无条件校正方向"这个修法的承重假设**, 两条一起断言:
@@ -694,11 +1107,11 @@ mod tests {
 
     // ── 并发闸门 ────────────────────────────────────────────────────────────────
 
-    /// **Fix A 的证明: 缩略图不排在预览/全图后面。**
+    /// **Fix A 的证明: 缩略图不排在普通预览后面。**
     ///
-    /// 做法: 用**生产的入口**(`MediaGate::preview`, 与 `preview_bytes` 用的是同一个)把预览/全图
-    /// 预算**全部占住**, 确认探针看到它满着, 然后在这期间跑 8 个**真实**的并发缩略图请求
-    /// (Barrier 同时放行)。
+    /// 做法: 用**生产的入口**(`MediaGate::preview`, 与 `preview_bytes(full=false)` 用的是
+    /// 同一个)把普通预览预算**全部占住**, 确认探针看到它满着, 然后在这期间跑 8 个**真实**的
+    /// 并发缩略图请求(Barrier 同时放行)。
     ///
     /// 三条断言缺一不可:
     ///   1. 8 个缩略图**全都跑完**了 —— 若两条闸门共享状态(修复前是一个 `MEDIA_SEM(2)`),
@@ -716,7 +1129,7 @@ mod tests {
         gate_probe::reset(GateKind::Preview);
         gate_probe::reset(GateKind::Thumbnail);
 
-        // 1) 占满预览/全图预算, 并确认探针看到它确实在闸门内
+        // 1) 占满普通预览预算, 并确认探针看到它确实在闸门内
         let mut held = Vec::new();
         for _ in 0..PREVIEW_CONCURRENCY {
             held.push(MediaGate::preview().await);
@@ -750,7 +1163,7 @@ mod tests {
         )
         .await;
         timed_out.expect(
-            "缩略图不该排在预览/全图后面: 预览闸门占满时它必须照样能跑\
+            "缩略图不该排在普通预览后面: 预览闸门占满时它必须照样能跑\
              (两条闸门若共享状态, 这里会死等到超时)",
         );
 
@@ -782,11 +1195,11 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// 预览/全图闸门必须**真的**闸住: 8 个请求被 `Barrier` 同时放出去, 观测闸门内的实时并发峰值。
-    /// 只调一次证明不了任何事 —— 这条测试的存在理由就是"多个请求同时进来时不能出现第二个"。
+    /// 普通预览闸门必须**真的**闸住: 8 个请求被 `Barrier` 同时放出去, 观测闸门内的实时并发峰值。
+    /// 只调一次证明不了任何事 —— 这条测试的存在理由就是"多个请求同时进来时不能超过预算"。
     ///
     /// 非空断言: Barrier 保证放行那一刻 8 个请求**全部**在飞, 所以峰值不是"运气不好没重叠"得来的。
-    /// 另一头, 把闸门拿掉(守卫不再进入)峰值会变成 0, 把预算调大则会变成 >1 —— 两种改动都会红。
+    /// 另一头, 把闸门拿掉(守卫不再进入)峰值会变成 0, 把预算调大/调小都会让这条红。
     #[tokio::test]
     async fn preview_gate_caps_concurrency() {
         gate_probe::reset(GateKind::Preview);
@@ -819,6 +1232,116 @@ mod tests {
              大于它就是漏了",
             PREVIEW_CONCURRENCY
         );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// **G4 的证明: 高清全解码占满 full 闸门时, 普通预览照常通过。**
+    ///
+    /// 这是拆闸门的**用户可感**收益: 一张慢 DNG 正在全解码(手机端"高清"转圈)时,
+    /// 下一张照片的默认预览(以及缩略图)不该跟着排队。
+    ///
+    /// 三条断言:
+    ///   1. 8 个普通预览在 full 闸门满着期间全部跑完 —— 若两条闸门共享状态, 这里会超时;
+    ///   2. full 闸门全程保持满(不是它先放开了);
+    ///   3. 预览有自己的、≥2 的并行峰值(非空断言: 它们真的撞在一起过)。
+    #[tokio::test]
+    async fn previews_do_not_queue_behind_a_fully_busy_full_decode_gate() {
+        gate_probe::reset(GateKind::Full);
+        gate_probe::reset(GateKind::Preview);
+
+        // 占满全解码闸门(预算来自 FULL_CONCURRENCY, 不是写死的 1)
+        let held = MediaGate::full().await;
+        assert_eq!(
+            gate_probe::in_flight(GateKind::Full),
+            FULL_CONCURRENCY,
+            "全解码闸门必须已经被占满, 否则这条测试什么都没测"
+        );
+
+        let dir = tmp_dir("fullgate");
+        let p = dir.join("p.jpg");
+        write_plain_jpeg(&p, 1600, 1200);
+        let path = p.to_str().unwrap().to_string();
+
+        let timed_out = tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            drive_concurrently(PREVIEW_CONCURRENCY * 4, |_| {
+                let path = path.clone();
+                async move {
+                    preview_bytes(&path, 1024, false)
+                        .await
+                        .expect("预览应成功");
+                }
+            }),
+        )
+        .await;
+        timed_out.expect(
+            "普通预览不该排在正在进行的全解码后面\
+             (两条闸门若共享状态, 这里会死等到超时)",
+        );
+
+        assert_eq!(
+            gate_probe::in_flight(GateKind::Full),
+            FULL_CONCURRENCY,
+            "全解码闸门在这期间必须一直满着(否则'没排队'可能是因为它先放开了)"
+        );
+        assert_eq!(
+            gate_probe::in_flight(GateKind::Preview),
+            0,
+            "普通预览跑完后它自己的在飞计数必须归零"
+        );
+        let preview_peak = gate_probe::peak_in_flight(GateKind::Preview);
+        assert!(
+            preview_peak >= 2,
+            "普通预览闸门峰值只有 {} —— 请求根本没重叠, 这条测试没测到隔离性",
+            preview_peak
+        );
+        assert!(
+            preview_peak <= PREVIEW_CONCURRENCY,
+            "普通预览闸门峰值 {} 超过了自己的预算 {}",
+            preview_peak,
+            PREVIEW_CONCURRENCY
+        );
+
+        drop(held);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// `full=true` 必须走 full 闸门, 不能绕过去: 全解码闸门被占满时它得等, 放行后才成功。
+    ///
+    /// 负向断言(100ms 内没完成)是**确定**的: 那条路上唯一会让它提前完成的原因就是它
+    /// 用了别的闸门(或没有闸门)。放行后再正向确认它能成功。
+    #[tokio::test]
+    async fn full_requests_wait_on_the_full_decode_gate() {
+        gate_probe::reset(GateKind::Full);
+        let held = MediaGate::full().await;
+
+        let dir = tmp_dir("fullgate2");
+        let p = dir.join("p.jpg");
+        write_plain_jpeg(&p, 320, 240);
+        let path = p.to_str().unwrap().to_string();
+
+        let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let done_in_task = std::sync::Arc::clone(&done);
+        let handle = tokio::spawn(async move {
+            preview_bytes(&path, 2048, true)
+                .await
+                .expect("放行后高清应成功");
+            done_in_task.store(true, std::sync::atomic::Ordering::SeqCst);
+        });
+
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        assert!(
+            !done.load(std::sync::atomic::Ordering::SeqCst),
+            "full 闸门被占满时 full=true 必须等待; 立刻完成说明它绕过了这道闸门"
+        );
+
+        drop(held);
+        tokio::time::timeout(std::time::Duration::from_secs(10), handle)
+            .await
+            .expect("放行后高清请求应完成")
+            .expect("任务不该 panic");
+        assert!(done.load(std::sync::atomic::Ordering::SeqCst));
 
         std::fs::remove_dir_all(&dir).ok();
     }

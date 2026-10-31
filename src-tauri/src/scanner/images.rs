@@ -170,6 +170,35 @@ pub async fn get_preview_image(file_path: String) -> Result<String, String> {
     Err("No preview available".into())
 }
 
+/// **debug 构建专用的 DNG 分支计时器**(G2)。
+///
+/// 一张 50MB 线性 DNG 的全解码可能卡在三个完全不同的地方: rawler 的传感器解码、
+/// tinydng 的线性化、Windows Imaging Component 的系统 codec。release 里它们是一条
+/// "谁先成功用谁"的静默链, 只看总耗时无法判断该优化哪一步。所以这里给每个**尝试过的**
+/// 分支打一行(成功/失败 + 毫秒); release 构建里整个日志块被 cfg 掉, 函数退化成直通。
+///
+/// 时间包含该分支自己的解码**和写缓存**(`save_full_res_image`) —— 用户等待的就是这两步。
+#[inline]
+fn time_dng_branch<T>(name: &str, f: impl FnOnce() -> Option<T>) -> Option<T> {
+    #[cfg(debug_assertions)]
+    {
+        let started = std::time::Instant::now();
+        let out = f();
+        eprintln!(
+            "[preview] dng branch={} ok={} ms={}",
+            name,
+            out.is_some(),
+            started.elapsed().as_millis()
+        );
+        out
+    }
+    #[cfg(not(debug_assertions))]
+    {
+        let _ = name;
+        f()
+    }
+}
+
 /// Get full-resolution image for viewer.
 /// JPEG/PNG → returns original path (zero decode, instant).
 /// RAW → WIC 系统codec → rawler 全解码, cached to disk as JPEG.
@@ -221,15 +250,19 @@ pub async fn get_full_image(file_path: String) -> Result<String, String> {
             let fp = file_path.clone();
             let cc = cache_path_clone.clone();
             if tokio::task::spawn_blocking(move || {
-                if let Ok(img) = decode_raw_slow(std::path::Path::new(&fp)) {
-                    if save_full_res_image(img, std::path::Path::new(&fp), &cc).is_ok() {
-                        return Some(cc.to_string_lossy().to_string());
-                    }
+                if let Some(done) = time_dng_branch("rawler", || {
+                    let img = decode_raw_slow(std::path::Path::new(&fp)).ok()?;
+                    save_full_res_image(img, std::path::Path::new(&fp), &cc).ok()?;
+                    Some(cc.to_string_lossy().to_string())
+                }) {
+                    return Some(done);
                 }
-                if let Some(img) = crate::tinydng::decode_dng_tinydng(&fp) {
-                    if save_full_res_image(img, std::path::Path::new(&fp), &cc).is_ok() {
-                        return Some(cc.to_string_lossy().to_string());
-                    }
+                if let Some(done) = time_dng_branch("tinydng", || {
+                    let img = crate::tinydng::decode_dng_tinydng(&fp)?;
+                    save_full_res_image(img, std::path::Path::new(&fp), &cc).ok()?;
+                    Some(cc.to_string_lossy().to_string())
+                }) {
+                    return Some(done);
                 }
                 None
             })
@@ -245,14 +278,16 @@ pub async fn get_full_image(file_path: String) -> Result<String, String> {
             let fp = file_path.clone();
             let cc = cache_path_clone.clone();
             if tokio::task::spawn_blocking(move || {
-                if let Some(img) = crate::win_wic::decode_raw_wic(&fp) {
+                time_dng_branch("wic", || {
+                    let img = crate::win_wic::decode_raw_wic(&fp)?;
                     let img = resize_max_edge(img, 5000);
                     let img = apply_exif_orientation(std::path::Path::new(&fp), img);
-                    if is_full_res_image(&img) && img.save(&cc).is_ok() {
-                        return Some(cc.to_string_lossy().to_string());
+                    if !is_full_res_image(&img) {
+                        return None;
                     }
-                }
-                None
+                    img.save(&cc).ok()?;
+                    Some(cc.to_string_lossy().to_string())
+                })
             })
             .await
             .unwrap_or(None)
