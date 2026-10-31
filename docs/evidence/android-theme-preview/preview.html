@@ -1,0 +1,367 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ImageFilter · Android 深色主题预渲染</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    html, body { margin: 0; padding: 0; }
+    body {
+      font-family: "Segoe UI", -apple-system, BlinkMacSystemFont, "PingFang SC",
+        "Microsoft YaHei", system-ui, sans-serif;
+      -webkit-font-smoothing: antialiased;
+      text-rendering: optimizeLegibility;
+    }
+    .phone { width: 360px; height: 800px; }
+    .hairline { box-shadow: inset 0 0 0 1px rgba(255,255,255,.08); }
+    .tnum { font-variant-numeric: tabular-nums; }
+    .mono { font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace; }
+    .photo-a { background: radial-gradient(circle at 30% 18%, rgba(255,236,210,.55), transparent 38%), linear-gradient(140deg,#2a1b14 0%,#6e422b 42%,#c58b5f 72%,#f0d2b4 100%); }
+    .photo-b { background: radial-gradient(circle at 70% 15%, rgba(210,235,255,.45), transparent 42%), linear-gradient(155deg,#0b1725 0%,#1c3247 45%,#4f7c9e 76%,#a9c6d8 100%); }
+    .photo-c { background: radial-gradient(circle at 25% 20%, rgba(230,255,210,.35), transparent 40%), linear-gradient(140deg,#12210f 0%,#2d4a24 45%,#5f7b3e 74%,#a9b97a 100%); }
+    .photo-d { background: radial-gradient(circle at 65% 22%, rgba(255,220,235,.45), transparent 42%), linear-gradient(150deg,#241322 0%,#4b2743 45%,#8c5574 74%,#d3a2b8 100%); }
+    .photo-e { background: radial-gradient(circle at 40% 18%, rgba(255,255,255,.25), transparent 40%), linear-gradient(135deg,#0d0d0d 0%,#272727 50%,#555 80%,#8a8a8a 100%); }
+    .photo-f { background: radial-gradient(circle at 20% 25%, rgba(255,240,220,.4), transparent 38%), linear-gradient(160deg,#1a1510 0%,#3a2b1c 45%,#7a5a36 75%,#c9a06a 100%); }
+    .photo-g { background: radial-gradient(circle at 75% 20%, rgba(235,245,255,.35), transparent 40%), linear-gradient(135deg,#101820 0%,#24384a 48%,#4f7186 76%,#9cb6c4 100%); }
+    .photo-h { background: radial-gradient(circle at 30% 22%, rgba(255,230,235,.35), transparent 38%), linear-gradient(150deg,#1f1012 0%,#4a2228 45%,#8a4a52 74%,#c98d94 100%); }
+  </style>
+</head>
+<body class="bg-[#050506] text-[#F4F4F5] min-h-screen">
+  <div class="w-full max-w-[1600px] mx-auto px-10 pt-8 pb-10">
+    <!-- header -->
+    <div class="flex items-end justify-between mb-8">
+      <div>
+        <div class="text-[11px] tracking-[0.22em] text-[#71717A]">IMAGEFILTER · ANDROID</div>
+        <h1 class="mt-2 text-[24px] font-semibold tracking-tight leading-tight text-[#F4F4F5]">深色主题预渲染</h1>
+      </div>
+      <div class="text-[12px] text-[#71717A]">目录 · 网格 · 查看器 · 滑卡</div>
+    </div>
+
+    <div class="flex flex-wrap justify-center gap-6">
+
+      <!-- ══════════════════ 1. 目录 ══════════════════ -->
+      <div class="phone relative rounded-[28px] overflow-hidden bg-[#09090B] shadow-[0_0_0_1px_rgba(255,255,255,.08),0_30px_90px_rgba(0,0,0,.55)]">
+        <!-- status bar -->
+        <div class="h-6 px-5 flex items-center justify-between text-[11px] text-[#9F9FA9]">
+          <span class="tnum">9:41</span>
+          <div class="flex items-center gap-1.5">
+            <svg width="14" height="10" viewBox="0 0 14 10" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M1 6.5h1.5M5 4.5h1.5M9 2.5h1.5M13 1h1.5"/></svg>
+            <svg width="14" height="10" viewBox="0 0 14 10" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M1 3.5a9 9 0 0 1 12 0M3.5 6a5.5 5.5 0 0 1 7 0M6 8.2a2 2 0 0 1 2 0"/></svg>
+            <svg width="16" height="10" viewBox="0 0 16 10" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="1" y="2" width="12" height="6" rx="1.5"/><path d="M14.5 4v2"/><rect x="2.5" y="3.5" width="8" height="3" rx=".5" fill="currentColor" stroke="none"/></svg>
+          </div>
+        </div>
+
+        <!-- top bar -->
+        <div class="h-14 px-2 flex items-center justify-between">
+          <button class="h-12 px-3 rounded-[8px] text-[14px] text-[#9F9FA9]">目录</button>
+          <div class="text-[16px] font-medium text-[#F4F4F5]">浏览</div>
+          <button class="h-12 px-3 rounded-[8px] text-[14px] text-[#9F9FA9]">设置</button>
+        </div>
+        <div class="h-px bg-white/[0.08]"></div>
+
+        <div class="p-5">
+          <div class="text-[20px] font-semibold tracking-tight">2026-10 婚礼</div>
+          <div class="mt-1 text-[12px] text-[#9F9FA9] mono truncate">F:\照片\2026\婚礼</div>
+
+          <button class="mt-4 w-full h-12 rounded-[10px] bg-[#00BC7D] text-[#00120B] text-[14px] font-medium">
+            打开这个文件夹的照片
+          </button>
+
+          <div class="mt-6 flex items-center justify-between">
+            <div class="text-[11px] tracking-[0.12em] text-[#71717A]">子目录</div>
+            <div class="text-[11px] text-[#71717A] tnum">12</div>
+          </div>
+
+          <div class="mt-1">
+            <div class="h-14 px-2 rounded-[8px] flex items-center gap-3 hover:bg-[#27272A]">
+              <span class="text-[12px] text-[#71717A]">▸</span>
+              <div class="flex-1 min-w-0">
+                <div class="text-[15px] truncate">01 选片</div>
+                <div class="text-[11px] text-[#71717A] tnum">128 张 · 今天 14:02</div>
+              </div>
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#71717A" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>
+            </div>
+            <div class="h-14 px-2 rounded-[8px] flex items-center gap-3 hover:bg-[#27272A]">
+              <span class="text-[12px] text-[#71717A]">▸</span>
+              <div class="flex-1 min-w-0">
+                <div class="text-[15px] truncate">02 精修</div>
+                <div class="text-[11px] text-[#71717A] tnum">64 张 · 今天 13:40</div>
+              </div>
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#71717A" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>
+            </div>
+            <div class="relative h-14 px-2 rounded-[8px] flex items-center gap-3 bg-[#27272A] shadow-[inset_0_0_0_1px_rgba(255,255,255,.08)]">
+              <div class="absolute left-0 top-1/2 -translate-y-1/2 w-[3px] h-4 rounded-full bg-[#00BC7D]"></div>
+              <span class="text-[12px] text-[#00BC7D]">▾</span>
+              <div class="flex-1 min-w-0">
+                <div class="text-[15px] text-[#F4F4F5] truncate">03 输出</div>
+                <div class="text-[11px] text-[#9F9FA9] tnum">42 张 · 刚刚</div>
+              </div>
+            </div>
+            <div class="h-14 px-2 rounded-[8px] flex items-center gap-3 hover:bg-[#27272A]">
+              <span class="text-[12px] text-[#71717A]">▸</span>
+              <div class="flex-1 min-w-0">
+                <div class="text-[15px] truncate">RAW 原始</div>
+                <div class="text-[11px] text-[#71717A] tnum">146 张 · 昨天</div>
+              </div>
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#71717A" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>
+            </div>
+            <div class="h-14 px-2 rounded-[8px] flex items-center gap-3 hover:bg-[#27272A]">
+              <span class="text-[12px] text-[#71717A]">▸</span>
+              <div class="flex-1 min-w-0">
+                <div class="text-[15px] truncate">视频</div>
+                <div class="text-[11px] text-[#71717A] tnum">6 条 · 昨天</div>
+              </div>
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#71717A" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>
+            </div>
+          </div>
+
+          <div class="mt-5 flex items-center gap-2 text-[11px] text-[#71717A]">
+            <span class="w-1.5 h-1.5 rounded-full bg-[#00BC7D]"></span>
+            电脑在线 · 192.168.1.20:8765
+          </div>
+        </div>
+
+        <div class="absolute bottom-2 left-1/2 -translate-x-1/2 w-24 h-1 rounded-full bg-white/20"></div>
+      </div>
+
+      <!-- ══════════════════ 2. 网格 ══════════════════ -->
+      <div class="phone relative rounded-[28px] overflow-hidden bg-[#09090B] shadow-[0_0_0_1px_rgba(255,255,255,.08),0_30px_90px_rgba(0,0,0,.55)]">
+        <div class="h-6 px-5 flex items-center justify-between text-[11px] text-[#9F9FA9]">
+          <span class="tnum">9:41</span>
+          <div class="flex items-center gap-1.5">
+            <svg width="14" height="10" viewBox="0 0 14 10" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M1 6.5h1.5M5 4.5h1.5M9 2.5h1.5M13 1h1.5"/></svg>
+            <svg width="14" height="10" viewBox="0 0 14 10" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M1 3.5a9 9 0 0 1 12 0M3.5 6a5.5 5.5 0 0 1 7 0M6 8.2a2 2 0 0 1 2 0"/></svg>
+            <svg width="16" height="10" viewBox="0 0 16 10" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="1" y="2" width="12" height="6" rx="1.5"/><path d="M14.5 4v2"/><rect x="2.5" y="3.5" width="8" height="3" rx=".5" fill="currentColor" stroke="none"/></svg>
+          </div>
+        </div>
+
+        <div class="h-14 px-2 flex items-center gap-1">
+          <button class="w-11 h-12 rounded-[8px] flex items-center justify-center text-[#9F9FA9]">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/></svg>
+          </button>
+          <div class="flex-1 min-w-0">
+            <div class="text-[16px] font-medium truncate">婚礼</div>
+            <div class="text-[11px] text-[#71717A] tnum">380 张</div>
+          </div>
+          <div class="flex items-center gap-0.5">
+            <button class="relative h-12 px-3 rounded-[8px] text-[13px] text-[#00BC7D] font-medium">筛片
+              <span class="absolute top-2 right-1 min-w-[15px] h-[15px] px-1 rounded-full bg-[#FFB900] text-[#2A1A00] text-[9px] font-semibold flex items-center justify-center tnum">2</span>
+            </button>
+            <button class="h-12 px-3 rounded-[8px] text-[13px] text-[#9F9FA9]">刷新</button>
+          </div>
+        </div>
+        <div class="h-px bg-white/[0.08]"></div>
+
+        <div class="px-5 pt-2 text-[10px] text-[#71717A] mono truncate">F:\照片\2026\婚礼</div>
+
+        <!-- filter summary -->
+        <div class="mx-4 mt-2 h-11 px-3 rounded-[10px] bg-[#121214] shadow-[inset_0_0_0_1px_rgba(255,255,255,.08)] flex items-center gap-2">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#9F9FA9" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 5h18M6 12h12M10 19h4"/></svg>
+          <div class="flex-1 text-[12px] text-[#F4F4F5] truncate">≥3★ · 红 · 未同步</div>
+          <div class="text-[11px] text-[#9F9FA9] tnum">42/380</div>
+        </div>
+
+        <!-- grid -->
+        <div class="px-4 pt-3 grid grid-cols-3 gap-1">
+          <!-- 1 -->
+          <div class="relative aspect-square rounded-[4px] overflow-hidden photo-a shadow-[inset_0_0_0_1.5px_rgba(255,185,0,.85)]">
+            <span class="absolute top-1.5 left-1.5 w-2 h-2 rounded-full bg-[#FB2C36] shadow-[0_0_0_1px_rgba(0,0,0,.35)]"></span>
+            <span class="absolute bottom-1.5 right-1.5 px-1 h-[15px] rounded-[4px] bg-black/65 text-[#FFB900] text-[10px] font-semibold flex items-center tnum">★4</span>
+          </div>
+          <!-- 2 -->
+          <div class="relative aspect-square rounded-[4px] overflow-hidden photo-b">
+            <span class="absolute bottom-1.5 right-1.5 px-1 h-[15px] rounded-[4px] bg-black/65 text-[#FFB900] text-[10px] font-semibold flex items-center tnum">★5</span>
+          </div>
+          <!-- 3 -->
+          <div class="relative aspect-square rounded-[4px] overflow-hidden photo-c">
+            <span class="absolute inset-0 bg-black/55"></span>
+            <span class="absolute top-1.5 left-1.5 w-2 h-2 rounded-full bg-[#2B7FFF] shadow-[0_0_0_1px_rgba(0,0,0,.35)]"></span>
+            <span class="absolute bottom-1.5 right-1.5 px-1 h-[15px] rounded-[4px] bg-black/65 text-[#F4F4F5] text-[10px] font-semibold flex items-center">✕</span>
+          </div>
+          <!-- 4 -->
+          <div class="relative aspect-square rounded-[4px] overflow-hidden photo-d">
+            <span class="absolute top-1.5 left-1.5 w-2 h-2 rounded-full bg-[#00C950] shadow-[0_0_0_1px_rgba(0,0,0,.35)]"></span>
+            <span class="absolute bottom-1.5 right-1.5 px-1 h-[15px] rounded-[4px] bg-black/65 text-[#FFB900] text-[10px] font-semibold flex items-center tnum">★3</span>
+          </div>
+          <!-- 5 -->
+          <div class="relative aspect-square rounded-[4px] overflow-hidden photo-e shadow-[inset_0_0_0_1.5px_rgba(255,185,0,.85)]">
+            <span class="absolute bottom-1.5 right-1.5 px-1 h-[15px] rounded-[4px] bg-black/65 text-[#FFB900] text-[10px] font-semibold flex items-center tnum">★4</span>
+          </div>
+          <!-- 6 -->
+          <div class="relative aspect-square rounded-[4px] overflow-hidden photo-f">
+            <span class="absolute top-1.5 left-1.5 w-2 h-2 rounded-full bg-[#AD46FF] shadow-[0_0_0_1px_rgba(0,0,0,.35)]"></span>
+            <span class="absolute bottom-1.5 right-1.5 px-1 h-[15px] rounded-[4px] bg-black/65 text-[#FFB900] text-[10px] font-semibold flex items-center tnum">★2</span>
+          </div>
+          <!-- 7 unknown -->
+          <div class="relative aspect-square rounded-[4px] overflow-hidden photo-g shadow-[inset_0_0_0_1.5px_rgba(159,159,169,.55)] border border-dashed border-white/25">
+            <span class="absolute top-1.5 left-1.5 w-2 h-2 rounded-full bg-[#F0B100] shadow-[0_0_0_1px_rgba(0,0,0,.35)]"></span>
+            <span class="absolute bottom-1.5 right-1.5 px-1 h-[15px] rounded-[4px] bg-[#2A1A00]/90 text-[#FFB900] text-[10px] font-semibold flex items-center">?</span>
+          </div>
+          <!-- 8 -->
+          <div class="relative aspect-square rounded-[4px] overflow-hidden photo-h">
+            <span class="absolute bottom-1.5 right-1.5 px-1 h-[15px] rounded-[4px] bg-black/65 text-[#FFB900] text-[10px] font-semibold flex items-center tnum">★1</span>
+          </div>
+          <!-- 9 -->
+          <div class="relative aspect-square rounded-[4px] overflow-hidden photo-b"></div>
+          <!-- 10 -->
+          <div class="relative aspect-square rounded-[4px] overflow-hidden photo-f">
+            <span class="absolute top-1.5 left-1.5 w-2 h-2 rounded-full bg-[#FB2C36] shadow-[0_0_0_1px_rgba(0,0,0,.35)]"></span>
+            <span class="absolute bottom-1.5 right-1.5 px-1 h-[15px] rounded-[4px] bg-black/65 text-[#FFB900] text-[10px] font-semibold flex items-center tnum">★3</span>
+          </div>
+          <!-- 11 -->
+          <div class="relative aspect-square rounded-[4px] overflow-hidden photo-e">
+            <span class="absolute bottom-1.5 right-1.5 px-1 h-[15px] rounded-[4px] bg-black/65 text-[#FFB900] text-[10px] font-semibold flex items-center tnum">★4</span>
+          </div>
+          <!-- 12 -->
+          <div class="relative aspect-square rounded-[4px] overflow-hidden photo-c">
+            <span class="absolute top-1.5 left-1.5 w-2 h-2 rounded-full bg-[#00C950] shadow-[0_0_0_1px_rgba(0,0,0,.35)]"></span>
+            <span class="absolute bottom-1.5 right-1.5 px-1 h-[15px] rounded-[4px] bg-black/65 text-[#FFB900] text-[10px] font-semibold flex items-center tnum">★5</span>
+          </div>
+        </div>
+
+        <!-- primary action -->
+        <div class="absolute bottom-6 left-4 right-4 h-12 rounded-[10px] bg-[#00BC7D] text-[#00120B] flex items-center justify-between px-4 shadow-[0_8px_24px_rgba(0,188,125,.22)]">
+          <div class="flex items-center gap-2 text-[14px] font-semibold">
+            <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M7 12h10M10 17h4"/></svg>
+            开始筛片
+          </div>
+          <div class="text-[12px] font-medium tnum opacity-80">42 张</div>
+        </div>
+
+        <div class="absolute bottom-2 left-1/2 -translate-x-1/2 w-24 h-1 rounded-full bg-white/20"></div>
+      </div>
+
+      <!-- ══════════════════ 3. 查看器 ══════════════════ -->
+      <div class="phone relative rounded-[28px] overflow-hidden bg-black flex flex-col shadow-[0_0_0_1px_rgba(255,255,255,.08),0_30px_90px_rgba(0,0,0,.55)]">
+        <div class="h-6 px-5 flex items-center justify-between text-[11px] text-[#9F9FA9]">
+          <span class="tnum">9:41</span>
+          <div class="flex items-center gap-1.5">
+            <svg width="14" height="10" viewBox="0 0 14 10" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M1 6.5h1.5M5 4.5h1.5M9 2.5h1.5M13 1h1.5"/></svg>
+            <svg width="14" height="10" viewBox="0 0 14 10" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M1 3.5a9 9 0 0 1 12 0M3.5 6a5.5 5.5 0 0 1 7 0M6 8.2a2 2 0 0 1 2 0"/></svg>
+            <svg width="16" height="10" viewBox="0 0 16 10" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="1" y="2" width="12" height="6" rx="1.5"/><path d="M14.5 4v2"/><rect x="2.5" y="3.5" width="8" height="3" rx=".5" fill="currentColor" stroke="none"/></svg>
+          </div>
+        </div>
+
+        <div class="h-14 px-4 flex items-center justify-between bg-gradient-to-b from-black/85 to-transparent">
+          <button class="w-10 h-10 -ml-2 rounded-[8px] flex items-center justify-center text-[#F4F4F5]">
+            <svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/></svg>
+          </button>
+          <div class="flex-1 min-w-0 px-2">
+            <div class="text-[11px] text-[#9F9FA9] mono truncate">DSC_4821.NEF · 12 / 380</div>
+          </div>
+          <button class="h-10 px-2 text-[12px] text-[#00BC7D] font-medium">高清</button>
+        </div>
+
+        <div class="flex-1 min-h-0 px-4 flex items-center justify-center">
+          <div class="w-full aspect-[4/5] rounded-[4px] overflow-hidden photo-a shadow-[0_18px_60px_rgba(0,0,0,.65)]"></div>
+        </div>
+
+        <div class="pt-10 pb-7 px-4 bg-gradient-to-t from-black via-black/90 to-transparent">
+          <div class="flex items-center gap-2">
+            <button class="h-9 px-2.5 rounded-[8px] text-[12px] text-[#9F9FA9]">✕ 废弃</button>
+            <div class="flex-1 flex items-center justify-end gap-1">
+              <span class="text-[24px] leading-none text-[#FFB900]">★</span>
+              <span class="text-[24px] leading-none text-[#FFB900]">★</span>
+              <span class="text-[24px] leading-none text-[#FFB900]">★</span>
+              <span class="text-[24px] leading-none text-[#FFB900]">★</span>
+              <span class="text-[24px] leading-none text-[#3F3F46]">☆</span>
+            </div>
+          </div>
+          <div class="mt-1 text-[10px] text-[#71717A]">电脑上：4★ · 已同步</div>
+
+          <div class="mt-3 flex items-center gap-2">
+            <span class="text-[11px] text-[#9F9FA9]">色标</span>
+            <span class="w-[22px] h-[22px] rounded-full bg-[#FB2C36] shadow-[0_0_0_2px_#F4F4F5]"></span>
+            <span class="w-[22px] h-[22px] rounded-full bg-[#F0B100]"></span>
+            <span class="w-[22px] h-[22px] rounded-full bg-[#00C950]"></span>
+            <span class="w-[22px] h-[22px] rounded-full bg-[#2B7FFF]"></span>
+            <span class="w-[22px] h-[22px] rounded-full bg-[#AD46FF]"></span>
+            <span class="flex-1"></span>
+            <span class="text-[11px] text-[#9F9FA9]">标签：红</span>
+          </div>
+        </div>
+
+        <div class="absolute bottom-2 left-1/2 -translate-x-1/2 w-24 h-1 rounded-full bg-white/25"></div>
+      </div>
+
+      <!-- ══════════════════ 4. 滑卡 ══════════════════ -->
+      <div class="phone relative rounded-[28px] overflow-hidden bg-[#050506] flex flex-col shadow-[0_0_0_1px_rgba(255,255,255,.08),0_30px_90px_rgba(0,0,0,.55)]">
+        <div class="h-6 px-5 flex items-center justify-between text-[11px] text-[#9F9FA9]">
+          <span class="tnum">9:41</span>
+          <div class="flex items-center gap-1.5">
+            <svg width="14" height="10" viewBox="0 0 14 10" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M1 6.5h1.5M5 4.5h1.5M9 2.5h1.5M13 1h1.5"/></svg>
+            <svg width="14" height="10" viewBox="0 0 14 10" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M1 3.5a9 9 0 0 1 12 0M3.5 6a5.5 5.5 0 0 1 7 0M6 8.2a2 2 0 0 1 2 0"/></svg>
+            <svg width="16" height="10" viewBox="0 0 16 10" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="1" y="2" width="12" height="6" rx="1.5"/><path d="M14.5 4v2"/><rect x="2.5" y="3.5" width="8" height="3" rx=".5" fill="currentColor" stroke="none"/></svg>
+          </div>
+        </div>
+
+        <div class="h-14 px-3 flex items-center justify-between">
+          <button class="h-11 px-3 rounded-[8px] text-[13px] text-[#9F9FA9] flex items-center gap-1.5">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/></svg>
+            撤销
+          </button>
+          <div class="text-[11px] text-[#9F9FA9] tnum">第 12 / 54 张</div>
+          <button class="h-11 px-3 rounded-[8px] text-[13px] text-[#9F9FA9]">关闭</button>
+        </div>
+        <div class="h-px bg-white/[0.08]"></div>
+
+        <!-- card stack -->
+        <div class="relative flex-1 min-h-0 mx-4 mt-5">
+          <div class="absolute inset-x-3 top-3 bottom-0 rounded-[12px] bg-[#18181B] shadow-[inset_0_0_0_1px_rgba(255,255,255,.06)]"></div>
+          <div class="absolute inset-0 rounded-[12px] overflow-hidden photo-a rotate-[2.5deg] translate-x-2 shadow-[0_24px_70px_rgba(0,0,0,.75)]">
+            <div class="absolute inset-0 bg-gradient-to-t from-black/30 via-transparent to-black/10"></div>
+            <!-- keep stamp -->
+            <div class="absolute top-5 left-4 -rotate-[12deg] px-3 py-1.5 rounded-[6px] border-2 border-[#00BC7D] text-[#00BC7D] text-[18px] font-bold tracking-[0.18em] opacity-80">保留</div>
+            <!-- reject stamp faint -->
+            <div class="absolute top-5 right-4 rotate-[12deg] px-3 py-1.5 rounded-[6px] border-2 border-[#FF6467] text-[#FF6467] text-[18px] font-bold tracking-[0.18em] opacity-20">废弃</div>
+          </div>
+        </div>
+
+        <div class="mx-4 mt-3 flex items-center justify-between">
+          <div class="text-[10px] text-[#71717A] mono truncate">DSC_4821.NEF</div>
+          <div class="text-[10px] text-[#71717A]">右滑保留 · 左滑废弃</div>
+        </div>
+
+        <!-- undo pill -->
+        <div class="absolute bottom-[178px] left-1/2 -translate-x-1/2 h-8 px-3 rounded-full bg-[#18181B] shadow-[inset_0_0_0_1px_rgba(255,255,255,.10)] flex items-center gap-1.5 text-[11px] text-[#9F9FA9]">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/></svg>
+          刚刚：保留 3★
+        </div>
+
+        <!-- rating bar -->
+        <div class="mt-auto px-4 pt-3 pb-7 bg-[#121214] shadow-[inset_0_1px_0_rgba(255,255,255,.08)]">
+          <div class="flex items-center gap-2">
+            <button class="h-9 px-2 rounded-[8px] text-[12px] text-[#9F9FA9]">✕ 废弃</button>
+            <div class="flex-1 flex items-center justify-end gap-1">
+              <span class="text-[22px] leading-none text-[#FFB900]">★</span>
+              <span class="text-[22px] leading-none text-[#FFB900]">★</span>
+              <span class="text-[22px] leading-none text-[#FFB900]">★</span>
+              <span class="text-[22px] leading-none text-[#FFB900]">★</span>
+              <span class="text-[22px] leading-none text-[#3F3F46]">☆</span>
+            </div>
+          </div>
+          <div class="mt-1 text-[10px] text-[#71717A]">电脑上：4★ · 已同步</div>
+          <div class="mt-2 flex items-center gap-2">
+            <span class="text-[11px] text-[#9F9FA9]">色标</span>
+            <span class="w-5 h-5 rounded-full bg-[#FB2C36] shadow-[0_0_0_2px_#F4F4F5]"></span>
+            <span class="w-5 h-5 rounded-full bg-[#F0B100]"></span>
+            <span class="w-5 h-5 rounded-full bg-[#00C950]"></span>
+            <span class="w-5 h-5 rounded-full bg-[#2B7FFF]"></span>
+            <span class="w-5 h-5 rounded-full bg-[#AD46FF]"></span>
+            <span class="flex-1"></span>
+            <span class="text-[11px] text-[#9F9FA9]">标签：红</span>
+          </div>
+        </div>
+
+        <div class="absolute bottom-2 left-1/2 -translate-x-1/2 w-24 h-1 rounded-full bg-white/20"></div>
+      </div>
+
+    </div>
+
+    <div class="mt-8 text-center text-[11px] text-[#3F3F46]">
+      目标态预览 · 尺寸 360 × 800 · 实际实现以 Compose 渲染为准
+    </div>
+  </div>
+</body>
+</html>
