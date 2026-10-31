@@ -46,6 +46,8 @@ jobs:
         if: matrix.platform == 'macos-latest'
         run: brew install ffmpeg
 
+      # 发布约束：Release 简介必须使用 ImageFilter vX.Y.Z / 新增功能：/ 条目 的模板。
+      # 对应版本的完整文案写进 docs/ImageFilter-更新说明.md，发布前替换这里的占位。
       - name: Build & upload installers
         uses: tauri-apps/tauri-action@v0
         env:
@@ -54,9 +56,9 @@ jobs:
           tagName: ${{ github.ref_name }}
           releaseName: "ImageFilter ${{ github.ref_name }}"
           releaseBody: |
-            ImageFilter — SD 卡照片智能导入工具
-            - Windows: NSIS (setup.exe) + MSI
-            - macOS: Universal (Intel + Apple Silicon)
+            ImageFilter ${{ github.ref_name }}
+            新增功能：
+            - 请按 docs/ImageFilter-更新说明.md 对应版本段落填写
           args: ${{ matrix.platform == 'macos-latest' && '--target universal-apple-darwin' || '' }}
           releaseDraft: true
           prerelease: false
