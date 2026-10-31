@@ -7,8 +7,8 @@
 > **本文定位**：按日期追加的时间线 / 事故簿 / 决策记录。当前状态与操作以
 > [交接与上手](ImageFilter-交接与上手.md) 为准；待决事项见 [待决清单](ImageFilter-待决清单.md)。
 >
-> 最近更新：2026-10-31 · 对应 `HEAD 39e7188` · 版本 **1.2.1** · 分支 `feat/android-gallery-service`
-> （**领先 origin 9 个 commit，未推送**）；工作区另有未提交的圆角统一（见交接文档）。
+> 最近更新：2026-11-01 · 版本 **1.3.0** · `master` 与
+> `feat/android-gallery-service` 均已推送；v1.3.0 已发布。本文是发布之后的文档提交。
 
 ---
 
@@ -414,3 +414,79 @@ SIMD 缩放 + 双闸门 + 全图缓存。用户验收“差不多了挺快的”
   显示「就绪」；只有“叶子 + 有照片 + 数量显示开启”才显示 `N 张`。视频不计入「张」，
   视频数量仍由目录树的视频角标单独显示。
 - 验证：Rust **196 + 65**；桌面 `tsc`/`build`；安卓 `--tests '*Browse*'` + `assembleDebug`。
+
+---
+
+## 十五、2026-11-01 · v1.3.0 发布（桌面 UI 统一 + 文档/SDD 整理）
+
+### 15.1 这一版做了什么
+
+- **桌面 UI 统一**：语义色令牌（brand / danger / warning / info）、共享
+  `DialogAction` / `SegmentedControl` / `Slider`；设置面板玻璃标题栏、滚动渐隐、
+  焦点环、禁用原因可见；二维码连接改为可折叠按钮；移除「最近连接」。
+- **反馈与可访问性**：toast 分成功 / 失败 / 信息三色并带 `role="status"`；
+  toast 与 tooltip portal 到 `document.body` 顶层，不再被面板/弹窗遮挡。
+- **字体**：正文 Geist + 系统中文字体；展示性标题用衬线（Windows SimSun /
+  macOS Songti），`h1-h2` 与 `DialogTitle` 统一走 `--app-font-serif`。
+- **文档与规范**：新增 `docs/README.md`、归档索引、SDD 生命周期索引；合并
+  1.1.x 更新说明为一份 changelog；归档架构走查与 Phase 1–6 方案；
+  `ui-craft` 补齐细节、组件、状态、无障碍、反馈、滑块等规则。
+- **README**：目录、Why 段、已知限制、参与开发、反馈与致谢；界面截图改为
+  用户提供的 4 图 2×2 画廊（浅色主界面/网格/空状态 + 深色空状态）。
+- **版本**：桌面与 Android 升到 `1.3.0`，Android `versionCode=4`。
+
+### 15.2 事故与处置
+
+1. **Android CI 挂在 `setup-android@v3`**
+   - 现象：`Setup Android SDK` 调 `sdkmanager tools`，报
+     `Failed to find package 'tools'`，单测与 APK 都没跑。
+   - 根因：v3 action 仍安装 SDK 仓库里已被移除的 `tools` 包。
+   - 处置：升到 `android-actions/setup-android@v4.0.4`。tag 的旧 run
+     `41219107617` 仍失败；修复后的分支 run `41219298127` 通过。
+   - 遗留：仓库没配签名 secrets，产物是
+     `imagefilter-mobile-apk-debug-not-for-release`，没有进 Release。
+2. **tauri-action `createRelease` 403**
+   - 现象：Windows / macOS 安装包都构建成功，最后报
+     `Resource not accessible by integration`；运行日志里
+     `GITHUB_TOKEN Permissions: Contents: write` 仍然 403。
+   - 根因：tauri-action 在 tag / `targetCommitish` 场景下创建 release 仍可能被
+     GitHub 拒，属于已知问题。
+   - 处置：先用 `gh release create --draft` 预建 draft，再 rerun 失败 job；
+     tauri-action 找到 draft 后只上传资产。长期修复：`build.yml` 增加
+     **Ensure draft release exists** 步骤（幂等；矩阵并发时用
+     `gh release view` 兜底）。
+3. **README 截图暴露个人照片/设备名**
+   - 现象：第一版新截图用了 `F:\壁纸` 的真实照片和 Hsu/Eleven 设备名。
+   - 处置：先用合成 DEMO 图 + 收起侧栏；之后用户提供 4 张 DEMO 截图并明确授权
+     全部使用，README 改为 2×2 画廊。旧的个人截图提交 `545f6e2` 已 amend 掉；
+     更早的 `assets/screenshot.png` 仍在 git 历史里，当前页面不再引用。
+4. **`origin/master` 与本地分支分叉**
+   - 现象：准备 fast-forward master 时，`origin/master` 多了 3 个 README 提交
+     （删技术栈、改许可、加错代码围栏）。
+   - 处置：merge `origin/master`，README 冲突保留重写后的版本；master 推到
+     `be856ef`，分支同步。远端 3 个提交留在历史，但不覆盖新版 README。
+5. **设置面板 sticky 标题穿帮 / 白线**
+   - 现象：sticky header 在滚动容器 padding 上留 16px 缝，内容从上面露出；
+     `border-b` 是一条硬白线。
+   - 处置：改为固定 header + 独立滚动区；底部过渡改成多段 alpha 渐变，
+     去掉 `backdrop-blur` 条，避免色带和硬边。
+
+### 15.3 验证与产物
+
+- `npm run build` 通过；i18n `zh 384 / en 384`，`PARITY: OK`。
+- 桌面 CI run `41219107634` 重跑成功：Windows `setup.exe` / `msi`，
+  macOS `universal.dmg` / `app.tar.gz`。
+- Release：https://github.com/XUTENGXIANG/ImageFilter/releases/tag/v1.3.0
+  （Latest，4 个资产；tag `v1.3.0` 指向 `289d954`）。
+- `master` / `feat/android-gallery-service` 已推到 `1a63ce2`。
+- Rust 本轮无改动，沿用 `196 + 65` 基线；Android 修复后的 CI 单测通过。
+
+### 15.4 决策
+
+- GitHub Release 简介固定模板：`ImageFilter vX.Y.Z` / `新增功能：` / 条目；
+  发布前按 `docs/ImageFilter-更新说明.md` 对应版本段落填写。
+- 发布 workflow 先预建 draft，再让 tauri-action 只上传资产，避免
+  `createRelease` 403。
+- 截图默认用合成 DEMO 数据；用户明确授权的真实截图除外。
+- 遗留：Android 正式 APK 需要配置签名 secrets 后重跑；`A:\ImageFilter-README-Demo`
+  的合成图目录可删；旧截图要彻底清除需要重写历史，暂不做。
