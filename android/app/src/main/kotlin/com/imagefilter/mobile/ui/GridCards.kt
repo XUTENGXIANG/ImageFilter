@@ -28,12 +28,21 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.PathEffect
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.painter.ColorPainter
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import coil3.ImageLoader
 import coil3.compose.AsyncImage
 import com.imagefilter.mobile.data.ReadAction
+import com.imagefilter.mobile.ui.theme.LocalPhotoPalette
 
 /**
  * 网格页用到的两块小积木(一格 + 读取失败卡)。
@@ -85,6 +94,7 @@ internal fun GridCell(
     /** 长按 = 进入多选模式并选中这一格。 */
     onLongClick: () -> Unit = {},
 ) {
+    val p = LocalPhotoPalette.current
     val unsynced = decision?.sync == SyncState.UNSYNCED
     Box(
         modifier = Modifier
@@ -93,7 +103,7 @@ internal fun GridCell(
             // 未同步: 一圈细边框。**只画边框是不够的** —— 读屏靠 contentDescription 里那个"未同步"
             .then(
                 if (unsynced) {
-                    Modifier.border(2.dp, MaterialTheme.colorScheme.error, RoundedCornerShape(6.dp))
+                    Modifier.border(1.5.dp, p.pending, RoundedCornerShape(6.dp))
                 } else {
                     Modifier
                 },
@@ -102,6 +112,15 @@ internal fun GridCell(
             .then(
                 if (selected) {
                     Modifier.border(4.dp, MaterialTheme.colorScheme.primary, RoundedCornerShape(6.dp))
+                } else {
+                    Modifier
+                },
+            )
+            // "不知道电脑上是几星"用**线型**编码：虚线，与"未同步"的实线琥珀边区分。
+            // 色弱/灰度截图下也能靠线型读出来。
+            .then(
+                if (!ratingKnown && !unsynced) {
+                    Modifier.dashedOutline(p.pending.copy(alpha = 0.65f))
                 } else {
                     Modifier
                 },
@@ -120,6 +139,11 @@ internal fun GridCell(
             error = ColorPainter(MaterialTheme.colorScheme.errorContainer),
             modifier = Modifier.fillMaxSize(),
         )
+
+        // 0 星 = 明确废弃：压一层遮罩，让"我筛掉的"看得见（而不是只有筛选栏才知道）。
+        if (decision?.rating == 0) {
+            Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.55f)))
+        }
 
         val label = decision?.label
         if (label != null) {
@@ -154,14 +178,15 @@ internal fun GridCell(
 /** 右下角的星级角标: 一行短文本 + 半透明底 —— 亮图暗图上都要读得出来。 */
 @Composable
 private fun StarBadge(text: String, modifier: Modifier = Modifier, warning: Boolean = false) {
+    val p = LocalPhotoPalette.current
     Box(
         modifier = modifier
             .clip(RoundedCornerShape(4.dp))
             .background(
                 if (warning) {
-                    MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.9f)
+                    p.pending.copy(alpha = 0.92f)
                 } else {
-                    MaterialTheme.colorScheme.scrim.copy(alpha = 0.6f)
+                    Color.Black.copy(alpha = 0.65f)
                 },
             )
             .padding(horizontal = 4.dp, vertical = 1.dp),
@@ -169,11 +194,9 @@ private fun StarBadge(text: String, modifier: Modifier = Modifier, warning: Bool
         Text(
             text,
             style = MaterialTheme.typography.labelSmall,
-            color = if (warning) {
-                MaterialTheme.colorScheme.onErrorContainer
-            } else {
-                MaterialTheme.colorScheme.inverseOnSurface
-            },
+            // 普通角标压在黑 chip 上 → 恒白(照片上的黑底与主题无关);
+            // 未知角标压在 amber 上 → onAccent 跟着主题走(深色近黑 / 浅色白), 两种都读得清。
+            color = if (warning) p.onAccent else Color.White,
         )
     }
 }
@@ -216,7 +239,15 @@ internal fun ReadFailureCard(
         Column(modifier = Modifier.padding(12.dp)) {
             Text(head, style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.error)
             Spacer(Modifier.size(6.dp))
-            Text(text, style = MaterialTheme.typography.bodySmall)
+            // 长解释默认收成一行：这张卡出现时用户最需要的是「哪几张、怎么办」，
+            // 不是一整段成因分析。全文仍在，点「详情」展开。
+            QuietText(
+                text = text,
+                collapsedLines = 1,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onErrorContainer,
+                linkColor = MaterialTheme.colorScheme.onErrorContainer,
+            )
             Spacer(Modifier.size(4.dp))
             Row(horizontalArrangement = Arrangement.End, modifier = Modifier.fillMaxWidth()) {
                 // 只有"重试读取"需要一个额外的出口: 现在不方便重试的用户可以把这句话收起来。
@@ -238,4 +269,30 @@ internal fun ReadFailureCard(
             }
         }
     }
+}
+
+/**
+ * 虚线描边 —— "这一次没读到电脑上是几星"的线型编码。
+ *
+ * 不用 `Modifier.border`：它不支持 dash；用 drawBehind 画一圈 1.5dp 的虚线，
+ * 与"未同步"的实线琥珀边在灰度下也能分开。
+ */
+private fun Modifier.dashedOutline(
+    color: Color,
+    radius: Dp = 6.dp,
+): Modifier = drawWithContent {
+    drawContent()
+    val w = 1.5.dp.toPx()
+    drawRoundRect(
+        color = color,
+        topLeft = Offset(w / 2f, w / 2f),
+        size = Size(size.width - w, size.height - w),
+        cornerRadius = CornerRadius(radius.toPx()),
+        style = Stroke(
+            width = w,
+            pathEffect = PathEffect.dashPathEffect(
+                floatArrayOf(6.dp.toPx(), 4.dp.toPx()),
+            ),
+        ),
+    )
 }

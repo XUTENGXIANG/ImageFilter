@@ -250,6 +250,59 @@ async fn get_server_clients(
     Ok(state.clients.lock().unwrap_or_else(|e| e.into_inner()).snapshot())
 }
 
+// ── mDNS 配对(计划 §0.3): 六条命令 + 两种事件 ─────────────────────────────
+//
+// 与上面五条同一条纪律: 失败只是 `Err(String)`, 不 panic。实现体全在 `server` 模块里,
+// 这样"窗口到期 / 落盘失败 / 状态机拒绝"这些路径能被单测真的走一遍。
+//
+// 返回 `void` 的四条命令用 `Result<(), String>` —— 前端拿到的 `Err` 是给人看的中文,
+// 直接显示即可(见 `server::pair_error_message`)。
+
+#[tauri::command]
+fn open_pairing_window(
+    state: tauri::State<'_, server::ServerState>,
+) -> Result<server::pairing::PairingWindow, String> {
+    server::open_pairing_window(&state)
+}
+
+#[tauri::command]
+fn close_pairing_window(state: tauri::State<'_, server::ServerState>) -> Result<(), String> {
+    server::close_pairing_window(&state)
+}
+
+#[tauri::command]
+fn pairing_status(
+    state: tauri::State<'_, server::ServerState>,
+) -> Result<server::pairing::PairingStatus, String> {
+    server::pairing_status_of(&state)
+}
+
+#[tauri::command]
+async fn approve_pairing(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, server::ServerState>,
+    request_id: String,
+) -> Result<(), String> {
+    server::approve_pairing(&state, &server::app_data_dir(&app)?, &request_id).await
+}
+
+#[tauri::command]
+fn deny_pairing(
+    state: tauri::State<'_, server::ServerState>,
+    request_id: String,
+) -> Result<(), String> {
+    server::deny_pairing(&state, &request_id)
+}
+
+#[tauri::command]
+async fn forget_paired_device(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, server::ServerState>,
+    device_id: String,
+) -> Result<(), String> {
+    server::forget_paired_device(&state, &server::app_data_dir(&app)?, &device_id).await
+}
+
 /// 加入一个共享根。**只接受已存在的目录**(空 = 谁都访问不了, 是安全默认值)。
 #[tauri::command]
 async fn add_share(
@@ -287,6 +340,26 @@ fn decisions_notifier(app: tauri::AppHandle) -> server::Notify {
         // Tauri v2 的 `emit` 定义在 `Emitter` trait 上: **不 use 就编译不过**。
         use tauri::Emitter as _;
         let _ = app.emit("decisions-changed", serde_json::json!({ "paths": paths }));
+    })
+}
+
+/// 配对事件(`pairing-request` / `pairing-changed`)的发送端 —— 与 `decisions_notifier`
+/// 完全同一条类型擦除纪律: **只有这里知道 Tauri**。
+///
+/// 两个事件的名字与负载是 §0.3 的冻结契约:
+///   · `pairing-request` → `PendingPairing`(桌面端据此弹确认框);
+///   · `pairing-changed` → `PairingStatus`(批准/拒绝/过期/移除后刷新列表)。
+fn pairing_notifier(app: tauri::AppHandle) -> server::pairing::PairingNotify {
+    std::sync::Arc::new(move |event: server::pairing::PairingEvent| {
+        use tauri::Emitter as _;
+        match event {
+            server::pairing::PairingEvent::Request(pending) => {
+                let _ = app.emit("pairing-request", pending);
+            }
+            server::pairing::PairingEvent::Changed(status) => {
+                let _ = app.emit("pairing-changed", status);
+            }
+        }
     })
 }
 
@@ -365,8 +438,14 @@ pub fn run() {
             //   · 关闭时连服务任务都不 spawn: `wants_start` 为 false 就到此为止;
             //   · 开启时只在后台任务里尽力起服务, 失败留下一句可见的理由 + 一行 stderr，
             //     setup 立刻返回 —— 启动快慢与端口绑定的快慢无关。
+            // `into_state_with_notifiers`(而不是 `_with_notify`): 正式运行**同时**要
+            // `decisions-changed` 与配对事件, 并且只有这一条入口会给真的 mDNS 广播端。
+            // 测试路径永远走 `into_state()`, 于是永远不会真的起组播(见 `ServerState::advertiser`)。
             let server_state = server::config::ServerConfig::load(&app_data_dir)
-                .into_state_with_notify(decisions_notifier(app_handle.clone()));
+                .into_state_with_notifiers(
+                    decisions_notifier(app_handle.clone()),
+                    pairing_notifier(app_handle.clone()),
+                );
             let start_service_now = server::wants_start(&server_state);
             app_handle.manage(server_state.clone());
             if start_service_now {
@@ -429,6 +508,13 @@ pub fn run() {
             get_server_pairing_qr,
             set_server_read_only,
             get_server_clients,
+            // mDNS 配对(计划 §0.3): 窗口、状态、批准/拒绝、忘记设备。
+            open_pairing_window,
+            close_pairing_window,
+            pairing_status,
+            approve_pairing,
+            deny_pairing,
+            forget_paired_device,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -1,10 +1,13 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- Copyright (c) 2026 XUTENGXIANG / SPDX-License-Identifier: MIT -->
 <!--
-  自适应图标前景层: 一张"照片"(浅色圆角矩形) + 山 + 太阳(琥珀).
+  自适应图标前景层: 与桌面端 `src-tauri/icons/icon.png` 同一个标记 ——
+  青色圆环 + 两条支腿 + 中间实心楔形。颜色取自桌面 PNG:
+  标记 #10B981、背景 #18181B(见 values/ic_launcher_background.xml)。
+
   刻意用矢量而不是 PNG: 仓库保持纯文本, 图标也能在 diff 里被评审。
-  取景范围 28..80(共 52dp) 落在自适应图标 108dp 画布的 66dp 安全区内,
-  所以任何厂商的遮罩(圆/方/水滴)都不会切掉主体。
+  原始几何按 512px 画布绘制, 再用 group 缩放到 108dp 画布的中心安全区;
+  标记外接框约 57×60dp, 落在自适应图标 66dp 安全圆内。
 -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="108dp"
@@ -12,23 +15,40 @@
     android:viewportWidth="108"
     android:viewportHeight="108">
 
-    <!-- 相框(照片本体) -->
-    <path
-        android:fillColor="#F2F2F7"
-        android:pathData="M33,32 h42 a5,5 0 0 1 5,5 v34 a5,5 0 0 1 -5,5 h-42 a5,5 0 0 1 -5,-5 v-34 a5,5 0 0 1 5,-5 z" />
+    <group
+        android:scaleX="0.153"
+        android:scaleY="0.153"
+        android:translateX="14.9"
+        android:translateY="8.8">
 
-    <!-- 左边大山 -->
-    <path
-        android:fillColor="#101014"
-        android:pathData="M33,71 L45,51 L57,71 Z" />
+        <!-- 圆环: 原始中心 (256,195), 半径 80.5, 描边 23。
+             起点 (256,114.5) 是圆的**顶端**, 不是圆心; 两段弧绕 (256,195) 合拢。 -->
+        <path
+            android:fillColor="@android:color/transparent"
+            android:strokeColor="#10B981"
+            android:strokeWidth="23"
+            android:strokeLineCap="round"
+            android:pathData="M256,114.5 a80.5,80.5 0 1,0 0,161 a80.5,80.5 0 1,0 0,-161" />
 
-    <!-- 右边小山 -->
-    <path
-        android:fillColor="#2E2E36"
-        android:pathData="M52,71 L61,57 L70,71 Z" />
+        <!-- 左支腿: (248,250) → (82,478), 描边 29 -->
+        <path
+            android:fillColor="@android:color/transparent"
+            android:strokeColor="#10B981"
+            android:strokeWidth="29"
+            android:strokeLineCap="round"
+            android:pathData="M248,250 L82,478" />
 
-    <!-- 太阳 -->
-    <path
-        android:fillColor="#F5A524"
-        android:pathData="M62,44 a5,5 0 1 0 10,0 a5,5 0 1 0 -10,0 z" />
+        <!-- 右支腿: (263,250) → (430,478), 描边 29 -->
+        <path
+            android:fillColor="@android:color/transparent"
+            android:strokeColor="#10B981"
+            android:strokeWidth="29"
+            android:strokeLineCap="round"
+            android:pathData="M263,250 L430,478" />
+
+        <!-- 中间的实心楔形(桌面图标里连接两条支腿的那一块) -->
+        <path
+            android:fillColor="#10B981"
+            android:pathData="M232,250 L280,250 L256,300 Z" />
+    </group>
 </vector>

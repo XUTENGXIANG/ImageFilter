@@ -1,6 +1,6 @@
 // Copyright (c) 2026 XUTENGXIANG
 // SPDX-License-Identifier: MIT
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Moon, Sun } from "@icon-park/react";
 import { getVersion } from "@tauri-apps/api/app";
@@ -15,6 +15,18 @@ import { Toggle } from "@/components/ui/toggle";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Collapse } from "./collapse";
+import {
+  approvePairing,
+  closePairingWindow,
+  denyPairing,
+  forgetPairedDevice,
+  formatCountdown,
+  onPairingChanged,
+  onPairingRequest,
+  openPairingWindow,
+  pairingStatus,
+  type PairingStatus,
+} from "../lib/pairing";
 import type { Lang } from "../i18n";
 import { xmpErrKey, type XmpMode, type XmpStatus } from "../xmp";
 import { isLrcModeUsable, type LrcSendMode } from "../lightroom";
@@ -162,6 +174,9 @@ const GUARD_REFUSAL_MARKER = "确认要在";
  *   ④ 起不来时给出**可行动**的理由 + 一张排查清单;
  *   ⑤ M4′ Task 2: 手机该填哪个地址(私有地址 + 网卡名, 一键复制)、**防火墙**怎么放行、
  *      "当前网络是公用"时的**警告 + 二次确认入口**、检测到非局域网地址时的警告。
+ *   ⑥ 2026-10-25 mDNS 配对: 配对窗口(5 分钟倒计时)、待确认请求(允许/拒绝)、已连接设备
+ *      (移除)。扫码 / 地址 / 配对码整体收进「高级 / 手动配对」折叠区 —— 层级变了,
+ *      但行为与每一句诚实文案都原样保留(它们仍是配对窗口用不了时的退路)。
  *
  * 纪律: 状态永远以后端为准(`get_server_status`) —— 每次动作之后再读一次, 面板开着时每 4 秒
  * 再读一次。前端**不**自己猜"应该开着了吧": `enabled`/`running`/`lastError` 三个字段合起来
@@ -195,6 +210,16 @@ function ServerPanel({ open }: { open: boolean }) {
   const [qrKnown, setQrKnown] = useState(false);
   /** 最近连接(M4′ Task 3)。**不进 4 秒轮询** —— 手动刷新即可(计划 §Task 3 Step 2)。 */
   const [clients, setClients] = useState<ClientsSnapshot | null>(null);
+  /**
+   * mDNS 配对状态(计划 2026-10-25 §0.3, 契约见 `src/lib/pairing.ts`)。
+   * `null` = 还没读到(或后端还没实现) —— 那时**不**画"窗口已关闭", 因为"读不到"不是"关着"。
+   */
+  const [pair, setPair] = useState<PairingStatus | null>(null);
+  const [pairError, setPairError] = useState<string | null>(null);
+  /** 「高级 / 手动配对」折叠区。默认收起: 扫码与手输是退路, 不是主路径(计划 Task B3)。 */
+  const [showAdvanced, setShowAdvanced] = useState(false);
+  /** 配对窗口倒计时的"现在"。只在窗口开着时每秒走一次(见下面的 effect)。 */
+  const [pairNow, setPairNow] = useState(() => Date.now());
 
   const load = useCallback(async () => {
     try {
@@ -254,15 +279,74 @@ function ServerPanel({ open }: { open: boolean }) {
     }
   }, []);
 
+  /**
+   * 读配对状态(纯内存读, 与 `pairing_status` 一一对应)。同样不进 4 秒轮询:
+   * 配对的变化只有两种来源 —— 用户在这个面板上动作, 或手机发来请求(有事件)。
+   *
+   * 失败时**不清掉上一份**: 一次 IPC 抖动不该把已有的设备清单说成"没有设备";
+   * 失败本身由 `pairError` 如实报出来(`pairing.unavailable`)。
+   */
+  const loadPairing = useCallback(async () => {
+    try {
+      setPair(await pairingStatus());
+      setPairError(null);
+    } catch (err) {
+      setPairError(String(err));
+    }
+  }, []);
+
   useEffect(() => {
     if (!open) return; // 关着的时候不轮询: 一次 invoke 也不该白花
     void load();
     void loadHints();
     void loadQr();
     void loadClients();
+    void loadPairing();
     const id = window.setInterval(() => void load(), 4000);
     return () => window.clearInterval(id);
-  }, [open, load, loadHints, loadQr, loadClients]);
+  }, [open, load, loadHints, loadQr, loadClients, loadPairing]);
+
+  /**
+   * 面板开着时跟随配对事件:
+   *   · `pairing-request` 只带**一条**新请求 —— 重读一次权威状态即可(不自己拼列表);
+   *   · `pairing-changed` 本身就是一份完整 `PairingStatus`(批准/拒绝/过期/移除之后),
+   *     直接覆盖。
+   * 事件通道在浏览器探针 / 尚未实现的后端里不存在; 那不是错误 —— 面板靠每次动作后的
+   * 重读照旧工作, 只是不会自己跳出新请求。
+   */
+  useEffect(() => {
+    if (!open) return;
+    let alive = true;
+    let offRequest: (() => void) | undefined;
+    let offChanged: (() => void) | undefined;
+    void (async () => {
+      try {
+        const off = await onPairingRequest(() => { if (alive) void loadPairing(); });
+        if (alive) offRequest = off; else off();
+      } catch { /* 没有事件通道: 忽略 */ }
+      try {
+        const off = await onPairingChanged((s) => { if (alive) setPair(s); });
+        if (alive) offChanged = off; else off();
+      } catch { /* 同上 */ }
+    })();
+    return () => {
+      alive = false;
+      offRequest?.();
+      offChanged?.();
+    };
+  }, [open, loadPairing]);
+
+  /**
+   * 5 分钟倒计时。只在窗口真的开着时每秒走一次; 打开窗口那一下先把"现在"对一次表
+   * (初始 state 可能是几分钟前挂载时取的, 直接拿来算会多出好几分钟)。
+   * `useLayoutEffect`: 在 paint 前对表, 避免窗口刚读到 / 刚打开的那一帧显示一个错的剩余时间。
+   */
+  useLayoutEffect(() => {
+    if (!open || !pair?.open) return;
+    setPairNow(Date.now());
+    const id = window.setInterval(() => setPairNow(Date.now()), 1000);
+    return () => window.clearInterval(id);
+  }, [open, pair?.open, pair?.expiresAt]);
 
   /**
    * 所有动作共用同一条收尾: 忙 → 做 → 失败就显示后端那句人话 → **无论如何**重读一次权威状态。
@@ -290,6 +374,65 @@ function ServerPanel({ open }: { open: boolean }) {
       void loadClients();
     }
   };
+
+  /**
+   * 配对动作的收尾: 与 `run` 同一套纪律(忙 → 做 → 失败显示后端原话 → 重读权威状态),
+   * 但**只重读配对状态** —— 开窗 / 批准 / 拒绝 / 移除都不会改变服务的监听状态,
+   * 没必要连带重新枚举网卡。
+   */
+  const runPairing = async (fn: () => Promise<unknown>) => {
+    setBusy(true);
+    setProblem(null);
+    try {
+      await fn();
+    } catch (err) {
+      setProblem(String(err));
+    } finally {
+      setBusy(false);
+      void loadPairing();
+    }
+  };
+
+  /** 打开配对窗口。命令已经把 expiresAt 回来了, 先点亮倒计时, 权威状态随后覆盖。 */
+  const openPairing = () => {
+    // 服务没在监听时开窗口没有意义：不会广播，手机也发现不到这台电脑。
+    if (!status?.running) return;
+    runPairing(async () => {
+      const window_ = await openPairingWindow();
+      setPair((prev) => ({
+        open: true,
+        expiresAt: window_.expiresAt,
+        pending: prev?.pending ?? [],
+        paired: prev?.paired ?? [],
+      }));
+      setPairNow(Date.now());
+    });
+  };
+
+  const closePairing = () =>
+    runPairing(async () => {
+      await closePairingWindow();
+      setPair((prev) => (prev ? { ...prev, open: false, expiresAt: undefined } : prev));
+    });
+
+  /** 允许 / 拒绝共用一条路径: 成功后先把这一条移出列表, 事件与重读会再校准一次。 */
+  const resolvePairing = (requestId: string, allow: boolean) =>
+    runPairing(async () => {
+      if (allow) await approvePairing(requestId);
+      else await denyPairing(requestId);
+      setPair((prev) =>
+        prev ? { ...prev, pending: prev.pending.filter((p) => p.requestId !== requestId) } : prev,
+      );
+    });
+
+  /** v1 的「移除」只是忘记; 不吊销 token(要吊销走轮换, 见 pairing.forgetNote)。 */
+  const forgetDevice = (deviceId: string) =>
+    runPairing(async () => {
+      await forgetPairedDevice(deviceId);
+      setPair((prev) =>
+        prev ? { ...prev, paired: prev.paired.filter((d) => d.deviceId !== deviceId) } : prev,
+      );
+    });
 
   const copyToken = async () => {
     const token = status?.token ?? "";
@@ -414,6 +557,16 @@ function ServerPanel({ open }: { open: boolean }) {
       : t("server.publicAckNoTime");
   })();
 
+  /**
+   * 配对窗口是否**还**开着。`expiresAt` 已过就按"关了"渲染: 倒计时走到 0 之后
+   * 还画着「已打开 · 剩余 0:00」是句假话。后端下次被问到时也会给出 open=false
+   * (重新开门时会拿到新的 expiresAt, 所以这里不会挡住正常操作)。
+   */
+  const pairingWindowActive =
+    !!pair && pair.open && (pair.expiresAt === undefined || pair.expiresAt > pairNow);
+  const pairingRemaining =
+    pair?.expiresAt !== undefined ? formatCountdown(pair.expiresAt - pairNow) : null;
+
   // 状态行 —— 三句话各自对应一个真实状态, 不合并、不含糊:
   //   · 开着且在跑 → 把地址念出来(用户就是拿它填手机的);
   //   · 开着但没在跑 → 直说"你要它开, 它没在跑"(理由在下面的错误块里);
@@ -531,6 +684,134 @@ function ServerPanel({ open }: { open: boolean }) {
         </div>
       )}
 
+      {/* ── 2026-10-25 · mDNS 配对(主路径) ──
+          手机在同一 WiFi 下自动发现这台电脑, 用户在电脑上点「允许」才算配对成功。
+          这一块只做三件事, 每一件都对应 §0.3 的一条契约:
+            · 配对窗口: 开 / 关 + 5 分钟倒计时(`open_pairing_window` / `close_pairing_window`);
+            · 待确认请求: 允许 / 拒绝(`approve_pairing` / `deny_pairing`) —— 请求只活 60 秒;
+            · 已连接设备: 移除(`forget_paired_device`) —— v1 里移除**不吊销** token,
+              文案(pairing.forgetNote)必须把这件事说清, 否则用户会以为已经踢下线。
+          `pair === null`(还没读到 / 后端还没有这些命令)时**不**画"窗口已关闭": 读不到 ≠ 关着。
+          扫码 / 地址 / 配对码整块收进下面的「高级 / 手动配对」, 行为与文案原样保留。 */}
+      <div className="space-y-1">
+        <p className="text-sm text-foreground">{t("pairing.sectionTitle")}</p>
+        <p className="text-xs text-muted-foreground break-words">{t("pairing.windowHint")}</p>
+
+        {pairError && (
+          <p className="text-xs text-muted-foreground break-words">
+            {t("pairing.unavailable", { reason: pairError })}
+          </p>
+        )}
+
+        {pair && (
+          <>
+            {pairingWindowActive ? (
+              <div className="flex items-center justify-between gap-2">
+                <p className="text-xs text-emerald-600 dark:text-emerald-400 break-words">
+                  {t("pairing.windowOpen")}
+                  {pairingRemaining !== null
+                    ? ` · ${t("pairing.remaining", { time: pairingRemaining })}`
+                    : ""}
+                </p>
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => void closePairing()}
+                  className="shrink-0 px-2 py-1 rounded-md border border-border text-xs text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {t("pairing.closeWindow")}
+                </button>
+              </div>
+            ) : (
+              <div className="flex items-center justify-between gap-2">
+                <p className="text-xs text-muted-foreground break-words">
+                  {status?.running ? t("pairing.windowClosed") : t("pairing.serviceOff")}
+                </p>
+                <button
+                  type="button"
+                  disabled={busy || !status?.running}
+                  onClick={() => void openPairing()}
+                  className="shrink-0 px-2 py-1 rounded-md bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-medium disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {t("pairing.openWindow")}
+                </button>
+              </div>
+            )}
+
+            {pair.pending.length > 0 && (
+              <div className="space-y-1">
+                <p className="text-xs text-muted-foreground">{t("pairing.pendingTitle")}</p>
+                <ul className="space-y-1 min-w-0">
+                  {pair.pending.map((p) => (
+                    <li key={p.requestId} className="flex items-center gap-2 min-w-0">
+                      <div className="flex-1 min-w-0">
+                        <p className="truncate text-xs text-foreground" title={p.deviceName}>
+                          {p.deviceName}
+                        </p>
+                        <p className="truncate text-xs text-muted-foreground" title={p.ip}>
+                          {p.ip}
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        disabled={busy}
+                        onClick={() => void resolvePairing(p.requestId, true)}
+                        className="shrink-0 px-2 py-1 rounded-md bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-medium disabled:opacity-50 disabled:cursor-not-allowed"
+                      >
+                        {t("pairing.allow")}
+                      </button>
+                      <button
+                        type="button"
+                        disabled={busy}
+                        onClick={() => void resolvePairing(p.requestId, false)}
+                        className="shrink-0 px-2 py-1 rounded-md border border-border text-xs text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-50 disabled:cursor-not-allowed"
+                      >
+                        {t("pairing.deny")}
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+                <p className="text-xs text-muted-foreground break-words">{t("pairing.pendingDesc")}</p>
+              </div>
+            )}
+
+            <div className="space-y-1">
+              <p className="text-xs text-muted-foreground">{t("pairing.pairedDevices")}</p>
+              {pair.paired.length === 0 ? (
+                <p className="text-xs text-muted-foreground">{t("pairing.noDevices")}</p>
+              ) : (
+                <ul className="space-y-1 min-w-0">
+                  {pair.paired.map((d) => (
+                    <li key={d.deviceId} className="flex items-center gap-2 min-w-0">
+                      <span className="flex-1 min-w-0 truncate text-xs text-foreground" title={d.name}>
+                        {d.name}
+                      </span>
+                      {d.lastSeenAt > 0 && (
+                        <span className="shrink-0 text-xs text-muted-foreground">
+                          {t("pairing.lastSeen", {
+                            time: new Date(d.lastSeenAt).toLocaleString(),
+                          })}
+                        </span>
+                      )}
+                      <button
+                        type="button"
+                        disabled={busy}
+                        aria-label={`${t("pairing.forget")}: ${d.name}`}
+                        onClick={() => void forgetDevice(d.deviceId)}
+                        className="shrink-0 px-2 py-1 rounded-md border border-border text-xs text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-50 disabled:cursor-not-allowed"
+                      >
+                        {t("pairing.forget")}
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+              <p className="text-xs text-muted-foreground break-words">{t("pairing.forgetNote")}</p>
+            </div>
+          </>
+        )}
+      </div>
+
       {/* ── M4′ Task 3 · 只读模式 ──
           它是一条**能力开关**, 与总开关并列但管的是不同的东西: 总开关决定"手机连不连得上",
           这一条决定"连上之后能不能改"。开了之后所有写端点回 403 `forbiddenPath`(复用既有码,
@@ -554,6 +835,38 @@ function ServerPanel({ open }: { open: boolean }) {
       {status?.readOnly && (
         <p className="text-xs text-muted-foreground break-words">{t("server.readOnlyNote")}</p>
       )}
+
+      {/* ── M4′ Task 2 · 防火墙(规格 §4.2 第 2 条: 局域网模式下"连不上"的第一大原因) ──
+          文案按后端给的**机器码**查表(未知码落到通用那句), 所以它跟着界面语言走 ——
+          后端不把中文塞进这里。
+          它刻意留在「高级 / 手动配对」**外面**: mDNS 发现同样要过防火墙这一关,
+          收进默认收起的折叠区就等于把"连不上的第一大原因"藏起来。 */}
+      {hints && (
+        <div className="space-y-0.5">
+          <p className="text-xs text-muted-foreground">{t("server.firewallHintTitle")}</p>
+          <p className="rounded-md border-l-2 border-amber-500/70 bg-muted/40 px-2 py-1.5 text-xs text-muted-foreground">
+            {firewallHintText}
+          </p>
+        </div>
+      )}
+
+      {/* ── 2026-10-25 · 高级 / 手动配对(默认收起) ──
+          配对窗口是主路径; 扫码 / 局域网地址 / 配对码原样保留在这里 —— 它们仍是
+          "配对窗口用不了"时唯一能走的路(规格 §4.2 第 1/3 条), 只是不再第一眼就看到。
+          **只折叠层级**: 每一句说明、每个按钮的行为都没变。 */}
+      <div>
+        <button
+          type="button"
+          aria-expanded={showAdvanced}
+          onClick={() => setShowAdvanced((v) => !v)}
+          className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
+        >
+          <span aria-hidden="true">{showAdvanced ? "▾" : "▸"}</span>
+          {t("pairing.advanced")}
+        </button>
+        <Collapse open={showAdvanced}>
+          <div className="space-y-2 pt-1">
+            <p className="text-xs text-muted-foreground break-words">{t("pairing.advancedHint")}</p>
 
       {/* ── M4′ Task 2 · 局域网地址: 手机配对时填的就是这里的地址(规格 §4.2 第 1 条) ──
           只列**私有网段**的地址(公网地址一个都不在这里, 只在上面的警告里); 每条后面是网卡名
@@ -611,18 +924,6 @@ function ServerPanel({ open }: { open: boolean }) {
             </ul>
           )}
           <p className="text-xs text-muted-foreground">{t("server.lanDesc")}</p>
-        </div>
-      )}
-
-      {/* ── M4′ Task 2 · 防火墙(规格 §4.2 第 2 条: 局域网模式下"连不上"的第一大原因) ──
-          文案按后端给的**机器码**查表(未知码落到通用那句), 所以它跟着界面语言走 ——
-          后端不把中文塞进这里。 */}
-      {hints && (
-        <div className="space-y-0.5">
-          <p className="text-xs text-muted-foreground">{t("server.firewallHintTitle")}</p>
-          <p className="rounded-md border-l-2 border-amber-500/70 bg-muted/40 px-2 py-1.5 text-xs text-muted-foreground">
-            {firewallHintText}
-          </p>
         </div>
       )}
 
@@ -695,6 +996,9 @@ function ServerPanel({ open }: { open: boolean }) {
           {token || t("server.tokenEmpty")}
         </code>
         <p className="text-xs text-muted-foreground">{t("server.tokenDesc")}</p>
+      </div>
+          </div>
+        </Collapse>
       </div>
 
       {/* 共享目录: 列表可删 + 一行"输入 / 浏览 / 添加"。空列表不是"没问题", 而是

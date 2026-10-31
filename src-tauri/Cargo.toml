@@ -30,6 +30,11 @@ getrandom = "0.2"
 # cargo 会合并到同一份 —— 所以它**没有**带进第二个 image 版本。
 qrcode = "0.14"
 
+# mDNS 局域网发现(mDNS 配对 · Workstream A): 桌面端广播 `_imagefilter._tcp.local.`,
+# 安卓用系统 `NsdManager` 发现。选 `mdns-sd` 的理由: 纯 Rust、无 async runtime 依赖,
+# 不把第二个运行时带进 Tauri。**只用于广播**, token 绝不进 TXT(见 `server/mdns.rs`)。
+mdns-sd = "0.21"
+
 # Image / photo processing
 rawler = "0.7"
 kamadak-exif = "0.5"
@@ -55,6 +60,7 @@ tokio = { version = "1", features = ["full"] }
 thiserror = "2"
 rayon = "1.12.0"
 memmap2 = "0.9.11"
+fast_image_resize = "6.1.0"
 
 # Windows 专属依赖 — 非 Windows 平台不编译(避免 macOS/Linux 拉取 windows-future 等失败)
 # Win32_System_Registry              ← Phase 7: 读 .lrcat 文件关联 / 卸载项, 定位 Lightroom.exe

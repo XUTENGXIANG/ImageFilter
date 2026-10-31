@@ -180,7 +180,10 @@ class ViewerStateTest {
         // 高清档自己那句话必须与默认档不同 —— 否则用户不知道自己现在看的是哪一档
         val high = rawQualityHint(ViewerQuality.HIGH_RES, raw)
         assertNotEquals(hint, high)
-        assertTrue("高清档要说明这是电脑全解码的图: $high", high!!.contains("全解码"))
+        assertTrue(
+            "高清档要说明它优先用内嵌大预览、不够才全解码: $high",
+            high!!.contains("内嵌") && high.contains("全解码"),
+        )
     }
 
     @Test

@@ -16,12 +16,16 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.itemsIndexed
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -30,14 +34,17 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import coil3.ImageLoader
 import com.imagefilter.mobile.data.FolderEntryDto
 import com.imagefilter.mobile.data.Pairing
+import com.imagefilter.mobile.ui.theme.LocalPhotoPalette
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 
@@ -163,6 +170,8 @@ fun GridScreen(
         }
     }
 
+    val p = LocalPhotoPalette.current
+
     // Box 是为了让查看器盖在网格之上(而不是替换掉网格 —— 替换会把滚动位置丢掉)
     Box(modifier = Modifier.fillMaxSize()) {
         GridContent(
@@ -173,8 +182,6 @@ fun GridScreen(
             onBack = onBack,
             scope = scope,
             onOpenViewer = { index -> viewerIndex = index },
-            // 筛片队列 = **此刻**筛出来的那些(见 cullQueue 的 KDoc); 一张都没有时按钮是禁用的
-            onOpenCull = { cullQueue = state.visibleItems },
             // 打开面板那一刻先解除武装(见 PendingPanel 的 KDoc)
             onOpenPending = { vm.cancelAbandon(); pendingOpen = true },
             // ── 移动(M3′ Task 4)────────────────────────────────────────────
@@ -198,6 +205,33 @@ fun GridScreen(
             },
             onCancelSelecting = { moveVm.cancelSelecting() },
         )
+
+        // 网格页唯一的主动作：底部悬浮，单手够得到。
+        // 只在"网格真的在被看着"时出现 —— 查看器 / 滑卡 / 移动 / 待重试任一打开都藏起来。
+        if (
+            state.hasVisiblePhotos &&
+            viewerIndex == null &&
+            cullQueue == null &&
+            !pendingOpen &&
+            !moveState.selecting &&
+            moveState.stage == MoveStage.Idle
+        ) {
+            Button(
+                onClick = { cullQueue = state.visibleItems },
+                shape = RoundedCornerShape(10.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = p.accent,
+                    contentColor = p.onAccent,
+                ),
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 12.dp)
+                    .height(48.dp),
+            ) {
+                Text("开始筛片", style = MaterialTheme.typography.titleSmall)
+            }
+        }
 
         val index = viewerIndex
         // 查看器看的是**筛出来的**那些(不是全部照片): 左右切图不许切到被筛掉的照片
@@ -285,8 +319,6 @@ private fun GridContent(
     onBack: () -> Unit,
     scope: CoroutineScope,
     onOpenViewer: (Int) -> Unit,
-    /** 打开**滑卡筛片**(M3′ 的主动作): 队列是此刻筛出来的那些, 由调用方冻结。 */
-    onOpenCull: () -> Unit,
     /** 打开**待重试面板**([PendingSheet])。 */
     onOpenPending: () -> Unit,
     /** 移动那件事的界面状态(多选开没开、选了哪些)。 */
@@ -300,6 +332,7 @@ private fun GridContent(
     /** 退出多选。 */
     onCancelSelecting: () -> Unit,
 ) {
+    val p = LocalPhotoPalette.current
     Scaffold(
         topBar = {
             TopAppBar(
@@ -312,10 +345,19 @@ private fun GridContent(
                             overflow = TextOverflow.Ellipsis,
                         )
                         // 张数来自 scan 的返回长度 —— 失败且一张都没有时它说的是"没读到", 不是"0 张"
-                        Text(state.countLabel, style = MaterialTheme.typography.bodySmall)
+                        Text(
+                            state.countLabel,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = p.textMuted,
+                        )
                     }
                 },
-                navigationIcon = { TextButton(onClick = onBack) { Text("返回") } },
+                navigationIcon = {
+                    TextButton(
+                        onClick = onBack,
+                        colors = ButtonDefaults.textButtonColors(contentColor = p.textSecondary),
+                    ) { Text("返回") }
+                },
                 actions = {
                     // **多选模式**下顶栏换成移动那几个动作(已选 N 张 / 移动到… / 取消) —— 筛片与
                     // 刷新在这个时候按下去只会让选中的那一批悄悄变样(筛片会改决策, 刷新会换列表)。
@@ -339,29 +381,30 @@ private fun GridContent(
                                 onRetryUnsynced = { scope.launch { vm.retryUnsynced() } },
                             )
                         }
-                        // 滑卡筛片: **筛出来的那些**就是这一叠(队列在按下这一刻冻结, 见 GridScreen)。
-                        // 一张可滑的都没有时禁用 —— 打开一个空队列只会给出一张白屏。
-                        TextButton(onClick = onOpenCull, enabled = state.hasVisiblePhotos) { Text("筛片") }
-                        TextButton(onClick = { scope.launch { vm.loadAll() } }) { Text("刷新") }
+                        // 「筛片」不再挂在顶栏：它是这一页唯一的主动作，底部悬浮按钮更容易单手够到。
+                        TextButton(
+                            onClick = { scope.launch { vm.loadAll() } },
+                            colors = ButtonDefaults.textButtonColors(contentColor = p.textSecondary),
+                        ) { Text("刷新") }
                     }
+                },
+                colors = TopAppBarDefaults.topAppBarColors(containerColor = p.s1),
+                modifier = Modifier.drawWithContent {
+                    drawContent()
+                    // 顶栏底部发丝线：不用实心灰边，也不依赖 elevation 的 tint。
+                    drawLine(
+                        color = p.hairline,
+                        start = Offset(0f, size.height),
+                        end = Offset(size.width, size.height),
+                        strokeWidth = 1f,
+                    )
                 },
             )
         },
     ) { padding ->
         Column(modifier = Modifier.padding(padding).fillMaxSize()) {
-            // 路径显示成**普通写法**(`F:\壁纸`, 去掉 Windows 的 verbatim 前缀)。
-            // ⚠️ 只是**显示** —— 发出去/当 map 键用的永远是 folder.path 那份规范路径
-            // (见 [displayPath] 的 KDoc)。少了这一行, 用户在自己的手机上会看到
-            // 一个他只会在排障文档里见到的 `\\?\F:\壁纸`。
-            Text(
-                displayPath(folder.path),
-                style = MaterialTheme.typography.bodySmall,
-                fontFamily = FontFamily.Monospace,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.padding(start = 12.dp, end = 12.dp, top = 4.dp, bottom = 4.dp),
-            )
-
+            // 路径不再常驻：顶栏已经有目录名 + 张数，路径只在目录页/抽屉里需要。
+            // 少这一行，照片网格能多出一行可见高度。
             // 筛选栏(星级 / 色标 / 未同步, 规格 §8.1)。三个维度上的张数由 FilterCounts 给 ——
             // 读不到电脑上原有的值时它说"未统计", 不拿 0 顶上。
             FilterBar(
@@ -427,7 +470,11 @@ private fun GridContent(
             // 全 RAW 的说明(不是错误: 有照片, 只是缩略图那条链路不一样)
             val notice = state.notice
             if (notice != null) {
-                HintCard(body = notice, modifier = Modifier.padding(horizontal = 12.dp))
+                HintCard(
+                    body = notice,
+                    modifier = Modifier.padding(horizontal = 12.dp),
+                    collapsible = true,
+                )
                 Spacer(Modifier.height(8.dp))
             }
 
@@ -437,13 +484,28 @@ private fun GridContent(
                     LoadingRow("正在读这个文件夹里的照片…")
                 }
 
-                state.isEmpty -> Box(modifier = Modifier.padding(12.dp)) {
-                    HintCard(body = state.emptyMessage ?: GRID_EMPTY)
+                // 空目录不要用一张顶到屏幕顶部的长文卡：收成一行 + 「详情」，并居中。
+                state.isEmpty -> Box(
+                    modifier = Modifier.fillMaxWidth().weight(1f),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    HintCard(
+                        body = state.emptyMessage ?: GRID_EMPTY,
+                        collapsible = true,
+                        modifier = Modifier.padding(horizontal = 24.dp),
+                    )
                 }
 
                 // **有照片但全被筛掉**是另一句话: 说成"没有照片"会让用户以为照片丢了
-                state.allFilteredOut -> Box(modifier = Modifier.padding(12.dp)) {
-                    HintCard(body = state.filteredOutNotice ?: filteredOutMessage(state.items.size))
+                state.allFilteredOut -> Box(
+                    modifier = Modifier.fillMaxWidth().weight(1f),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    HintCard(
+                        body = state.filteredOutNotice ?: filteredOutMessage(state.items.size),
+                        collapsible = true,
+                        modifier = Modifier.padding(horizontal = 24.dp),
+                    )
                 }
 
                 state.hasVisiblePhotos -> PhotoGrid(
@@ -500,11 +562,13 @@ private fun ColumnScope.PhotoGrid(
     onCellLongPress: (String) -> Unit = {},
 ) {
     LazyVerticalGrid(
-        // Adaptive(96.dp): 窄屏两列、平板多列 —— 列数不写死, 但每格是正方形
-        columns = GridCells.Adaptive(minSize = 96.dp),
+        // Adaptive(112.dp): 普通手机 3 列、平板更多 —— 与预览的三列密度一致，
+        // 格子更大、角标不挤。列数仍然不写死。
+        columns = GridCells.Adaptive(minSize = 112.dp),
         // weight(1f): 网格吃掉剩下的高度。少了它, 网格会按内容撑出屏幕(滚不动)
         modifier = Modifier.fillMaxWidth().weight(1f),
-        contentPadding = PaddingValues(4.dp),
+        // 底部多留 76dp：最后一行格子不会被悬浮的「开始筛片」盖住。
+        contentPadding = PaddingValues(start = 4.dp, top = 4.dp, end = 4.dp, bottom = 76.dp),
         verticalArrangement = Arrangement.spacedBy(4.dp),
         horizontalArrangement = Arrangement.spacedBy(4.dp),
     ) {

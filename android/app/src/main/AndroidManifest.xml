@@ -7,6 +7,15 @@
     <!-- 用于"当前是否在 WiFi 下"的判断(决定要不要预取预览图), 供 M3′ 使用 -->
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
+    <!-- mDNS 局域网发现(计划 §4 C2 / §8): Android 13+ 要求使用 Wi-Fi 邻近类 API 前声明
+         该权限; neverForLocation 明确它**不**用于推断位置。它是 normal 权限(安装即授予,
+         无运行时弹窗)。⚠️ NsdManager 在 Android 13/16 上是否真的强制这条权限
+         **未在真机验证** —— 见计划 §8 的诚实清单。Android 16 的本地网络权限在
+         compileSdk 35 上还不可声明, 需等目标 SDK 提升后再补。 -->
+    <uses-permission
+        android:name="android.permission.NEARBY_WIFI_DEVICES"
+        android:usesPermissionFlags="neverForLocation" />
+
     <!-- 扫码配对(M4′ Task 1): **只用于扫二维码**, 不申请存储权限(不需要)。
          它是一条**增强**路径 —— 拒绝权限时配对页照样能手输(见 PairingScreen 的说明),
          所以 uses-feature 是 required="false"(没有相机的设备仍然装得上)。

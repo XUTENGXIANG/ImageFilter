@@ -161,7 +161,7 @@ fun viewerPhotos(items: List<GridItem>): List<ViewerPhoto> = items.map {
     )
 }
 
-/** 正在显示的档位。默认档 = 相机内嵌预览/原图; 高清档 = 让电脑做**全解码**(秒级到十几秒级)。 */
+/** 正在显示的档位。默认档 = 相机内嵌预览/原图; 高清档 = 取电脑上更大的一份（内嵌大预览优先，不够才全解码）。 */
 enum class ViewerQuality { DEFAULT, HIGH_RES }
 
 /** 顶部标题: `文件名 · (i+1)/N` —— 张数带序号, 用户才知道自己在哪一张。 */
@@ -181,10 +181,10 @@ fun viewerTitle(photo: ViewerPhoto, index: Int, count: Int): String =
 fun rawQualityHint(quality: ViewerQuality, photo: ViewerPhoto?): String? = when {
     photo == null -> null
     quality == ViewerQuality.HIGH_RES ->
-        "高清档：这是电脑全解码出来的图，不是相机内嵌的那张小预览。"
+        "高清档：优先用相机内嵌的大预览；不够大时才让电脑全解码。"
     photo.isRaw ->
         "RAW 的默认档是相机内嵌的预览图（实测这批样张都没到 2048px，最小的只有 256×171），" +
-            "放大到 1:1 验对焦不够 —— 点右上「高清」让电脑全解码（秒级到十几秒）。"
+            "放大到 1:1 验对焦不够 —— 点右上「高清」取电脑上更大的一份（内嵌大预览优先）。"
     else -> null
 }
 

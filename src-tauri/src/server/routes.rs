@@ -14,7 +14,8 @@
 //!      `paths::ensure_within`), 并且**只用它返回的规范化路径**去调既有函数。
 //!      连只读元数据的 `browse`/`scan` 也一样: 白名单是"能不能看"的红线, 不是"能不能改"。
 
-use super::{auth, media, paths, ApiError, ServerState};
+use super::pairing::{PairRequest, PairStatus, PairingEvent};
+use super::{auth, media, network, paths, ApiError, ServerState};
 use crate::xmp::{DecisionWrite, WriteSummary};
 use axum::body::Body;
 use axum::extract::{ConnectInfo, FromRequest, FromRequestParts, Query, Request, State};
@@ -22,12 +23,13 @@ use axum::http::request::Parts;
 use axum::http::{header, HeaderMap, Method, StatusCode};
 use axum::middleware::{self, map_response, Next};
 use axum::response::{IntoResponse, Response};
-use axum::routing::get;
+use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::de::{DeserializeOwned, IgnoredAny, MapAccess, Visitor};
 use serde::{Deserialize, Serialize};
 use std::collections::hash_map::DefaultHasher;
 use std::collections::VecDeque;
+use std::convert::Infallible;
 use std::hash::{Hash, Hasher};
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -104,6 +106,30 @@ where
             .await
             .map(|Json(v)| J(v))
             .map_err(|_| ApiError::BadRequest)
+    }
+}
+
+/// **可选**的来源地址。配对端点用它填 `PendingPairing.ip`。
+///
+/// 为什么不用 `ConnectInfo<SocketAddr>`: 它缺 extension 时直接拒绝, 而集成测试是拿
+/// `router(state).oneshot(req)` 直接打的(没有 TCP 连接, 也就没有 connect info)——
+/// 那样一条**完全合法**的配对请求会被 500 掉。这里读不到就写空串, 与
+/// `record_client` 对来源 IP 的态度一致: 不知道就不编。
+///
+/// (axum 0.8 的 `Option<ConnectInfo<_>>` 并不可用 —— `OptionalFromRequestParts` 只给
+/// `MatchedPath`/`Path` 实现了。所以需要一个自己的 parts 提取器。)
+pub struct OptConnect(pub Option<SocketAddr>);
+
+impl<S> FromRequestParts<S> for OptConnect
+where
+    S: Send + Sync,
+{
+    type Rejection = Infallible;
+
+    async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
+        Ok(OptConnect(
+            parts.extensions.get::<ConnectInfo<SocketAddr>>().map(|c| c.0),
+        ))
     }
 }
 
@@ -289,7 +315,18 @@ fn is_ows(c: char) -> bool {
 ///   · 逐条加层漏了一条 → 那条端点**完全不需要 token**, 而且函数级测试看不出来。
 /// 后者已经实测过: 在 `route_layer` 之后再 `.route(...)` 一条, 无 token 直接 200。
 /// 鉴权这种红线只许往"更严"的方向失败。
-pub const PUBLIC_PATHS: &[&str] = &["/api/v1/ping"];
+/// 配对端点路径(§0.2 冻结)。单独留成常量是因为有三处必须逐字一致:
+/// `PUBLIC_PATHS`、路由注册、以及只读模式的白名单(见 `refuse_writes_in_read_only`)。
+pub const PAIR_REQUEST_PATH: &str = "/api/v1/pair/request";
+pub const PAIR_STATUS_PATH: &str = "/api/v1/pair/status";
+
+/// 公开端点白名单(§0.2 之后是三个: `ping` + 两个配对端点)。
+///
+/// ⚠️ **这张表是本项目出过事故的地方(计划 §4.6)**: 每次新增一项都必须同时有
+/// "它能不带 token 工作"与"其它路径仍然 401"两条集成测试(见 `tests/server_contract.rs`)。
+/// 这里只装**产品上必须**免鉴权的路径 —— 配对端点靠窗口/限流/60 秒过期自保, `ping` 什么
+/// 都不暴露。任何"顺手也放开"的想法请先读这一段。
+pub const PUBLIC_PATHS: &[&str] = &["/api/v1/ping", PAIR_REQUEST_PATH, PAIR_STATUS_PATH];
 
 /// 鉴权中间件。**本模块唯一的鉴权入口, 且罩住整台路由器**(见 `router`)。
 async fn require_bearer(
@@ -461,7 +498,12 @@ async fn refuse_writes_in_read_only(
     request: Request,
     next: Next,
 ) -> Result<Response, ApiError> {
-    if is_write_method(request.method()) && read_only_of(&st) {
+    // 配对请求在只读模式下**照常放行**: 它不写用户的任何文件, 只是"申请一枚 token";
+    // 真正的闸门是 5 分钟窗口 + 限流(见 `pairing.rs`)。把它拦成 `forbiddenPath` 会让
+    // 用户在只想禁止改文件时, 顺带连新手机都配不上 —— 那不是这条开关的语义。
+    // (只读模式本身仍由鉴权层罩着: 已配对的手机来申请配对, 也只是拿到一条待确认记录。)
+    let pairing_request = request.uri().path() == PAIR_REQUEST_PATH;
+    if is_write_method(request.method()) && read_only_of(&st) && !pairing_request {
         return Err(ApiError::ForbiddenPath);
     }
     Ok(next.run(request).await)
@@ -481,6 +523,186 @@ fn read_only_of(state: &ServerState) -> bool {
 /// "被校验的路径"和"被打开的路径"是同一个值 —— 否则校验与使用之间就有缝。
 fn resolve_within_shares(state: &ServerState, requested: &str) -> Result<PathBuf, ApiError> {
     paths::ensure_within(&shares_of(state)?, std::path::Path::new(requested))
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// mDNS 配对的两个端点(计划 §0.2) —— **免 Bearer, 但一点也没少防**
+//
+// 它们的免鉴权是产品决定的: 手机就是来"申请"那枚 token 的, 手里当然还没有它。代价是
+// 这两个路径是**未认证攻击面**, 所以每一层都写死在这里:
+//   · 免鉴权 → `PUBLIC_PATHS`;
+//   · 窗口 → 状态机(`PairingStore::request` 在窗口关着时直接 409, 连随机数都不碰);
+//   · 限流 → 状态机(每设备 10 秒 1 次、最多 3 个待确认);
+//   · 过期 → 状态机(请求 60 秒、窗口 5 分钟);
+//   · **token 只在批准之后返回** → 状态机里根本没有 token 字段(见 `pairing.rs` 模块头),
+//     这里只在 `status == Approved` 时从配置现取;
+//   · `Host` 头不可信 → `approved_url` 只接受"本机某个 LAN 地址 + 本次端口"。
+//
+// 错误码是 **snake_case** 的(`pairing_closed` / `rate_limited` / `bad_request` /
+// `not_found`), 这是 §0.2 冻结的契约, 与既有 `ApiError` 的 camelCase **不同**。
+// 不把它塞进 `ApiError` 是刻意的: 那会让既有端点的错误面为了两个新端点而改名。
+// ════════════════════════════════════════════════════════════════════════════
+
+/// 配对端点的错误面(§0.2)。闭集 —— 安卓按 `code` 分支。
+#[derive(Debug, Clone, Copy)]
+struct PairApiError {
+    status: StatusCode,
+    code: &'static str,
+}
+
+impl PairApiError {
+    fn bad_request() -> Self {
+        Self { status: StatusCode::BAD_REQUEST, code: "bad_request" }
+    }
+    fn closed() -> Self {
+        Self { status: StatusCode::CONFLICT, code: "pairing_closed" }
+    }
+    fn rate_limited() -> Self {
+        Self { status: StatusCode::TOO_MANY_REQUESTS, code: "rate_limited" }
+    }
+    fn not_found() -> Self {
+        Self { status: StatusCode::NOT_FOUND, code: "not_found" }
+    }
+    fn internal() -> Self {
+        Self { status: StatusCode::INTERNAL_SERVER_ERROR, code: "internal" }
+    }
+
+    /// 状态机拒绝理由 → HTTP。`TooManyPending` 归 `429 rate_limited`: §0.2 没有为
+    /// "待确认已满"单列一档, 而它和"刷得太快"对手机是同一句话 —— 等一会儿再试。
+    fn from_pair(e: super::pairing::PairError) -> Self {
+        use super::pairing::PairError as E;
+        match e {
+            E::Closed => Self::closed(),
+            E::RateLimited | E::TooManyPending => Self::rate_limited(),
+            E::BadRequest => Self::bad_request(),
+            E::NotFound | E::Expired => Self::not_found(),
+            E::RandomUnavailable => Self::internal(),
+        }
+    }
+}
+
+impl IntoResponse for PairApiError {
+    fn into_response(self) -> Response {
+        (self.status, Json(serde_json::json!({ "code": self.code }))).into_response()
+    }
+}
+
+/// `GET /api/v1/pair/status` 的查询参数(线上是 `?requestId=...`)。
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PairStatusQuery {
+    request_id: String,
+}
+
+/// 批准之后给手机的那个 URL —— **绝不信任任意 `Host` 头**(计划 §8 第 7 条)。
+///
+/// 规则(§0.2): 优先用请求的 `Host`, 但它必须**恰好是**本机某个 `NetHints.lan` 地址
+/// 加上本次监听端口; 否则回退到第一个 LAN 地址。于是"域名重绑定 / 伪造 Host"最多只能
+/// 让我们回一句正确的本机地址, 不可能把手机引到攻击者的地址上。
+///
+/// 没有 LAN 地址时最后回落到本机探测(`local_ipv4`)。这个值手机通常连不上, 但它是一条
+/// **诚实的**本机地址, 而不是一个信来的字符串。
+fn approved_url(host: Option<&str>, port: u16, hints: &network::NetHints) -> String {
+    let lan: Vec<&str> = hints
+        .lan
+        .iter()
+        .map(|l| l.address.trim())
+        .filter(|a| !a.is_empty())
+        .collect();
+    if let Some(raw) = host {
+        if let Ok(authority) = raw.parse::<axum::http::uri::Authority>() {
+            let host_name = authority.host();
+            // 端口也必须对得上: `Host: 192.168.1.20:1` 不是"同一台机器的同一台服务"。
+            if authority.port_u16() == Some(port) && lan.iter().any(|ip| *ip == host_name) {
+                return format!("http://{}:{}", host_name, port);
+            }
+        }
+    }
+    match lan.first() {
+        Some(ip) => format!("http://{}:{}", ip, port),
+        None => format!(
+            "http://{}:{}",
+            super::local_ipv4().unwrap_or_else(|| "127.0.0.1".into()),
+            port
+        ),
+    }
+}
+
+/// `POST /api/v1/pair/request` —— 手机申请配对。成功回 `202` + `{requestId, expiresAt}`。
+///
+/// 字段缺失/坏 JSON 由 `J` 提取器兜住, 这里再映射成配对的 `bad_request`(§0.2 要的是
+/// snake_case, 不是 `ApiError` 的 `badRequest`)。
+async fn pair_request(
+    State(st): State<ServerState>,
+    OptConnect(peer): OptConnect,
+    payload: Result<J<PairRequest>, ApiError>,
+) -> Result<Response, PairApiError> {
+    let J(req) = payload.map_err(|_| PairApiError::bad_request())?;
+    let ip = peer.map(|a| a.ip().to_string()).unwrap_or_default();
+    let (challenge, pending) = {
+        let mut store = st.pairing.lock().map_err(|_| PairApiError::internal())?;
+        // 先记下"这台设备原来就有一条活着的待确认请求吗": `request` 对重试是幂等的
+        // (返回原来那张), 而桌面端**不该为一次重试再弹一个框**。判定与幂等分支共用
+        // 同一份状态, 而且在同一把锁里, 所以不会看错。
+        let retried = store.pending_request_for_device(&req.device_id).is_some();
+        let challenge = store
+            .request(req, &ip)
+            .map_err(PairApiError::from_pair)?;
+        // 事件负载与状态机里的那条记录是**同一份快照**: 桌面端点"允许"时用的 requestId
+        // 必须与手机轮询的那个一字不差。重试时不带负载 → 不发事件。
+        let pending = if retried {
+            None
+        } else {
+            store.pending_pairing(&challenge.request_id)
+        };
+        (challenge, pending)
+    };
+    // 锁外发事件: 通知端会调 Tauri 的 emit, 不该在状态机锁里做。
+    if let (Some(notify), Some(pending)) = (&st.pair_notify, pending) {
+        notify(PairingEvent::Request(pending));
+    }
+    Ok((StatusCode::ACCEPTED, Json(challenge)).into_response())
+}
+
+/// `GET /api/v1/pair/status?requestId=...` —— 手机轮询配对结果。
+///
+/// **token 只会在 `approved` 这一支出现**, 而且是从配置现取的(`PairingStore` 里没有它)。
+async fn pair_status(
+    State(st): State<ServerState>,
+    headers: HeaderMap,
+    query: Result<Q<PairStatusQuery>, ApiError>,
+) -> Result<Response, PairApiError> {
+    let Q(q) = query.map_err(|_| PairApiError::bad_request())?;
+    let status = st
+        .pairing
+        .lock()
+        .map_err(|_| PairApiError::internal())?
+        .status(&q.request_id)
+        .ok_or_else(PairApiError::not_found)?;
+    let body = match status {
+        PairStatus::Pending => serde_json::json!({ "status": "pending" }),
+        PairStatus::Denied => serde_json::json!({ "status": "denied" }),
+        PairStatus::Expired => serde_json::json!({ "status": "expired" }),
+        PairStatus::Approved => {
+            let (token, port) = {
+                let cfg = st.config.read().map_err(|_| PairApiError::internal())?;
+                (cfg.token.clone(), super::running_port().unwrap_or(cfg.port))
+            };
+            let hints = super::current_hints();
+            let url = approved_url(
+                headers.get(header::HOST).and_then(|v| v.to_str().ok()),
+                port,
+                &hints,
+            );
+            serde_json::json!({
+                "status": "approved",
+                "url": url,
+                "token": token,
+                "desktopName": super::mdns::hostname(),
+            })
+        }
+    };
+    Ok((StatusCode::OK, Json(body)).into_response())
 }
 
 /// 端点路由表。**新增端点只加在这里。**
@@ -505,6 +727,9 @@ fn endpoint_routes() -> Router<ServerState> {
         .route("/api/v1/move", axum::routing::post(move_photos))
         // M4′ Task 3: "谁在连我"。读端点 —— 只读模式下**照常工作**(用户开着只读时更需要看它)。
         .route("/api/v1/clients", get(clients_get))
+        // mDNS 配对(§0.2): 免 Bearer, 但窗口/限流/过期全在状态机里; token 只在批准后出现。
+        .route(PAIR_REQUEST_PATH, post(pair_request))
+        .route(PAIR_STATUS_PATH, get(pair_status))
 }
 
 /// 完整路由: **整台路由器**外面套三层中间件 + 一层响应规范化(M4′ Task 3 从两层变四层)。
@@ -1120,6 +1345,7 @@ mod tests {
                 port: 0,
                 token: token.to_string(),
                 shares: Vec::new(),
+                ..Default::default()
             }
             .into_state()
         }
@@ -1236,6 +1462,7 @@ mod tests {
                 port: 0,
                 token: String::new(), // ← 默认配置的真实形态
                 shares: Vec::new(),
+                ..Default::default()
             }
             .into_state(),
         );
@@ -1297,6 +1524,7 @@ mod tests {
                 port: 0,
                 token: token.clone(),
                 shares: Vec::new(),
+                ..Default::default()
             }
             .into_state(),
         );
@@ -1375,6 +1603,7 @@ mod tests {
             port: 0,
             token: token.clone(),
             shares: vec![root.clone()],
+            ..Default::default()
         };
         (router(cfg.into_state()), token, root)
     }
@@ -1432,6 +1661,7 @@ mod tests {
                 port: 0,
                 token: token.clone(),
                 shares: vec![root.clone()],
+                ..Default::default()
             }
             .into_state(),
         );
@@ -1645,6 +1875,56 @@ mod tests {
         }
         for m in ["PUT", "POST", "PATCH", "DELETE"] {
             assert!(is_write_method(&Method::from_bytes(m.as_bytes()).unwrap()), "{m} 是写");
+        }
+    }
+
+    fn hints_with(lan: &[&str]) -> network::NetHints {
+        network::NetHints {
+            lan: lan
+                .iter()
+                .map(|ip| network::LanAddress {
+                    address: (*ip).to_string(),
+                    interface: "WLAN".to_string(),
+                })
+                .collect(),
+            public_ipv4: Vec::new(),
+            profile: network::NetworkProfile::Private,
+            firewall_hint: String::new(),
+        }
+    }
+
+    /// **`Host` 头不可信**(计划 §8 第 7 条): 只有"本机某个 LAN 地址 + 本次端口"才被采用,
+    /// 其余(别的 IP、别的端口、域名、没有 Host)一律回退到第一个 LAN 地址。
+    ///
+    /// 这条测试是 `approved_url` 的全部判据 —— 它一旦放宽, 手机就可能被引到攻击者的地址上,
+    /// 而整个流程看起来仍然"配对成功"。
+    #[test]
+    fn approved_url_only_trusts_a_local_lan_host() {
+        let hints = hints_with(&["192.168.1.20", "10.0.0.5"]);
+
+        // 正例: 两个 LAN 地址都是本机地址, 端口也对。
+        assert_eq!(
+            approved_url(Some("192.168.1.20:8765"), 8765, &hints),
+            "http://192.168.1.20:8765"
+        );
+        assert_eq!(
+            approved_url(Some("10.0.0.5:8765"), 8765, &hints),
+            "http://10.0.0.5:8765"
+        );
+
+        // 反例: 非本机 IP / 端口不对 / 域名 / 缺端口 / 没有 Host —— 全部回退第一个 LAN 地址。
+        for bad in [
+            Some("192.168.1.99:8765"),
+            Some("192.168.1.20:9999"),
+            Some("evil.example:8765"),
+            Some("192.168.1.20"),
+            None,
+        ] {
+            assert_eq!(
+                approved_url(bad, 8765, &hints),
+                "http://192.168.1.20:8765",
+                "Host={bad:?} 不该被采用"
+            );
         }
     }
 }

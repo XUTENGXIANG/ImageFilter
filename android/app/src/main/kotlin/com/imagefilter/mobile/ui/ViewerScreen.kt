@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -33,6 +34,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.painter.ColorPainter
 import androidx.compose.ui.input.pointer.pointerInput
@@ -46,6 +48,8 @@ import coil3.request.ImageRequest
 import com.imagefilter.mobile.data.Pairing
 import com.imagefilter.mobile.data.ViewerAction
 import com.imagefilter.mobile.data.WriteAction
+import com.imagefilter.mobile.ui.theme.ImageFilterTheme
+import com.imagefilter.mobile.ui.theme.LocalPhotoPalette
 import kotlinx.coroutines.launch
 
 /** 单指水平拖动多少 dp 算"切一张"。像素换算只在这里做一次(状态机只认像素)。 */
@@ -65,7 +69,7 @@ private val VIEWER_DRAG_THRESHOLD = 56.dp
  *
  * 四个"绝不"都对应一次真实的坏结果:
  *   · **绝不在这里拼 URL** —— 全部来自 [ViewerState.displayUrl](由 `ApiClient.previewUrl` 拼);
- *   · **绝不预取高清** —— 预取只发默认档(高清是电脑全解码, 预取它等于每滑一张卡一次);
+ *   · **绝不预取高清** —— 预取只发默认档(高清可能触发电脑全解码, 预取它等于每滑一张卡一次);
  *   · **绝不给白屏** —— 默认档失败画错误卡(有话+有动作), 高清失败退回默认档 + 一句提示;
  *   · **绝不自己判"写成了"** —— 星级/色标的成败只由服务端的逐项回报决定(见 [DecisionStore]);
  *     写失败时**不回滚、不前进**, 而是把那句话与重试摆到用户眼前(规格 §11 纪律③)。
@@ -127,197 +131,202 @@ fun ViewerScreen(
     LaunchedEffect(vm) { vm.open() }
     LaunchedEffect(state.index) { onIndexChange(state.index) }
 
-    Surface(modifier = Modifier.fillMaxSize()) {
-        Column(modifier = Modifier.fillMaxSize()) {
-            ViewerTopBar(
-                title = state.title,
-                canRequestHighRes = state.canRequestHighRes,
-                highResLoading = state.highResLoading,
-                onHighRes = { vm.enterHighRes() },
-                // 跨张的"未同步 N 张"**带动作**: 没有动作的角标等于让用户知道出事了却做不了什么
-                unsyncedLabel = state.unsyncedLabel,
-                onRetryUnsynced = { scope.launch { vm.retryAllUnsynced() } },
-                onClose = onClose,
-            )
-
-            // 画质上界必须明示(RAW 的默认档只是相机内嵌的预览)
-            val hint = state.hint
-            if (hint != null) {
-                Text(
-                    hint,
-                    style = MaterialTheme.typography.bodySmall,
-                    modifier = Modifier.padding(start = 12.dp, end = 12.dp, bottom = 6.dp),
+    // 查看器/滑卡的画布与 chrome **始终深色**（与桌面 `viewer.tsx` 的 bg-black/95 一致）：
+    // 浅色主题只换目录/网格/设置，不把看片的那块画布变白 —— 照片才是屏幕上最亮的东西。
+    ImageFilterTheme(darkTheme = true) {
+        Surface(modifier = Modifier.fillMaxSize(), color = Color.Black) {
+            Column(modifier = Modifier.fillMaxSize()) {
+                ViewerTopBar(
+                    title = state.title,
+                    canRequestHighRes = state.canRequestHighRes,
+                    highResLoading = state.highResLoading,
+                    onHighRes = { vm.enterHighRes() },
+                    // 跨张的"未同步 N 张"**带动作**: 没有动作的角标等于让用户知道出事了却做不了什么
+                    unsyncedLabel = state.unsyncedLabel,
+                    onRetryUnsynced = { scope.launch { vm.retryAllUnsynced() } },
+                    onClose = onClose,
                 )
-            }
 
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .weight(1f)
-                    // 平移出界时露出背景, 而不是让图飘到别的控件上
-                    .clipToBounds()
-                    // ① 缩放/平移。`detectTransformGestures` 对单指拖动也会回调(zoom=1),
-                    //    所以"这一下算切图还是平移"的判定在状态机里(见 onTransform)。
-                    .pointerInput(Unit) {
-                        detectTransformGestures { _, pan, zoom, _ ->
-                            vm.onTransform(zoom = zoom, panX = pan.x, panY = pan.y)
-                        }
-                    }
-                    // ② 单击 = 关闭, 双击 = 1x↔2x; `onPress` 的边界正好是"一次手势"的边界,
-                    //    用它把上一轮未达阈值的拖动清零(两次半程拖动不许加起来切一张)。
-                    .pointerInput(Unit) {
-                        detectTapGestures(
-                            onPress = {
-                                vm.onGestureStart()
-                                tryAwaitRelease()
-                                vm.onGestureEnd()
-                            },
-                            onTap = { onClose() },
-                            onDoubleTap = { vm.toggleZoom() },
-                        )
-                    },
-            ) {
+                // 画质上界必须明示(RAW 的默认档只是相机内嵌的预览)
+                val hint = state.hint
+                if (hint != null) {
+                    // RAW/画质说明默认收成一行；全文点「详情」。照片才是这一页的主角。
+                    QuietText(
+                        text = hint,
+                        collapsedLines = 1,
+                        modifier = Modifier.padding(start = 12.dp, end = 12.dp, bottom = 2.dp),
+                    )
+                }
+
                 Box(
                     modifier = Modifier
-                        .fillMaxSize()
-                        .graphicsLayer {
-                            scaleX = state.mode.scale
-                            scaleY = state.mode.scale
-                            translationX = state.mode.offsetX
-                            translationY = state.mode.offsetY
+                        .fillMaxWidth()
+                        .weight(1f)
+                        // 平移出界时露出背景, 而不是让图飘到别的控件上
+                        .clipToBounds()
+                        // ① 缩放/平移。`detectTransformGestures` 对单指拖动也会回调(zoom=1),
+                        //    所以"这一下算切图还是平移"的判定在状态机里(见 onTransform)。
+                        .pointerInput(Unit) {
+                            detectTransformGestures { _, pan, zoom, _ ->
+                                vm.onTransform(zoom = zoom, panX = pan.x, panY = pan.y)
+                            }
+                        }
+                        // ② 单击 = 关闭, 双击 = 1x↔2x; `onPress` 的边界正好是"一次手势"的边界,
+                        //    用它把上一轮未达阈值的拖动清零(两次半程拖动不许加起来切一张)。
+                        .pointerInput(Unit) {
+                            detectTapGestures(
+                                onPress = {
+                                    vm.onGestureStart()
+                                    tryAwaitRelease()
+                                    vm.onGestureEnd()
+                                },
+                                onTap = { onClose() },
+                                onDoubleTap = { vm.toggleZoom() },
+                            )
                         },
                 ) {
-                    // 默认档**永远画着**: 高清只是盖在它上面的一层。高清失败时这一层还在,
-                    // 所以"退回默认档"不需要重新加载, 也不会闪一下白屏。
-                    key(state.reloadNonce) {
-                        AsyncImage(
-                            model = state.defaultUrl,
-                            imageLoader = imageLoader,
-                            contentDescription = state.current?.displayName,
-                            contentScale = ContentScale.Fit,
-                            placeholder = ColorPainter(MaterialTheme.colorScheme.surfaceVariant),
-                            error = ColorPainter(MaterialTheme.colorScheme.errorContainer),
-                            onSuccess = { vm.onDefaultLoaded() },
-                            onError = { scope.launch { vm.onDefaultFailed(it.result.throwable) } },
-                            modifier = Modifier.fillMaxSize(),
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .graphicsLayer {
+                                scaleX = state.mode.scale
+                                scaleY = state.mode.scale
+                                translationX = state.mode.offsetX
+                                translationY = state.mode.offsetY
+                            },
+                    ) {
+                        // 默认档**永远画着**: 高清只是盖在它上面的一层。高清失败时这一层还在,
+                        // 所以"退回默认档"不需要重新加载, 也不会闪一下白屏。
+                        key(state.reloadNonce) {
+                            AsyncImage(
+                                model = state.defaultUrl,
+                                imageLoader = imageLoader,
+                                contentDescription = state.current?.displayName,
+                                contentScale = ContentScale.Fit,
+                                placeholder = ColorPainter(MaterialTheme.colorScheme.surfaceVariant),
+                                error = ColorPainter(MaterialTheme.colorScheme.errorContainer),
+                                onSuccess = { vm.onDefaultLoaded() },
+                                onError = { scope.launch { vm.onDefaultFailed(it.result.throwable) } },
+                                modifier = Modifier.fillMaxSize(),
+                            )
+                        }
+
+                        val highResUrl = state.highResUrl
+                        if (state.quality == ViewerQuality.HIGH_RES && highResUrl != null) {
+                            AsyncImage(
+                                model = highResUrl,
+                                imageLoader = imageLoader,
+                                contentDescription = state.current?.displayName,
+                                contentScale = ContentScale.Fit,
+                                onSuccess = { vm.onHighResLoaded() },
+                                onError = { scope.launch { vm.onHighResFailed(it.result.throwable) } },
+                                modifier = Modifier.fillMaxSize(),
+                            )
+                        }
+                    }
+
+                    val highResError = state.highResError
+                    when {
+                        // 高清在解码: 明确告诉用户电脑在忙(实测最重的样本是个 50MB 线性 DNG)
+                        state.highResLoading -> ViewerNotice(
+                            loading = true,
+                            text = "正在让电脑解码这一张…（RAW / 大 DNG 可能要十几秒，默认档的图还在）",
+                            modifier = Modifier.align(Alignment.TopCenter),
+                        )
+
+                        // 高清失败: 图已退回默认档, 这句话只是提示 + 一个动作
+                        highResError != null -> ViewerNotice(
+                            loading = false,
+                            text = highResError.head() + "，" + highResError.text(),
+                            modifier = Modifier.align(Alignment.TopCenter),
+                            actionLabel = "再试一次高清",
+                            onAction = { vm.enterHighRes() },
+                            onDismiss = { vm.dismissHighResError() },
+                        )
+
+                        // 默认档在加载
+                        state.loading && state.error == null -> ViewerNotice(
+                            loading = true,
+                            text = "正在取这张图的预览…",
+                            modifier = Modifier.align(Alignment.TopCenter),
                         )
                     }
 
-                    val highResUrl = state.highResUrl
-                    if (state.quality == ViewerQuality.HIGH_RES && highResUrl != null) {
-                        AsyncImage(
-                            model = highResUrl,
-                            imageLoader = imageLoader,
-                            contentDescription = state.current?.displayName,
-                            contentScale = ContentScale.Fit,
-                            onSuccess = { vm.onHighResLoaded() },
-                            onError = { scope.launch { vm.onHighResFailed(it.result.throwable) } },
-                            modifier = Modifier.fillMaxSize(),
+                    // 默认档**真的没图**: 错误卡(有话 + 有动作), 绝不是白屏
+                    val error = state.error
+                    if (error != null) {
+                        ViewerErrorCard(
+                            error = error,
+                            onRetry = { vm.retryDefault() },
+                            onReloadFolder = {
+                                onReloadFolder()
+                                onClose()
+                            },
+                            onClose = onClose,
+                            modifier = Modifier
+                                .align(Alignment.Center)
+                                .padding(16.dp),
                         )
                     }
                 }
 
-                val highResError = state.highResError
+                // ── 决策(星级/色标)的写入结果 ───────────────────────────────────
+                //
+                // 纪律③("未同步 ≠ 已同步")在查看器里的落点就在这几行: 失败要说清 + 给动作,
+                // 批量重试的半成功要说清, 其余时候也要有一句"这台手机上的改动还没写进电脑"。
+                val writeFailure = state.writeFailure
+                val batchNote = state.lastBatchNote
+                val guardNote = state.ratingGuardNote
+                val unsyncedNote = state.unsyncedNote
                 when {
-                    // 高清在解码: 明确告诉用户电脑在忙(实测最重的样本是个 50MB 线性 DNG)
-                    state.highResLoading -> ViewerNotice(
-                        loading = true,
-                        text = "正在让电脑解码这一张…（RAW / 大 DNG 可能要十几秒，默认档的图还在）",
-                        modifier = Modifier.align(Alignment.TopCenter),
-                    )
-
-                    // 高清失败: 图已退回默认档, 这句话只是提示 + 一个动作
-                    highResError != null -> ViewerNotice(
-                        loading = false,
-                        text = highResError.head() + "，" + highResError.text(),
-                        modifier = Modifier.align(Alignment.TopCenter),
-                        actionLabel = "再试一次高清",
-                        onAction = { vm.enterHighRes() },
-                        onDismiss = { vm.dismissHighResError() },
-                    )
-
-                    // 默认档在加载
-                    state.loading && state.error == null -> ViewerNotice(
-                        loading = true,
-                        text = "正在取这张图的预览…",
-                        modifier = Modifier.align(Alignment.TopCenter),
-                    )
-                }
-
-                // 默认档**真的没图**: 错误卡(有话 + 有动作), 绝不是白屏
-                val error = state.error
-                if (error != null) {
-                    ViewerErrorCard(
-                        error = error,
-                        onRetry = { vm.retryDefault() },
+                    writeFailure != null -> WriteFailureCard(
+                        head = state.writeHead.orEmpty(),
+                        text = state.writeText.orEmpty(),
+                        action = state.writeAction,
+                        actionLabel = state.writeActionLabel.orEmpty(),
+                        onRetry = { scope.launch { vm.retryCurrent() } },
                         onReloadFolder = {
                             onReloadFolder()
                             onClose()
                         },
-                        onClose = onClose,
-                        modifier = Modifier
-                            .align(Alignment.Center)
-                            .padding(16.dp),
+                        onReconnect = onClose,
+                        onDismiss = { vm.dismissWriteFailure() },
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
+                    )
+
+                    batchNote != null -> ViewerNotice(loading = false, text = batchNote)
+
+                    // 一次 1..5 星的点击被**拦下**了(不知道电脑上是几星) —— 必须说出来,
+                    // 否则用户只看到"点了没反应", 那比拒绝更坏。
+                    guardNote != null -> Text(
+                        guardNote,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.padding(start = 12.dp, end = 12.dp, bottom = 4.dp),
+                    )
+
+                    unsyncedNote != null -> Text(
+                        unsyncedNote,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.padding(start = 12.dp, end = 12.dp, bottom = 4.dp),
                     )
                 }
-            }
 
-            // ── 决策(星级/色标)的写入结果 ───────────────────────────────────
-            //
-            // 纪律③("未同步 ≠ 已同步")在查看器里的落点就在这几行: 失败要说清 + 给动作,
-            // 批量重试的半成功要说清, 其余时候也要有一句"这台手机上的改动还没写进电脑"。
-            val writeFailure = state.writeFailure
-            val batchNote = state.lastBatchNote
-            val guardNote = state.ratingGuardNote
-            val unsyncedNote = state.unsyncedNote
-            when {
-                writeFailure != null -> WriteFailureCard(
-                    head = state.writeHead.orEmpty(),
-                    text = state.writeText.orEmpty(),
-                    action = state.writeAction,
-                    actionLabel = state.writeActionLabel.orEmpty(),
-                    onRetry = { scope.launch { vm.retryCurrent() } },
-                    onReloadFolder = {
-                        onReloadFolder()
-                        onClose()
-                    },
-                    onReconnect = onClose,
-                    onDismiss = { vm.dismissWriteFailure() },
-                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
-                )
-
-                batchNote != null -> ViewerNotice(loading = false, text = batchNote)
-
-                // 一次 1..5 星的点击被**拦下**了(不知道电脑上是几星) —— 必须说出来,
-                // 否则用户只看到"点了没反应", 那比拒绝更坏。
-                guardNote != null -> Text(
-                    guardNote,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.error,
-                    modifier = Modifier.padding(start = 12.dp, end = 12.dp, bottom = 4.dp),
-                )
-
-                unsyncedNote != null -> Text(
-                    unsyncedNote,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.error,
-                    modifier = Modifier.padding(start = 12.dp, end = 12.dp, bottom = 4.dp),
+                // 底部: 星级 + 色标。**写完不自动前进**(M2′ 的查看器是手动切图的那一种),
+                // 失败更不前进 —— 见 ViewerViewModel.commit 的注释。
+                RatingBar(
+                    rating = state.rating,
+                    label = state.label,
+                    // 电脑上是几星(三态): 画在条上, 并且由 setRating 用来拦下一次瞎写。
+                    desktopRating = state.desktopRating,
+                    desktopRatingFromWrite = state.desktopRatingFromWrite,
+                    enabled = !state.writing,
+                    writing = state.writing,
+                    onRating = { stars -> scope.launch { vm.setRating(stars) } },
+                    onLabel = { label -> scope.launch { vm.setLabel(label) } },
                 )
             }
-
-            // 底部: 星级 + 色标。**写完不自动前进**(M2′ 的查看器是手动切图的那一种),
-            // 失败更不前进 —— 见 ViewerViewModel.commit 的注释。
-            RatingBar(
-                rating = state.rating,
-                label = state.label,
-                // 电脑上是几星(三态): 画在条上, 并且由 setRating 用来拦下一次瞎写。
-                desktopRating = state.desktopRating,
-                desktopRatingFromWrite = state.desktopRatingFromWrite,
-                enabled = !state.writing,
-                writing = state.writing,
-                onRating = { stars -> scope.launch { vm.setRating(stars) } },
-                onLabel = { label -> scope.launch { vm.setLabel(label) } },
-            )
         }
     }
 }
@@ -381,7 +390,8 @@ private fun ViewerTopBar(
     onRetryUnsynced: () -> Unit,
     onClose: () -> Unit,
 ) {
-    Surface(tonalElevation = 3.dp) {
+    val p = LocalPhotoPalette.current
+    Surface(color = p.s1) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -406,11 +416,14 @@ private fun ViewerTopBar(
             // 未同步角标**本身就是按钮**: 点一下把这一批重试一遍(没有动作的警告等于没警告)。
             if (unsyncedLabel != null) {
                 TextButton(onClick = onRetryUnsynced) {
-                    Text(unsyncedLabel, color = MaterialTheme.colorScheme.error)
+                    Text(unsyncedLabel, color = p.pending)
                 }
             }
             TextButton(onClick = onHighRes, enabled = canRequestHighRes) { Text("高清") }
-            TextButton(onClick = onClose) { Text("关闭") }
+            TextButton(
+                onClick = onClose,
+                colors = ButtonDefaults.textButtonColors(contentColor = p.textSecondary),
+            ) { Text("关闭") }
         }
     }
 }

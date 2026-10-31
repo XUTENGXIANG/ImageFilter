@@ -2,16 +2,20 @@
 // SPDX-License-Identifier: MIT
 package com.imagefilter.mobile.ui
 
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
@@ -22,6 +26,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -29,13 +34,17 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.imagefilter.mobile.data.BrowseMessages
 import com.imagefilter.mobile.data.FolderEntryDto
 import com.imagefilter.mobile.data.Pairing
+import com.imagefilter.mobile.ui.theme.LocalPhotoPalette
 import kotlinx.coroutines.launch
 
 /**
@@ -65,6 +74,7 @@ fun BrowseScreen(
     val state by vm.state.collectAsState()
     val scope = rememberCoroutineScope()
     val drawer = rememberDrawerState(DrawerValue.Closed)
+    val p = LocalPhotoPalette.current
 
     LaunchedEffect(vm) { vm.loadRoots() }
 
@@ -121,9 +131,27 @@ fun BrowseScreen(
                 TopAppBar(
                     title = { Text(titleOf(state)) },
                     navigationIcon = {
-                        TextButton(onClick = { scope.launch { drawer.open() } }) { Text("目录") }
+                        TextButton(
+                            onClick = { scope.launch { drawer.open() } },
+                            colors = ButtonDefaults.textButtonColors(contentColor = p.textSecondary),
+                        ) { Text("目录") }
                     },
-                    actions = { TextButton(onClick = onSettings) { Text("设置") } },
+                    actions = {
+                        TextButton(
+                            onClick = onSettings,
+                            colors = ButtonDefaults.textButtonColors(contentColor = p.textSecondary),
+                        ) { Text("设置") }
+                    },
+                    colors = TopAppBarDefaults.topAppBarColors(containerColor = p.s1),
+                    modifier = Modifier.drawWithContent {
+                        drawContent()
+                        drawLine(
+                            color = p.hairline,
+                            start = Offset(0f, size.height),
+                            end = Offset(size.width, size.height),
+                            strokeWidth = 1f,
+                        )
+                    },
                 )
             },
         ) { padding ->
@@ -134,6 +162,7 @@ fun BrowseScreen(
                 onRetry = { scope.launch { vm.retry(it) } },
                 onRefreshRoots = { scope.launch { vm.loadRoots() } },
                 onOpenFolder = onOpenFolder,
+                onOpenDrawer = { scope.launch { drawer.open() } },
             )
         }
     }
@@ -150,7 +179,9 @@ private fun MainRegion(
     onRetry: (String) -> Unit,
     onRefreshRoots: () -> Unit,
     onOpenFolder: (FolderEntryDto) -> Unit,
+    onOpenDrawer: () -> Unit,
 ) {
+    val p = LocalPhotoPalette.current
     Column(modifier = modifier.fillMaxSize().padding(16.dp)) {
         val rootsError = state.rootsError
         when {
@@ -168,16 +199,33 @@ private fun MainRegion(
             !state.hasRoots -> {
                 HintCard(body = BrowseMessages.NO_SHARES)
                 Spacer(Modifier.height(12.dp))
-                Button(onClick = onRefreshRoots) { Text("刷新") }
+                Button(
+                    onClick = onRefreshRoots,
+                    shape = RoundedCornerShape(10.dp),
+                ) { Text("刷新") }
             }
 
-            state.selected == null -> {
-                Text(BrowseMessages.PICK_A_FOLDER, style = MaterialTheme.typography.titleMedium)
-                Spacer(Modifier.height(8.dp))
-                Text(
-                    "点左上角「目录」，展开电脑上共享的目录树，再点一个目录看它的内容。",
-                    style = MaterialTheme.typography.bodyMedium,
-                )
+            state.selected == null -> Box(
+                modifier = Modifier.fillMaxWidth().weight(1f),
+                contentAlignment = Alignment.Center,
+            ) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text(
+                        BrowseMessages.PICK_A_FOLDER,
+                        style = MaterialTheme.typography.titleMedium,
+                    )
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        "从左侧目录树选一个文件夹",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = p.textMuted,
+                    )
+                    Spacer(Modifier.height(16.dp))
+                    Button(
+                        onClick = onOpenDrawer,
+                        shape = RoundedCornerShape(10.dp),
+                    ) { Text("打开目录") }
+                }
             }
 
             else -> SelectedFolder(
@@ -209,6 +257,7 @@ private fun ColumnScope.SelectedFolder(
 ) {
     val path = state.selected ?: return
     val entry = state.entryFor(path)
+    val p = LocalPhotoPalette.current
 
     Text(entry.name, style = MaterialTheme.typography.titleMedium)
     Spacer(Modifier.height(4.dp))
@@ -217,11 +266,15 @@ private fun ColumnScope.SelectedFolder(
         path,
         style = MaterialTheme.typography.bodySmall,
         fontFamily = FontFamily.Monospace,
-        maxLines = 2,
+        maxLines = 1,
         overflow = TextOverflow.Ellipsis,
+        color = p.textMuted,
     )
     Spacer(Modifier.height(12.dp))
-    Button(onClick = { onOpenFolder(entry) }) { Text("打开这个文件夹的照片") }
+    Button(
+        onClick = { onOpenFolder(entry) },
+        shape = RoundedCornerShape(10.dp),
+    ) { Text("打开这个文件夹的照片") }
     Spacer(Modifier.height(16.dp))
 
     val error = state.selectedError

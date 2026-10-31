@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -29,6 +30,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.imagefilter.mobile.ui.theme.LocalPhotoPalette
+import com.imagefilter.mobile.ui.theme.PhotoColors
 
 /**
  * 五色标签对应的颜色。**只在这里出现一次** —— 与 [LABELS] 的取值一一对应
@@ -38,11 +41,11 @@ import androidx.compose.ui.unit.sp
  * 两处各写一份调色板, 迟早有一处忘记跟着改, 而"红标"在筛选栏与格子上就不是一个红了。
  */
 internal val LABEL_COLORS: Map<String, Color> = mapOf(
-    "red" to Color(0xFFE53935),
-    "yellow" to Color(0xFFFDD835),
-    "green" to Color(0xFF43A047),
-    "blue" to Color(0xFF1E88E5),
-    "purple" to Color(0xFF8E24AA),
+    "red" to PhotoColors.LabelRed,
+    "yellow" to PhotoColors.LabelYellow,
+    "green" to PhotoColors.LabelGreen,
+    "blue" to PhotoColors.LabelBlue,
+    "purple" to PhotoColors.LabelPurple,
 )
 
 /**
@@ -90,7 +93,8 @@ fun RatingBar(
     onLabel: (String?) -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    Surface(tonalElevation = 3.dp) {
+    val p = LocalPhotoPalette.current
+    Surface(color = p.s1) {
         Column(
             modifier = modifier
                 .fillMaxWidth()
@@ -102,7 +106,11 @@ fun RatingBar(
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 // 0 = 废弃: 与桌面端 X 键、与服务端 xmp:Rating=0 同一件事。
-                TextButton(onClick = { onRating(0) }, enabled = enabled) { Text("✕ 废弃") }
+                TextButton(
+                    onClick = { onRating(0) },
+                    enabled = enabled,
+                    colors = ButtonDefaults.textButtonColors(contentColor = p.textSecondary),
+                ) { Text("✕ 废弃") }
                 Spacer(Modifier.weight(1f))
                 StarRow(rating = rating, enabled = enabled, onRating = onRating)
                 // 星级**未知**时的角标: 与"确知没有星级"(什么都不画)必须看得出来。
@@ -111,7 +119,7 @@ fun RatingBar(
                     Text(
                         RATING_UNKNOWN_MARK,
                         fontSize = 14.sp,
-                        color = MaterialTheme.colorScheme.error,
+                        color = p.pending,
                         modifier = Modifier.padding(horizontal = 2.dp),
                     )
                 }
@@ -126,7 +134,7 @@ fun RatingBar(
                 ratingKnowledgeLabel(desktopRating, desktopRatingFromWrite),
                 style = MaterialTheme.typography.bodySmall,
                 color = if (desktopRating == DesktopRating.Unknown) {
-                    MaterialTheme.colorScheme.error
+                    p.pending
                 } else {
                     MaterialTheme.colorScheme.onSurfaceVariant
                 },
@@ -165,13 +173,14 @@ fun RatingBar(
 /** 1–5 星。用文本字形而不是图标库: 本项目**不新增依赖**(material-icons-extended 不小)。 */
 @Composable
 private fun StarRow(rating: Int?, enabled: Boolean, onRating: (Int) -> Unit) {
+    val p = LocalPhotoPalette.current
     Row(horizontalArrangement = Arrangement.End, verticalAlignment = Alignment.CenterVertically) {
         for (stars in 1..5) {
             val filled = rating != null && stars <= rating
             Text(
                 text = if (filled) "★" else "☆",
                 fontSize = 26.sp,
-                color = if (filled) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline,
+                color = if (filled) p.star else MaterialTheme.colorScheme.outline,
                 modifier = Modifier
                     .clip(CircleShape)
                     .clickable(
@@ -188,20 +197,19 @@ private fun StarRow(rating: Int?, enabled: Boolean, onRating: (Int) -> Unit) {
 /** 一个色标圆点。选中的那个加一圈描边 —— 颜色本身在色弱下不可靠, 描边是第二重信号。 */
 @Composable
 private fun LabelDot(name: String, selected: Boolean, enabled: Boolean, onClick: () -> Unit) {
+    val p = LocalPhotoPalette.current
     val color = LABEL_COLORS[name] ?: MaterialTheme.colorScheme.surfaceVariant
+    // 1dp 描边: 浅色 / 深色都让色点在照片与面板上有一条自己的边界 —— 颜色本身是数据,
+    // 但"这是一个圆点"不该靠背景色碰巧相同来判断。选中时把描边加粗到 2dp(第二重信号)。
+    val ringWidth = if (selected) 2.dp else 1.dp
+    val ringColor = if (selected) MaterialTheme.colorScheme.onSurface else p.labelRing
     Box(
         modifier = Modifier
             .padding(horizontal = 3.dp)
             .size(22.dp)
             .clip(CircleShape)
             .background(color)
-            .then(
-                if (selected) {
-                    Modifier.border(2.dp, MaterialTheme.colorScheme.onSurface, CircleShape)
-                } else {
-                    Modifier
-                },
-            )
+            .border(ringWidth, ringColor, CircleShape)
             .clickable(enabled = enabled, role = Role.Button, onClickLabel = "色标 ${labelName(name)}") {
                 onClick()
             },

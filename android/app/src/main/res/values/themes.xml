@@ -1,5 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- Copyright (c) 2026 XUTENGXIANG / SPDX-License-Identifier: MIT -->
 <resources>
-    <style name="Theme.ImageFilterMobile" parent="android:Theme.Material.NoActionBar" />
+    <!-- 浅色窗口主题: 启动第一帧就与 Compose 的 s0(#FAFAFA)一致, 不先闪一下别的颜色。
+         系统栏图标是深色的(浅底)。App 内的「外观」偏好会在首帧后覆盖这一层。 -->
+    <style name="Theme.ImageFilterMobile" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">#FAFAFA</item>
+        <!-- 浅色主题 → 系统栏图标必须是深色的(否则白色图标压在白顶栏上看不见) -->
+        <item name="android:windowLightStatusBar">true</item>
+    </style>
 </resources>

@@ -8,6 +8,8 @@
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
+use super::pairing::PairedDevice;
+
 pub const CONFIG_FILE: &str = "server-config.json";
 /// 默认端口。被占用时由服务层自增（见 `mod.rs`）。
 pub const DEFAULT_PORT: u16 = 8765;
@@ -46,6 +48,25 @@ pub struct ServerConfig {
     /// 长期决定**(例如"我在外面, 先把写关掉"), 重启后自己变回可写才是那个谎。
     #[serde(default)]
     pub read_only: bool,
+    /// 桌面端在局域网里的**稳定身份**(mDNS TXT 里的 `id=`)。32 个十六进制字符。
+    ///
+    /// 首次起服务时生成并落盘(与 token 同一条纪律: `Default` 里**不**碰随机数 ——
+    /// 一次随机数失败不该让整台桌面端崩在启动路径上)。缺字段时是空串, 由
+    /// `server::ensure_desktop_id_in_memory` 在下一次需要时补上。
+    ///
+    /// 为什么它必须稳定: 安卓用它把"这一台电脑"与"另一台也装了 ImageFilter 的电脑"区分开;
+    /// 每次重启都换一个, 用户会在发现列表里看到一台"新"电脑, 而旧记录永远清不掉。
+    #[serde(default)]
+    pub desktop_id: String,
+    /// 已配对设备(v1 **只用于展示与"忘记"**, 不参与鉴权)。
+    ///
+    /// 平台约束写清楚: 令牌是**全机共享**的一枚(§0 全局约束: v1 不做 per-device token),
+    /// 所以从这里移除一台设备**不会**吊销它的 token —— 真正吊销要走"轮换配对码"
+    /// (计划 §8 第 5 条)。面板文案必须按这个事实写, 不能说成"已断开"。
+    ///
+    /// `#[serde(default)]`: 手改配置漏了这一段不该把 `shares`/`enabled` 一起丢掉。
+    #[serde(default)]
+    pub paired_devices: Vec<PairedDevice>,
 }
 
 /// `ServerConfig::port` 的 serde 默认值。单独写成函数是因为 `#[serde(default)]` 用的是
@@ -72,6 +93,9 @@ impl Default for ServerConfig {
             token: String::new(),
             shares: Vec::new(),
             read_only: false,
+            // 与 token 同一条纪律: 默认配置**不生成** desktopId(启动路径不许碰随机数)。
+            desktop_id: String::new(),
+            paired_devices: Vec::new(),
         }
     }
 }
@@ -134,6 +158,8 @@ mod tests {
         assert!(cfg.token.is_empty(), "默认配置不许生成 token —— 启动路径不许碰随机数");
         assert!(!token_is_valid(&cfg.token), "空 token 必须被判定为不可用(fail-closed)");
         assert!(cfg.shares.is_empty(), "共享根默认空 = 谁都访问不了(安全默认值)");
+        assert!(cfg.desktop_id.is_empty(), "默认配置不许生成 desktopId(同样不碰随机数)");
+        assert!(cfg.paired_devices.is_empty(), "默认没有已配对设备");
         assert!(
             !cfg.read_only,
             "只读模式默认关闭 —— 一次配置缺失不该静默把用户的手机变成只读"
@@ -231,6 +257,8 @@ mod tests {
         assert!(cfg.token.is_empty());
         assert!(cfg.shares.is_empty());
         assert!(!cfg.read_only, "缺 read_only 必须默认**可写**(不静默收窄能力)");
+        assert!(cfg.desktop_id.is_empty(), "缺 desktop_id 时是空串(下一次起服务补上)");
+        assert!(cfg.paired_devices.is_empty(), "缺 paired_devices 时是空列表");
     }
 
     /// `token_is_valid` 的边界。长度对但不是十六进制 → 不可用
@@ -252,12 +280,19 @@ mod tests {
     #[test]
     fn save_then_load_round_trips() {
         let dir = tmp_dir("roundtrip");
+        let device = PairedDevice {
+            device_id: "0123456789abcdef0123456789abcdef".into(),
+            name: "Pixel 8".into(),
+            last_seen_at: 1_792_900_000_000,
+        };
         let cfg = ServerConfig {
             read_only: true,
             enabled: true,
             port: 9001,
             token: "b".repeat(64),
             shares: vec![PathBuf::from("C:\\pics")],
+            desktop_id: "fedcba9876543210fedcba9876543210".into(),
+            paired_devices: vec![device.clone()],
         };
         cfg.save(&dir).expect("落盘");
         let back = ServerConfig::load(&dir);
@@ -266,5 +301,7 @@ mod tests {
         assert_eq!(back.token, "b".repeat(64));
         assert_eq!(back.shares, vec![PathBuf::from("C:\\pics")]);
         assert!(back.read_only, "只读模式必须原样读回(否则重启后它自己变回可写)");
+        assert_eq!(back.desktop_id, "fedcba9876543210fedcba9876543210", "desktopId 必须稳定读回");
+        assert_eq!(back.paired_devices, vec![device], "已配对设备必须原样读回");
     }
 }

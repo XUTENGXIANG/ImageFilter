@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- Copyright (c) 2026 XUTENGXIANG / SPDX-License-Identifier: MIT -->
 <resources>
-    <!-- 自适应图标的背景层: 与手机端暗色主题(#101014)对齐。 -->
-    <color name="ic_launcher_background">#101014</color>
+    <!-- 自适应图标的背景层: 与桌面端 `src-tauri/icons/icon.png` 的底色一致(#18181B)。
+         之前是 #101014, 与桌面图标差一档; 改成同一个值后两端的图标才是同一张。 -->
+    <color name="ic_launcher_background">#18181B</color>
 </resources>

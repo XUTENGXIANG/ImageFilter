@@ -12,7 +12,9 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -24,7 +26,11 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.imagefilter.mobile.ui.theme.LocalPhotoPalette
 
 /**
  * 网格顶部的**筛选栏**(规格 §8.1)—— M2′ 的另一半价值点: 打完分不能筛, 等于没做完。
@@ -53,27 +59,59 @@ fun FilterBar(
     onChange: (Filters) -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    // 默认展开: 这一页的卖点就是"按星级筛", 藏起来的筛选栏等于没有筛选栏。
-    var open by remember { mutableStateOf(true) }
+    // 默认收起: 网格页的主角是照片, 三行 chips 常驻会吃掉接近四成的高度。
+    // 摘要行仍然说清"现在在按什么筛", 点「筛选」才展开。
+    var open by remember { mutableStateOf(false) }
+    val p = LocalPhotoPalette.current
 
-    Surface(tonalElevation = 2.dp, modifier = modifier.fillMaxWidth()) {
+    Surface(
+        color = p.s1,
+        modifier = modifier
+            .fillMaxWidth()
+            .drawWithContent {
+                drawContent()
+                // 底部发丝线：让筛选栏和画布分开，但不用一条实心灰边。
+                drawLine(
+                    color = p.hairline,
+                    start = Offset(0f, size.height),
+                    end = Offset(size.width, size.height),
+                    strokeWidth = 1f,
+                )
+            },
+    ) {
         Column(modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Column(modifier = Modifier.weight(1f)) {
+                Row(
+                    modifier = Modifier.weight(1f),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
                     Text(
                         // 顶栏的"筛选条件摘要"(规格 §8.1): 没开筛选时说明这里能做什么
-                        f.summary ?: "筛选（星级 / 色标 / 未同步）",
+                        f.summary ?: "星级 · 色标 · 未同步",
                         style = MaterialTheme.typography.bodyMedium,
+                        color = if (f.isEmpty) p.textSecondary else p.textPrimary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false),
                     )
+                    Spacer(Modifier.width(8.dp))
+                    // 一行说清"现在看到几张 / 一共几张"；完整句子留给筛选展开后的 chips。
                     Text(
-                        shownCountLabel(shown, total),
-                        style = MaterialTheme.typography.bodySmall,
+                        "$shown/$total",
+                        style = MaterialTheme.typography.bodySmall.copy(
+                            fontFeatureSettings = "tnum",
+                        ),
+                        color = p.textMuted,
                     )
                 }
-                TextButton(onClick = { open = !open }) { Text(if (open) "收起" else "筛选") }
+                TextButton(
+                    onClick = { open = !open },
+                    colors = ButtonDefaults.textButtonColors(contentColor = p.textSecondary),
+                ) { Text(if (open) "收起" else "筛选") }
             }
 
             if (open) {
+                HorizontalDivider(color = p.hairline)
                 // 星级: 1..5 各一个上限按钮(点同一个 = 取消)。张数是"有多少张 ≥ 这个下限"。
                 ChipRow(label = "星级") {
                     for (n in 1..5) {

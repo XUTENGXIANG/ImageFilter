@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Copyright (c) 2026 XUTENGXIANG / SPDX-License-Identifier: MIT -->
+<resources>
+    <!-- 深色窗口主题(values-night 在系统深色时覆盖 values/themes.xml 的同名 style)。 -->
+    <style name="Theme.ImageFilterMobile" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">#09090B</item>
+        <!-- 深色主题 → 系统栏图标必须是浅色的 -->
+        <item name="android:windowLightStatusBar">false</item>
+    </style>
+</resources>

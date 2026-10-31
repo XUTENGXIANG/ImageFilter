@@ -12,18 +12,22 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -52,11 +56,20 @@ import com.imagefilter.mobile.data.PairingScan
 import com.imagefilter.mobile.data.PairingStore
 import com.imagefilter.mobile.data.PairingValidator
 import com.imagefilter.mobile.data.scanPairingPayload
+import com.imagefilter.mobile.ui.theme.LocalPhotoPalette
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 
 /**
- * 配对向导(规格 §8.3)。
+ * 手动配对向导(规格 §8.3; 原 `PairingScreen`) —— 现在只做「高级模式」的落点。
+ *
+ * 默认的连接路径是 [ConnectScreen] 里的 mDNS 自动发现; 这一页保留**完整**的手输地址 +
+ * 配对码 + 扫码能力, 用于: 自动发现被网络隔离挡住、电脑上没开 mDNS、或用户明确知道自己
+ * 在连哪台电脑。两种模式成功后走的是**同一个** `onPaired`, 保存也仍是同一条
+ * [PairingStore] 路径 —— 高级模式不是另一套配对实现。
+ *
+ * [onBack] 非空时在标题上方显示「‹ 自动发现」: 用户能从高级模式回到发现页。
+ * 没有它(例如旧调用点)时这一页的外观与行为与拆分前完全一致。
  *
  * 状态机在 [PairingValidator] 里(纯逻辑, 有 JVM 单测); 这里只做三件事:
  * 收输入、把结论画出来、把**归一化后的**那一份交给 [PairingStore]。
@@ -69,11 +82,12 @@ import kotlinx.coroutines.launch
  *   · 配对码是**机密**: 默认遮起来显示, 而且一个字都不进日志。
  */
 @Composable
-fun PairingScreen(onPaired: (Pairing) -> Unit) {
+fun ManualPairingScreen(onPaired: (Pairing) -> Unit, onBack: (() -> Unit)? = null) {
     val context = LocalContext.current
     val store = remember { PairingStore.create(context) }
     val validator = remember { PairingValidator() }
     val scope = rememberCoroutineScope()
+    val p = LocalPhotoPalette.current
 
     var url by rememberSaveable { mutableStateOf("") }
     var note by rememberSaveable { mutableStateOf("") }
@@ -222,6 +236,15 @@ fun PairingScreen(onPaired: (Pairing) -> Unit) {
             .bottomBarInsets()
             .padding(24.dp),
     ) {
+        // 高级模式的返回口。放在标题**上方**且很轻: 这一页的主角仍是「配对电脑」表单,
+        // 而「回去自动发现」是次要动作(用户多半是从发现失败才来到这里的)。
+        if (onBack != null) {
+            TextButton(
+                onClick = onBack,
+                colors = ButtonDefaults.textButtonColors(contentColor = p.textSecondary),
+                modifier = Modifier.heightIn(min = 48.dp),
+            ) { Text("‹ 自动发现") }
+        }
         Text("配对电脑", style = MaterialTheme.typography.headlineSmall)
         Spacer(Modifier.height(8.dp))
         Text(
@@ -233,6 +256,7 @@ fun PairingScreen(onPaired: (Pairing) -> Unit) {
         // 扫码(M4′ Task 1): 配对码是 64 位十六进制, 手输不现实 —— 二维码是唯一顺手的通道。
         // **手输永远在**: 拒绝相机权限、设备没有相机、扫到别的二维码时, 它都是唯一的路。
         OutlinedButton(
+            shape = RoundedCornerShape(10.dp),
             onClick = {
                 val granted = ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) ==
                     PackageManager.PERMISSION_GRANTED
@@ -313,7 +337,11 @@ fun PairingScreen(onPaired: (Pairing) -> Unit) {
         Spacer(Modifier.height(16.dp))
 
         Row {
-            Button(onClick = { testConnection() }, enabled = !busy) { Text("测试连接") }
+            Button(
+                onClick = { testConnection() },
+                enabled = !busy,
+                shape = RoundedCornerShape(10.dp),
+            ) { Text("测试连接") }
             if (busy) {
                 Spacer(Modifier.size(12.dp))
                 CircularProgressIndicator(modifier = Modifier.size(24.dp), strokeWidth = 2.dp)

@@ -100,12 +100,25 @@ internal fun LoadingRow(text: String) {
     }
 }
 
-/** 状态说明卡(空共享根 / 空目录 / 未选目录)。文案由 [com.imagefilter.mobile.data.BrowseMessages] 给。 */
+/**
+ * 状态说明卡(空共享根 / 空目录 / RAW 说明)。
+ *
+ * `collapsible = true` 时用 [QuietText]：默认一行 + 「详情」，把长说明收起来。
+ * **关键警告不要用它**（例如待重试记录读不回来）—— 那种话必须整段可见。
+ */
 @Composable
-internal fun HintCard(body: String, modifier: Modifier = Modifier) {
+internal fun HintCard(
+    body: String,
+    modifier: Modifier = Modifier,
+    collapsible: Boolean = false,
+) {
     Card(modifier = modifier.fillMaxWidth()) {
         Column(modifier = Modifier.padding(16.dp)) {
-            Text(body, style = MaterialTheme.typography.bodyMedium)
+            if (collapsible) {
+                QuietText(body, style = MaterialTheme.typography.bodyMedium)
+            } else {
+                Text(body.replace("**", ""), style = MaterialTheme.typography.bodyMedium)
+            }
         }
     }
 }

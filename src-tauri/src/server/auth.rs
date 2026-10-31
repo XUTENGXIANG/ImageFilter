@@ -30,9 +30,23 @@ pub fn new_token() -> String {
 ///
 /// 实现只有这一份: `new_token` 委托给它, 免得两处十六进制编码慢慢漂移。
 pub fn try_new_token() -> Result<String, String> {
-    let mut buf = [0u8; 32];
+    try_new_hex_id(32)
+}
+
+/// 生成 `bytes` 字节随机数的十六进制串(**可失败**, 不 panic)。
+///
+/// 用途只有两个: 配对 token(32 字节 → 64 hex)与**身份/请求 id**(16 字节 → 32 hex):
+///   · `desktopId`(mDNS TXT 里的 `id=`)与 `requestId`(配对请求号)都只需要"猜不到、
+///     重启后稳定(前者落盘)", 不需要 RFC 4122 的版本位 —— 为一个 32 字符的随机串加一个
+///     `uuid` 依赖不值得;
+///   · 与 token 共用同一条随机数通路, 于是"随机数不可用"这条失败路径只有一处要守。
+///
+/// 返回 `Err` 而不是 panic: 调用方(配对请求、首次生成 desktopId)都在桌面端正常运行路径上,
+/// 一次随机数失败只该让那一次操作失败, 不该把桌面端弄崩。
+pub fn try_new_hex_id(bytes: usize) -> Result<String, String> {
+    let mut buf = vec![0u8; bytes];
     getrandom::getrandom(&mut buf).map_err(|e| format!("系统随机数不可用: {}", e))?;
-    let mut s = String::with_capacity(64);
+    let mut s = String::with_capacity(bytes * 2);
     for b in buf {
         use std::fmt::Write as _;
         let _ = write!(s, "{:02x}", b);
@@ -85,6 +99,16 @@ mod tests {
             assert!(t.chars().all(|c| c.is_ascii_hexdigit()));
         }
         assert_ne!(a, b, "两次生成不该撞上同一枚");
+    }
+
+    /// 身份/请求 id 的形状: 16 字节 → 32 个十六进制字符, 两次不撞。
+    #[test]
+    fn hex_ids_have_the_documented_shape() {
+        let a = try_new_hex_id(16).expect("本机随机数可用时不该失败");
+        let b = try_new_hex_id(16).expect("本机随机数可用时不该失败");
+        assert_eq!(a.len(), 32);
+        assert!(a.chars().all(|c| c.is_ascii_hexdigit()));
+        assert_ne!(a, b, "两个 id 不该撞上");
     }
 
     /// 空 token 绝不能通过鉴权 —— 包括"空对空"这种情况。

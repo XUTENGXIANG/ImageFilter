@@ -688,7 +688,9 @@ async fn an_unreadable_source_is_reported_as_internal_not_as_a_format_problem() 
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use image_filter_lib::server::routes::{PROTECTED_PATHS, PUBLIC_PATHS};
+use image_filter_lib::server::routes::{
+    PAIR_REQUEST_PATH, PAIR_STATUS_PATH, PROTECTED_PATHS, PUBLIC_PATHS,
+};
 use tower::ServiceExt;
 
 /// 测试用共享根。**真在磁盘上建出来**。
@@ -726,12 +728,68 @@ fn route_app(tag: &str) -> (axum::Router, String, std::path::PathBuf) {
         port: 0,
         token: token.clone(),
         shares: vec![root.clone()],
+        ..Default::default()
     };
     (
         image_filter_lib::server::routes::router(cfg.into_state()),
         token,
         root,
     )
+}
+
+/// 配对契约测试用: 一张真路由 + **可控制的状态**(窗口与状态机都直接摸)。
+///
+/// 端口固定 8765: 这里没有真的监听, 于是 `approved` 响应里的 URL 由配置端口拼出来 ——
+/// 断言它含有 `:8765` 才有意义(用 0 的话会得到一个谁都不该去连的端口)。
+fn pair_app(
+    tag: &str,
+) -> (
+    axum::Router,
+    image_filter_lib::server::ServerState,
+    String,
+    std::path::PathBuf,
+) {
+    let root = route_root(tag);
+    let token = "t".repeat(64);
+    let cfg = image_filter_lib::server::ServerConfig {
+        read_only: false,
+        enabled: true,
+        port: 8765,
+        token: token.clone(),
+        shares: vec![root.clone()],
+        ..Default::default()
+    };
+    let st = cfg.into_state();
+    (
+        image_filter_lib::server::routes::router(st.clone()),
+        st,
+        token,
+        root,
+    )
+}
+
+/// 一条配对请求(`POST /api/v1/pair/request`)。**故意不带 Authorization** ——
+/// 这条端点的契约就是"手机还没有 token 也能申请"。
+fn pair_post(uri: &str, body: &str) -> Request<Body> {
+    Request::builder()
+        .method("POST")
+        .uri(uri)
+        .header("content-type", "application/json")
+        .body(Body::from(body.to_string()))
+        .unwrap()
+}
+
+/// 合法请求体。deviceId/deviceName/appVersion 三个字段都齐(§0.2)。
+const PAIR_BODY: &str =
+    r#"{"deviceId":"dev-0001","deviceName":"Pixel 8","appVersion":"1.2.1"}"#;
+
+/// 打开这台状态上的配对窗口(直接摸状态机: 契约测试要的是 HTTP 那一层的行为,
+/// 打开窗口这条命令本身由 `server::mod tests` 的单测覆盖)。
+fn open_window(st: &image_filter_lib::server::ServerState) {
+    st.pairing
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .open_window();
 }
 
 /// 完整百分号编码(只放行 unreserved 字符)。**不能只替换反斜杠**:
@@ -1520,7 +1578,11 @@ async fn bearer_scheme_is_case_insensitive_and_tolerates_ows() {
 async fn the_public_surface_is_exactly_ping_and_every_mounted_path_sits_behind_the_auth_layer() {
     let (app, _token, root) = route_app("oneentry");
 
-    assert_eq!(PUBLIC_PATHS, &["/api/v1/ping"], "免鉴权路径只许有 ping 一条");
+    assert_eq!(
+        PUBLIC_PATHS,
+        &["/api/v1/ping", PAIR_REQUEST_PATH, PAIR_STATUS_PATH],
+        "免鉴权路径只许有 ping + 两个配对端点(§0.2)"
+    );
     for p in PROTECTED_PATHS {
         assert!(
             !PUBLIC_PATHS.contains(p),
@@ -1529,15 +1591,39 @@ async fn the_public_surface_is_exactly_ping_and_every_mounted_path_sits_behind_t
         );
     }
 
-    for p in PUBLIC_PATHS {
-        let res = app.clone().oneshot(get_req(p, None)).await.unwrap();
-        assert_eq!(
-            res.status(),
-            StatusCode::OK,
-            "{} 是公开端点, 无 token 也必须 200(否则配对永远做不成)",
-            p
-        );
-    }
+    // 逐条用**正确的方法**打公开端点(用错方法会掉进 405, 那不能证明"鉴权层放行")。
+    let res = app
+        .clone()
+        .oneshot(get_req("/api/v1/ping", None))
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK, "ping 无 token 必须 200");
+
+    // 配对状态: 未知 requestId → 404 not_found(而不是 401 —— 证明它真的在公开白名单里)。
+    let res = app
+        .clone()
+        .oneshot(get_req("/api/v1/pair/status?requestId=deadbeef", None))
+        .await
+        .unwrap();
+    assert_eq!(
+        res.status(),
+        StatusCode::NOT_FOUND,
+        "pair/status 无 token 也必须可达(404 未知 id, 不是 401)"
+    );
+    assert_code_only(&json_of(res).await, "not_found");
+
+    // 配对请求: 窗口关着 + 坏请求体 → 400 bad_request(不是 401)。
+    let res = app
+        .clone()
+        .oneshot(pair_post(PAIR_REQUEST_PATH, "{}"))
+        .await
+        .unwrap();
+    assert_eq!(
+        res.status(),
+        StatusCode::BAD_REQUEST,
+        "pair/request 无 token 也必须可达(400 坏请求, 不是 401)"
+    );
+    assert_code_only(&json_of(res).await, "bad_request");
 
     for p in PROTECTED_PATHS {
         let res = app.clone().oneshot(get_req(p, None)).await.unwrap();
@@ -1546,6 +1632,212 @@ async fn the_public_surface_is_exactly_ping_and_every_mounted_path_sits_behind_t
             StatusCode::UNAUTHORIZED,
             "{} 无 token 必须 401 —— 鉴权层必须罩住**每一条**已挂载的受保护路径",
             p
+        );
+        assert_code_only(&json_of(res).await, "unauthorized");
+    }
+
+    std::fs::remove_dir_all(&root).ok();
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// mDNS 配对的两个端点(计划 §0.2 · Task A3)
+//
+// 这一组钉的是**免鉴权端点的安全边界**。本项目历史上出过鉴权事故(§4.6), 所以每条
+// 既要证明"无 token 能工作", 又要证明"窗口/限流/状态机真的在拦", 还要证明
+// "token 绝不在批准前出现"。
+// ════════════════════════════════════════════════════════════════════════════
+
+/// 窗口开着时, 手机**不带 Bearer** 也能发起配对, 拿到 202 + `{requestId, expiresAt}`。
+///
+/// 同时钉两件不可退让的事: requestId 是 32 位十六进制(与 `desktopId` 同形), 以及
+/// **202 响应里绝不能出现 token**(手机这时还没被批准)。
+#[tokio::test]
+async fn pair_request_works_without_bearer_when_window_open() {
+    let (app, st, token, root) = pair_app("pair202");
+    open_window(&st);
+
+    let res = app
+        .clone()
+        .oneshot(pair_post(PAIR_REQUEST_PATH, PAIR_BODY))
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::ACCEPTED, "窗口开着时必须接受配对请求");
+
+    let v = json_of(res).await;
+    let id = v["requestId"].as_str().expect("必须有 requestId");
+    assert_eq!(id.len(), 32, "requestId 是 16 字节随机数的十六进制(32 字符): {id}");
+    assert!(
+        id.chars().all(|c| c.is_ascii_hexdigit()),
+        "requestId 必须是十六进制: {id}"
+    );
+    assert!(
+        v["expiresAt"].as_u64().unwrap_or(0) > 0,
+        "必须有 unix 毫秒的 expiresAt: {v}"
+    );
+    assert!(
+        !v.to_string().contains(&token),
+        "**202 里绝不能有 token** —— 那时还没批准: {v}"
+    );
+    assert_eq!(
+        st.pairing.lock().unwrap_or_else(|e| e.into_inner()).snapshot().pending.len(),
+        1,
+        "请求必须真的进了状态机(桌面端弹窗要靠它)"
+    );
+
+    std::fs::remove_dir_all(&root).ok();
+}
+
+/// 窗口没开(默认状态)→ 409 `pairing_closed`。这是免鉴权端点最重要的一道闸。
+#[tokio::test]
+async fn pair_request_returns_409_when_window_closed() {
+    let (app, _st, _token, root) = pair_app("pair409");
+
+    let res = app
+        .clone()
+        .oneshot(pair_post(PAIR_REQUEST_PATH, PAIR_BODY))
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::CONFLICT, "窗口关着必须回 409");
+    assert_code_only(&json_of(res).await, "pairing_closed");
+
+    std::fs::remove_dir_all(&root).ok();
+}
+
+/// 同一台设备 10 秒内第二次请求 → 429 `rate_limited`(窗口一直开着也不行)。
+#[tokio::test]
+async fn pair_request_rate_limited_after_one_per_10s() {
+    let (app, st, _token, root) = pair_app("pair429");
+    open_window(&st);
+
+    let first = app
+        .clone()
+        .oneshot(pair_post(PAIR_REQUEST_PATH, PAIR_BODY))
+        .await
+        .unwrap();
+    assert_eq!(first.status(), StatusCode::ACCEPTED);
+
+    let second = app
+        .clone()
+        .oneshot(pair_post(PAIR_REQUEST_PATH, PAIR_BODY))
+        .await
+        .unwrap();
+    assert_eq!(second.status(), StatusCode::TOO_MANY_REQUESTS, "10 秒内重复必须被限流");
+    assert_code_only(&json_of(second).await, "rate_limited");
+
+    std::fs::remove_dir_all(&root).ok();
+}
+
+/// 轮询: 先 `pending`, 批准后 `approved` 并带上 `{url, token, desktopName}`。
+///
+/// URL 必须来自**本机地址**(不受伪造 `Host` 影响), token 必须是配置里的那一枚。
+/// 这两条合起来就是"批准之后手机走的是与扫码/手输完全相同的边界"。
+#[tokio::test]
+async fn pair_status_returns_pending_then_approved() {
+    let (app, st, token, root) = pair_app("pairstatus");
+    open_window(&st);
+
+    let res = app
+        .clone()
+        .oneshot(pair_post(PAIR_REQUEST_PATH, PAIR_BODY))
+        .await
+        .unwrap();
+    let challenge = json_of(res).await;
+    let id = challenge["requestId"].as_str().unwrap().to_string();
+
+    // ① pending: **此时不能出现 token**。
+    let res = app
+        .clone()
+        .oneshot(get_req(
+            &format!("{PAIR_STATUS_PATH}?requestId={id}"),
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let pending = json_of(res).await;
+    assert_eq!(pending["status"], "pending");
+    assert!(
+        !pending.to_string().contains(&token),
+        "**待确认阶段绝不能返回 token**: {pending}"
+    );
+
+    // ② 桌面端批准(命令层由单测覆盖, 这里直接驱动状态机)。
+    st.pairing
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .approve(&id)
+        .expect("窗口开着、请求活着, 必须能批准");
+
+    // ③ approved: 令牌与 URL 一起给出。故意带一个**伪造 Host**, 证明它不会被采用。
+    let req = Request::builder()
+        .uri(format!("{PAIR_STATUS_PATH}?requestId={id}"))
+        .header("Host", "evil.example:8765")
+        .body(Body::empty())
+        .unwrap();
+    let res = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let approved = json_of(res).await;
+    assert_eq!(approved["status"], "approved");
+    assert_eq!(approved["token"], token, "批准后返回的必须是配置里的那一枚 token");
+    let url = approved["url"].as_str().expect("approved 必须带 url");
+    assert!(url.starts_with("http://"), "url 必须是 http://(LAN-only, 无 TLS): {url}");
+    assert!(url.contains(":8765"), "url 必须带本次端口: {url}");
+    assert!(
+        !url.contains("evil.example"),
+        "**绝不能采用伪造的 Host 头**: {url}"
+    );
+    assert!(
+        approved["desktopName"].as_str().unwrap_or("").len() > 0,
+        "approved 必须带 desktopName: {approved}"
+    );
+
+    std::fs::remove_dir_all(&root).ok();
+}
+
+/// 未知 requestId → 404 `not_found`(而不是 200 的某个含糊状态)。
+#[tokio::test]
+async fn pair_status_unknown_is_404() {
+    let (app, _st, _token, root) = pair_app("pair404");
+
+    let res = app
+        .clone()
+        .oneshot(get_req(
+            "/api/v1/pair/status?requestId=0123456789abcdef0123456789abcdef",
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::NOT_FOUND);
+    assert_code_only(&json_of(res).await, "not_found");
+
+    std::fs::remove_dir_all(&root).ok();
+}
+
+/// **其余端点继续 fail-closed**: 逐条枚举 `PROTECTED_PATHS`, 无 token 一律 401。
+///
+/// 与公开白名单是同一枚硬币的两面 —— 配对端点免鉴权**不许**顺手把别的路径也放开。
+/// 用 `probe_req` 保证方法正确(POST-only 的 `move` 若用 GET 打会变成 405, 那证明不了鉴权)。
+#[tokio::test]
+async fn protected_paths_still_401_without_token() {
+    let (app, _token, root) = route_app("still401");
+
+    for p in &[PAIR_REQUEST_PATH, PAIR_STATUS_PATH] {
+        assert!(
+            !PROTECTED_PATHS.contains(p),
+            "{p} 是配对端点, 不该进 PROTECTED_PATHS(§0.2 明确要求)"
+        );
+    }
+
+    for base in PROTECTED_PATHS {
+        let res = app
+            .clone()
+            .oneshot(probe_req(base, None))
+            .await
+            .unwrap();
+        assert_eq!(
+            res.status(),
+            StatusCode::UNAUTHORIZED,
+            "{base} 无 token 必须仍然 401 —— 新增公开路径不许让别的端点跟着漏",
         );
         assert_code_only(&json_of(res).await, "unauthorized");
     }
@@ -3882,6 +4174,7 @@ fn read_only_app(tag: &str) -> (axum::Router, String, std::path::PathBuf) {
         port: 0,
         token: token.clone(),
         shares: vec![root.clone()],
+        ..Default::default()
     };
     (image_filter_lib::server::routes::router(cfg.into_state()), token, root)
 }

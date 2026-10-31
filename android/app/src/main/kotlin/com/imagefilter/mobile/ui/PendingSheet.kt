@@ -24,6 +24,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.imagefilter.mobile.ui.theme.LocalPhotoPalette
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 
@@ -116,11 +117,12 @@ fun PendingBadgeButton(
     onOpenPanel: () -> Unit,
     onRetryUnsynced: () -> Unit,
 ) {
+    val p = LocalPhotoPalette.current
     TextButton(
         onClick = if (badge.opensPanel) onOpenPanel else onRetryUnsynced,
         enabled = enabled,
     ) {
-        Text(badge.label, color = MaterialTheme.colorScheme.error)
+        Text(badge.label, color = p.pending)
     }
 }
 

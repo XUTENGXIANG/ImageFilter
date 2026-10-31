@@ -487,4 +487,39 @@ export default {
     clientsDesc: "这是一份“最近的请求”，不是在线设备清单。HTTP 客户端不会报上自己的名字或位置，所以这里只有来源 IP、请求的端点与时间——设备名和位置在这一层读不到，编一个出来只会骗人。同一台手机可能占好几行，两台设备也可能共用一个 IP；手机重连后 IP 也可能变。为免泄露，请求里带的文件路径（查询串）不记录。",
   },
 
+  // ── 2026-10-25 · mDNS 配对（桌面端） ──
+  // 配对窗口 / 待确认请求 / 已连接设备。命令与事件见 src/lib/pairing.ts（冻结契约 §0.3）。
+  // 纪律：v1 的「移除」只是忘记这台设备，**不吊销**配对码 —— forgetNote 必须把这件事写清楚，
+  // 否则用户会以为移除 = 已经踢下线（真正吊销只能轮换配对码，所有设备重连）。
+  pairing: {
+    sectionTitle: "配对新设备",
+    windowHint: "手机和电脑在同一个 WiFi 时，手机上的 ImageFilter 会发现这台电脑。要让新设备真正配对，先在电脑上打开配对窗口（5 分钟有效）；只有你点「允许」，配对码才会发给对方。",
+    openWindow: "配对新设备",
+    closeWindow: "关闭配对窗口",
+    windowOpen: "配对窗口已打开",
+    windowClosed: "配对窗口未打开——手机还能看到这台电脑，但发起不了配对",
+    serviceOff: "先开启图库服务，手机才能发现这台电脑",
+    remaining: "剩余 {time}",
+    pendingTitle: "待确认的请求",
+    pendingDesc: "待确认的请求 60 秒后自动过期，最多同时保留 3 个。",
+    morePending: "还有 {n} 个待确认请求",
+    pairedDevices: "已连接设备",
+    noDevices: "还没有配对过的设备",
+    forget: "移除",
+    forgetNote: "v1 的「移除」只是忘记这台设备，不会吊销配对码；要让所有设备重新配对，请展开下面的「高级 / 手动配对」用「轮换」。",
+    lastSeen: "最近连接 {time}",
+    requestTitle: "配对请求",
+    requestBody: "这台设备想连接你的图库服务。点「允许」之后，它才能拿到地址与配对码；点「拒绝」则什么都不会发出去。",
+    deviceOn: "设备：{name}（{ip}）",
+    requestedAt: "请求时间 {time}",
+    expiresIn: "请求将在 {seconds} 秒后自动过期",
+    expired: "请求已过期",
+    allow: "允许",
+    deny: "拒绝",
+    advanced: "高级 / 手动配对",
+    advancedHint: "扫码、局域网地址与配对码——配对窗口用不了时的退路。",
+    actionFailed: "操作失败：{reason}",
+    unavailable: "读不到配对状态：{reason}",
+  },
+
 };

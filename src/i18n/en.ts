@@ -476,4 +476,40 @@ export default {
     clientsDesc: "This is a list of recent requests, not a list of online devices. An HTTP client never reports its own name or location, so all you get here is the source IP, the endpoint it requested and the time — a device name or a location simply cannot be read at this layer, and inventing one would only mislead. One phone may fill several lines, two devices may share one IP, and a phone's IP can change when it reconnects. To avoid leaking anything, the file paths carried in the query string are not recorded.",
   },
 
+  // ── 2026-10-25 · mDNS pairing (desktop) ──
+  // Pairing window / pending requests / paired devices. Commands and events live in
+  // src/lib/pairing.ts (frozen contract §0.3). Discipline: in v1 "Forget" only drops the
+  // record — it does not revoke the pairing code; forgetNote must say so plainly, or users
+  // will think removing a device has kicked it offline (only Rotate does that).
+  pairing: {
+    sectionTitle: "Pair a new device",
+    windowHint: "When the phone and this computer are on the same WiFi, ImageFilter on the phone finds this computer. To actually pair a new device, open the pairing window here first (valid for 5 minutes); the pairing code is sent only after you click Allow.",
+    openWindow: "Pair a new device",
+    closeWindow: "Close pairing window",
+    windowOpen: "Pairing window is open",
+    windowClosed: "Pairing window is closed — the phone can still see this computer but cannot request pairing",
+    serviceOff: "Turn on the gallery service first so the phone can find this computer",
+    remaining: "{time} left",
+    pendingTitle: "Pending requests",
+    pendingDesc: "Unanswered requests expire after 60 seconds; at most 3 are kept at any time.",
+    morePending: "{n} more pending request(s)",
+    pairedDevices: "Paired devices",
+    noDevices: "No paired devices yet",
+    forget: "Forget",
+    forgetNote: "In v1, Forget only drops the record of this device — it does not revoke the pairing code. To make every device pair again, expand Advanced / manual pairing below and use Rotate.",
+    lastSeen: "last seen {time}",
+    requestTitle: "Pairing request",
+    requestBody: "This device wants to connect to your gallery service. Only after you click Allow does it receive the address and pairing code; Deny sends nothing.",
+    deviceOn: "Device: {name} ({ip})",
+    requestedAt: "Requested at {time}",
+    expiresIn: "This request expires in {seconds}s",
+    expired: "This request has expired",
+    allow: "Allow",
+    deny: "Deny",
+    advanced: "Advanced / manual pairing",
+    advancedHint: "QR code, LAN address and pairing code — the fallback when the pairing window is not usable.",
+    actionFailed: "Action failed: {reason}",
+    unavailable: "Cannot read pairing status: {reason}",
+  },
+
 };

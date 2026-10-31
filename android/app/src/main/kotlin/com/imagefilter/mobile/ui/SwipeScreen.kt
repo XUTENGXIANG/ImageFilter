@@ -22,6 +22,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -36,6 +37,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import com.imagefilter.mobile.ui.theme.ImageFilterTheme
+import com.imagefilter.mobile.ui.theme.LocalPhotoPalette
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.painter.ColorPainter
 import androidx.compose.ui.input.pointer.pointerInput
@@ -63,7 +66,7 @@ import kotlin.math.abs
  * 复用的四条(计划 Task 1 的硬要求):
  *   · **同一个 [DecisionStore]**(由网格持有、传进来): 筛选、角标、滑卡必须是**同一份**真相;
  *   · **同一个预取器**([ViewerViewModel.prefetchUrls], 只把前向窗口开到 2 张 —— 规格 §8.2
- *     "当前张 + 后 2 张") —— **绝不**另写一套, 而且预取**永远是默认档**(高清 = 电脑全解码,
+ *     "当前张 + 后 2 张") —— **绝不**另写一套, 而且预取**永远是默认档**(高清可能触发电脑全解码,
  *     预取它等于每滑一张卡一次);
  *   · **同一个自动前进开关**([swipeViewModel] 里的 `advanceOnWriteSuccess = true`) ——
  *     写成功才前进, **失败绝不前进**(那会让用户以为打过了);
@@ -165,231 +168,235 @@ fun SwipeScreen(
     // 进来就把下一张(默认档)拉起来, 免得第一滑之后要等图
     LaunchedEffect(vm) { vm.open() }
 
-    Surface(modifier = Modifier.fillMaxSize()) {
-        Column(modifier = Modifier.fillMaxSize()) {
-            SwipeTopBar(
-                title = state.title,
-                unsyncedLabel = state.unsyncedLabel,
-                // 顶栏那**一个**角标: 待重试队列优先(按下去打开重试面板), 队列为空的窗口里退回
-                // "未同步 N 张·重试"(按下去把这一批未同步的推一遍)。显示什么与按下去做什么
-                // 由 [topBarBadge] 一处决定, 两句话数的是同一个集合。
-                pendingCount = pendingCount,
-                onOpenPending = onOpenPending,
-                undoCount = state.undoCount,
-                // 撤销 = 把上一步决策恢复回去(多步, 内存栈上限 UNDO_LIMIT, 见 UndoStack)。
-                // ⚠️ 写入在飞时它会被禁用([SwipeTopBar] 里判 writing): 撤销与写入并发会让
-                // "电脑上到底是哪一版"变成一句话说不清的事。
-                onUndo = { scope.launch { vm.undo() } },
-                writing = state.writing,
-                onRetryUnsynced = { scope.launch { vm.retryAllUnsynced() } },
-                onClose = onClose,
-            )
+    // 滑卡页与查看器同样**始终深色**: 黑画布上的照片才是主角, 浅色主题不改这一页。
+    ImageFilterTheme(darkTheme = true) {
+        val p = LocalPhotoPalette.current
 
-            SwipeConfigRow(config = config, onConfig = { config = it })
+        Surface(modifier = Modifier.fillMaxSize()) {
+            Column(modifier = Modifier.fillMaxSize()) {
+                SwipeTopBar(
+                    title = state.title,
+                    unsyncedLabel = state.unsyncedLabel,
+                    // 顶栏那**一个**角标: 待重试队列优先(按下去打开重试面板), 队列为空的窗口里退回
+                    // "未同步 N 张·重试"(按下去把这一批未同步的推一遍)。显示什么与按下去做什么
+                    // 由 [topBarBadge] 一处决定, 两句话数的是同一个集合。
+                    pendingCount = pendingCount,
+                    onOpenPending = onOpenPending,
+                    undoCount = state.undoCount,
+                    // 撤销 = 把上一步决策恢复回去(多步, 内存栈上限 UNDO_LIMIT, 见 UndoStack)。
+                    // ⚠️ 写入在飞时它会被禁用([SwipeTopBar] 里判 writing): 撤销与写入并发会让
+                    // "电脑上到底是哪一版"变成一句话说不清的事。
+                    onUndo = { scope.launch { vm.undo() } },
+                    writing = state.writing,
+                    onRetryUnsynced = { scope.launch { vm.retryAllUnsynced() } },
+                    onClose = onClose,
+                )
 
-            // ── 卡片栈(手势区) ──────────────────────────────────────────────
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .weight(1f)
-                    .padding(horizontal = 12.dp)
-                    // 单指水平拖动 = 滑卡; 双指捏合 = 进查看态(此后单指平移, 滑卡禁用)。
-                    // **一个**检测器管完整场手势(从按下到松手): "松手才决策"是规格要求,
-                    // 而两个检测器叠在一起必然互相抢事件(那正是 §8.2 点名要避免的事)。
-                    // key 用 `vm`: 它换了(换了这一批)才重建手势; `dragX` 每帧都在变,
-                    // 绝不能把它放进 key —— 那会在拖动中途把这一场手势掐掉。
-                    .pointerInput(vm) {
-                        awaitEachGesture {
-                            awaitFirstDown(requireUnconsumed = true)
-                            var dragged = 0f
-                            var pinched = false
-                            var released = false
-                            while (!released) {
-                                val event = awaitPointerEvent()
-                                val zoom = event.calculateZoom()
-                                val pan = event.calculatePan()
-                                when {
-                                    // ① 双指(或它残留的比例变化)→ 缩放 / 进出查看态
-                                    zoom != 1f -> {
-                                        pinched = true
-                                        dragged = 0f
-                                        dragX = 0f
-                                        vm.onTransform(zoom = zoom, panX = 0f, panY = 0f)
+                SwipeConfigRow(config = config, onConfig = { config = it })
+
+                // ── 卡片栈(手势区) ──────────────────────────────────────────────
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f)
+                        .padding(horizontal = 12.dp)
+                        // 单指水平拖动 = 滑卡; 双指捏合 = 进查看态(此后单指平移, 滑卡禁用)。
+                        // **一个**检测器管完整场手势(从按下到松手): "松手才决策"是规格要求,
+                        // 而两个检测器叠在一起必然互相抢事件(那正是 §8.2 点名要避免的事)。
+                        // key 用 `vm`: 它换了(换了这一批)才重建手势; `dragX` 每帧都在变,
+                        // 绝不能把它放进 key —— 那会在拖动中途把这一场手势掐掉。
+                        .pointerInput(vm) {
+                            awaitEachGesture {
+                                awaitFirstDown(requireUnconsumed = true)
+                                var dragged = 0f
+                                var pinched = false
+                                var released = false
+                                while (!released) {
+                                    val event = awaitPointerEvent()
+                                    val zoom = event.calculateZoom()
+                                    val pan = event.calculatePan()
+                                    when {
+                                        // ① 双指(或它残留的比例变化)→ 缩放 / 进出查看态
+                                        zoom != 1f -> {
+                                            pinched = true
+                                            dragged = 0f
+                                            dragX = 0f
+                                            vm.onTransform(zoom = zoom, panX = 0f, panY = 0f)
+                                        }
+                                        // ② 查看态: 单指**平移**, 绝不滑卡(缩回 1x 时 applyZoom 自动归位)
+                                        pinched || vm.state.value.isViewing ->
+                                            vm.onTransform(zoom = 1f, panX = pan.x, panY = pan.y)
+                                        // ③ 决策态: 卡片跟手
+                                        else -> {
+                                            dragged += pan.x
+                                            dragX = dragged
+                                        }
                                     }
-                                    // ② 查看态: 单指**平移**, 绝不滑卡(缩回 1x 时 applyZoom 自动归位)
-                                    pinched || vm.state.value.isViewing ->
-                                        vm.onTransform(zoom = 1f, panX = pan.x, panY = pan.y)
-                                    // ③ 决策态: 卡片跟手
-                                    else -> {
-                                        dragged += pan.x
-                                        dragX = dragged
+                                    if (event.changes.none { it.pressed }) {
+                                        released = true
+                                    } else {
+                                        // 这一下由我们管: 全部吃掉, 免得别的控件跟着动
+                                        event.changes.forEach { it.consume() }
                                     }
                                 }
-                                if (event.changes.none { it.pressed }) {
-                                    released = true
+                                // 松手: 过阈值才决策, 没过就回弹(卡片跟手回到原位)
+                                val direction = if (pinched || vm.state.value.isViewing) {
+                                    null
                                 } else {
-                                    // 这一下由我们管: 全部吃掉, 免得别的控件跟着动
-                                    event.changes.forEach { it.consume() }
+                                    swipeDirectionFor(dragged, thresholdPx)
+                                }
+                                dragX = 0f
+                                // 写入在飞的时候不再收一次决策(与底部按钮同一条纪律: 别自己制造乱序)
+                                if (direction != null && !vm.state.value.writing) {
+                                    scope.launch { vm.swipe(direction, config) }
                                 }
                             }
-                            // 松手: 过阈值才决策, 没过就回弹(卡片跟手回到原位)
-                            val direction = if (pinched || vm.state.value.isViewing) {
-                                null
-                            } else {
-                                swipeDirectionFor(dragged, thresholdPx)
-                            }
-                            dragX = 0f
-                            // 写入在飞的时候不再收一次决策(与底部按钮同一条纪律: 别自己制造乱序)
-                            if (direction != null && !vm.state.value.writing) {
-                                scope.launch { vm.swipe(direction, config) }
-                            }
-                        }
-                    },
-            ) {
-                val next = state.photos.getOrNull(state.index + 1)
-                if (next != null) {
-                    // 后面那张: 只画个轮廓(它在 Coil 里已经被预取, 所以滑过去是瞬时的)
-                    SwipeCardBack(photo = next, url = vm.defaultUrlAt(state.index + 1).orEmpty(), imageLoader = imageLoader)
-                }
-                val current = state.current
-                if (current != null) {
-                    SwipeCard(
-                        photo = current,
-                        url = state.displayUrl,
-                        imageLoader = imageLoader,
-                        retryNonce = state.reloadNonce,
-                        onLoaded = { vm.onDefaultLoaded() },
-                        onFailed = { scope.launch { vm.onDefaultFailed(it) } },
-                        modifier = Modifier.graphicsLayer {
-                            translationX = dragX
-                            // 轻微旋转: 纯观感。没有它, 卡片更像"平移的图片"而不是"被甩出去的卡片"
-                            rotationZ = dragX / 60f
                         },
+                ) {
+                    val next = state.photos.getOrNull(state.index + 1)
+                    if (next != null) {
+                        // 后面那张: 只画个轮廓(它在 Coil 里已经被预取, 所以滑过去是瞬时的)
+                        SwipeCardBack(photo = next, url = vm.defaultUrlAt(state.index + 1).orEmpty(), imageLoader = imageLoader)
+                    }
+                    val current = state.current
+                    if (current != null) {
+                        SwipeCard(
+                            photo = current,
+                            url = state.displayUrl,
+                            imageLoader = imageLoader,
+                            retryNonce = state.reloadNonce,
+                            onLoaded = { vm.onDefaultLoaded() },
+                            onFailed = { scope.launch { vm.onDefaultFailed(it) } },
+                            modifier = Modifier.graphicsLayer {
+                                translationX = dragX
+                                // 轻微旋转: 纯观感。没有它, 卡片更像"平移的图片"而不是"被甩出去的卡片"
+                                rotationZ = dragX / 60f
+                            },
+                        )
+                    }
+
+                    // 拖到哪一侧就预告那一侧的动作(过阈值前后都看得见"松手会发生什么")
+                    val dragging = swipeDirectionFor(dragX, thresholdPx) ?: when {
+                        dragX > 0f -> SwipeDirection.Right
+                        dragX < 0f -> SwipeDirection.Left
+                        else -> null
+                    }
+                    if (dragging != null && thresholdPx > 0f) {
+                        SwipeBadge(
+                            direction = dragging,
+                            action = config.actionFor(dragging),
+                            fade = (abs(dragX) / thresholdPx).coerceIn(0f, 1f),
+                        )
+                    }
+
+                    // 这一张的图**真的没取到**: 有话 + 有动作, 绝不是白屏(与查看器同一张卡)
+                    val error = state.error
+                    if (error != null) {
+                        ViewerErrorCard(
+                            error = error,
+                            onRetry = { vm.retryDefault() },
+                            onReloadFolder = {
+                                onReloadFolder()
+                                onClose()
+                            },
+                            onClose = onClose,
+                            modifier = Modifier
+                                .align(Alignment.BottomCenter)
+                                .padding(bottom = 8.dp),
+                        )
+                    }
+
+                    if (state.loading && error == null) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.align(Alignment.Center).size(36.dp),
+                            strokeWidth = 3.dp,
+                        )
+                    }
+                }
+
+                // 画质上界必须明示(与查看器同一句话: RAW 的默认档只是相机内嵌的那张小预览)。
+                // 默认收成一行，全文点「详情」。
+                val hint = state.hint
+                if (hint != null) {
+                    QuietText(
+                        text = hint,
+                        collapsedLines = 1,
+                        modifier = Modifier.padding(start = 12.dp, end = 12.dp, bottom = 2.dp),
                     )
                 }
 
-                // 拖到哪一侧就预告那一侧的动作(过阈值前后都看得见"松手会发生什么")
-                val dragging = swipeDirectionFor(dragX, thresholdPx) ?: when {
-                    dragX > 0f -> SwipeDirection.Right
-                    dragX < 0f -> SwipeDirection.Left
-                    else -> null
-                }
-                if (dragging != null && thresholdPx > 0f) {
-                    SwipeBadge(
-                        direction = dragging,
-                        action = config.actionFor(dragging),
-                        fade = (abs(dragX) / thresholdPx).coerceIn(0f, 1f),
-                    )
-                }
-
-                // 这一张的图**真的没取到**: 有话 + 有动作, 绝不是白屏(与查看器同一张卡)
-                val error = state.error
-                if (error != null) {
-                    ViewerErrorCard(
-                        error = error,
-                        onRetry = { vm.retryDefault() },
+                // ── 写入结果: 失败卡 > 滑卡那句话 > 撤销那句话 > "未同步"短提示 ──
+                // (滑卡与撤销两句话**共用同一格**: 后发生的那次操作会清掉前一句 —— 两句话都在讲
+                //  同一张照片刚刚发生了什么, 同时显示必然有一句是过期的。)
+                val writeFailure = state.writeFailure
+                val swipeNote = state.swipeNote
+                val undoNote = state.undoNote
+                val guardNote = state.ratingGuardNote
+                val unsyncedNote = state.unsyncedNote
+                when {
+                    writeFailure != null -> WriteFailureCard(
+                        head = state.writeHead.orEmpty(),
+                        text = state.writeText.orEmpty(),
+                        action = state.writeAction,
+                        actionLabel = state.writeActionLabel.orEmpty(),
+                        onRetry = { scope.launch { vm.retryCurrent() } },
                         onReloadFolder = {
                             onReloadFolder()
                             onClose()
                         },
-                        onClose = onClose,
-                        modifier = Modifier
-                            .align(Alignment.BottomCenter)
-                            .padding(bottom = 8.dp),
+                        onReconnect = onClose,
+                        onDismiss = { vm.dismissWriteFailure() },
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
+                    )
+
+                    // "已保留 · 保持 5★" —— 命中"不降级"那一支时**没有写入**, 但必须给出反馈
+                    swipeNote != null -> Text(
+                        swipeNote,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.padding(start = 12.dp, end = 12.dp, bottom = 4.dp),
+                    )
+
+                    // "已撤销" —— 只有服务端确认了才会说这句(见 UndoStack.undoMessage)
+                    undoNote != null -> Text(
+                        undoNote,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.padding(start = 12.dp, end = 12.dp, bottom = 4.dp),
+                    )
+
+                    // 一次手点星级被**拦下**了(这台手机不知道电脑上是几星) —— 与滑卡那句"瞎写被拦下"
+                    // 同一类反馈: 不说出来用户只会以为点了没反应。
+                    guardNote != null -> Text(
+                        guardNote,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = p.pending,
+                        modifier = Modifier.padding(start = 12.dp, end = 12.dp, bottom = 4.dp),
+                    )
+
+                    unsyncedNote != null -> Text(
+                        unsyncedNote,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = p.pending,
+                        modifier = Modifier.padding(start = 12.dp, end = 12.dp, bottom = 4.dp),
                     )
                 }
 
-                if (state.loading && error == null) {
-                    CircularProgressIndicator(
-                        modifier = Modifier.align(Alignment.Center).size(36.dp),
-                        strokeWidth = 3.dp,
-                    )
-                }
-            }
-
-            // 画质上界必须明示(与查看器同一句话: RAW 的默认档只是相机内嵌的那张小预览)
-            val hint = state.hint
-            if (hint != null) {
-                Text(
-                    hint,
-                    style = MaterialTheme.typography.bodySmall,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.padding(start = 12.dp, end = 12.dp, bottom = 4.dp),
+                // 底部: 星级 + 色标(滑卡做三态取舍, 星级做细分) —— 与查看器同一个组件。
+                // ⚠️ 这一页开了 advanceOnWriteSuccess, 所以**手点**星级/色标也会在写成功后前进:
+                // 那是 M2′ 为滑卡页装的规则("打完一张自动到下一张"), 真机上顺不顺手见 UNVERIFIED。
+                RatingBar(
+                    rating = state.rating,
+                    label = state.label,
+                    // 电脑上是几星(三态): 一次 1..5 星的绝对赋值在"不知道"时会被拦下(见 setRating)。
+                    desktopRating = state.desktopRating,
+                    desktopRatingFromWrite = state.desktopRatingFromWrite,
+                    enabled = !state.writing,
+                    writing = state.writing,
+                    onRating = { stars -> scope.launch { vm.setRating(stars) } },
+                    onLabel = { label -> scope.launch { vm.setLabel(label) } },
                 )
             }
-
-            // ── 写入结果: 失败卡 > 滑卡那句话 > 撤销那句话 > "未同步"短提示 ──
-            // (滑卡与撤销两句话**共用同一格**: 后发生的那次操作会清掉前一句 —— 两句话都在讲
-            //  同一张照片刚刚发生了什么, 同时显示必然有一句是过期的。)
-            val writeFailure = state.writeFailure
-            val swipeNote = state.swipeNote
-            val undoNote = state.undoNote
-            val guardNote = state.ratingGuardNote
-            val unsyncedNote = state.unsyncedNote
-            when {
-                writeFailure != null -> WriteFailureCard(
-                    head = state.writeHead.orEmpty(),
-                    text = state.writeText.orEmpty(),
-                    action = state.writeAction,
-                    actionLabel = state.writeActionLabel.orEmpty(),
-                    onRetry = { scope.launch { vm.retryCurrent() } },
-                    onReloadFolder = {
-                        onReloadFolder()
-                        onClose()
-                    },
-                    onReconnect = onClose,
-                    onDismiss = { vm.dismissWriteFailure() },
-                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
-                )
-
-                // "已保留 · 保持 5★" —— 命中"不降级"那一支时**没有写入**, 但必须给出反馈
-                swipeNote != null -> Text(
-                    swipeNote,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.padding(start = 12.dp, end = 12.dp, bottom = 4.dp),
-                )
-
-                // "已撤销" —— 只有服务端确认了才会说这句(见 UndoStack.undoMessage)
-                undoNote != null -> Text(
-                    undoNote,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.padding(start = 12.dp, end = 12.dp, bottom = 4.dp),
-                )
-
-                // 一次手点星级被**拦下**了(这台手机不知道电脑上是几星) —— 与滑卡那句"瞎写被拦下"
-                // 同一类反馈: 不说出来用户只会以为点了没反应。
-                guardNote != null -> Text(
-                    guardNote,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.error,
-                    modifier = Modifier.padding(start = 12.dp, end = 12.dp, bottom = 4.dp),
-                )
-
-                unsyncedNote != null -> Text(
-                    unsyncedNote,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.error,
-                    modifier = Modifier.padding(start = 12.dp, end = 12.dp, bottom = 4.dp),
-                )
-            }
-
-            // 底部: 星级 + 色标(滑卡做三态取舍, 星级做细分) —— 与查看器同一个组件。
-            // ⚠️ 这一页开了 advanceOnWriteSuccess, 所以**手点**星级/色标也会在写成功后前进:
-            // 那是 M2′ 为滑卡页装的规则("打完一张自动到下一张"), 真机上顺不顺手见 UNVERIFIED。
-            RatingBar(
-                rating = state.rating,
-                label = state.label,
-                // 电脑上是几星(三态): 一次 1..5 星的绝对赋值在"不知道"时会被拦下(见 setRating)。
-                desktopRating = state.desktopRating,
-                desktopRatingFromWrite = state.desktopRatingFromWrite,
-                enabled = !state.writing,
-                writing = state.writing,
-                onRating = { stars -> scope.launch { vm.setRating(stars) } },
-                onLabel = { label -> scope.launch { vm.setLabel(label) } },
-            )
         }
     }
 }
@@ -478,9 +485,10 @@ private fun SwipeCard(
  */
 @Composable
 private fun BoxScope.SwipeBadge(direction: SwipeDirection, action: SwipeAction, fade: Float) {
+    val p = LocalPhotoPalette.current
     val keep = action == SwipeAction.Keep
     Surface(
-        color = if (keep) Color(0xFF2E7D32) else Color(0xFFC62828),
+        color = if (keep) p.accent else p.error,
         shape = RoundedCornerShape(8.dp),
         modifier = Modifier
             .align(if (direction == SwipeDirection.Right) Alignment.TopStart else Alignment.TopEnd)
@@ -510,7 +518,8 @@ private fun SwipeTopBar(
     onRetryUnsynced: () -> Unit,
     onClose: () -> Unit,
 ) {
-    Surface(tonalElevation = 3.dp) {
+    val p = LocalPhotoPalette.current
+    Surface(color = p.s1) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -529,7 +538,11 @@ private fun SwipeTopBar(
             )
             // 撤销: **步数看得见**(为 0 / 正在写时禁用)—— 一个永远可点却什么都不做的按钮
             // 比没有这个按钮更坏。
-            TextButton(onClick = onUndo, enabled = undoCount > 0 && !writing) {
+            TextButton(
+                onClick = onUndo,
+                enabled = undoCount > 0 && !writing,
+                colors = ButtonDefaults.textButtonColors(contentColor = p.textSecondary),
+            ) {
                 Text(if (undoCount > 0) "撤销 $undoCount" else "撤销")
             }
             // 角标**本身就是按钮**: 点一下打开重试面板(那里能逐项看原因、逐项重试、放弃);
@@ -543,7 +556,10 @@ private fun SwipeTopBar(
                     onRetryUnsynced = onRetryUnsynced,
                 )
             }
-            TextButton(onClick = onClose) { Text("关闭") }
+            TextButton(
+                onClick = onClose,
+                colors = ButtonDefaults.textButtonColors(contentColor = p.textSecondary),
+            ) { Text("关闭") }
         }
     }
 }
@@ -555,21 +571,42 @@ private fun SwipeTopBar(
  */
 @Composable
 private fun SwipeConfigRow(config: SwipeConfig, onConfig: (SwipeConfig) -> Unit) {
+    // 写入方式不是每张都要看的东西：默认只留一行手势图例，点「写入方式」才展开。
+    var open by remember { mutableStateOf(false) }
+    val p = LocalPhotoPalette.current
     Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp)) {
-        Text(
-            swipeLegend(config),
-            style = MaterialTheme.typography.bodySmall,
-            modifier = Modifier.padding(bottom = 2.dp),
-        )
         Row(verticalAlignment = Alignment.CenterVertically) {
-            for (mode in SwipeMode.entries) {
-                val selected = mode == config.mode
-                TextButton(onClick = { onConfig(config.copy(mode = mode)) }) {
-                    Text(if (selected) "● ${modeName(mode)}" else modeName(mode))
+            Text(
+                swipeLegend(config),
+                style = MaterialTheme.typography.bodySmall,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f),
+            )
+            TextButton(
+                onClick = { open = !open },
+                colors = ButtonDefaults.textButtonColors(contentColor = p.textSecondary),
+            ) { Text(if (open) "收起" else "写入方式", style = MaterialTheme.typography.labelSmall) }
+        }
+        if (open) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                for (mode in SwipeMode.entries) {
+                    val selected = mode == config.mode
+                    TextButton(
+                        onClick = { onConfig(config.copy(mode = mode)) },
+                        colors = ButtonDefaults.textButtonColors(
+                            contentColor = if (selected) p.accent else p.textSecondary,
+                        ),
+                    ) {
+                        Text(if (selected) "● ${modeName(mode)}" else modeName(mode))
+                    }
                 }
+                Spacer(Modifier.weight(1f))
+                TextButton(
+                    onClick = { onConfig(config.reversed()) },
+                    colors = ButtonDefaults.textButtonColors(contentColor = p.textSecondary),
+                ) { Text("左右互换") }
             }
-            Spacer(Modifier.weight(1f))
-            TextButton(onClick = { onConfig(config.reversed()) }) { Text("左右互换") }
         }
     }
 }

@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.selection.toggleable
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.Checkbox
@@ -61,7 +62,11 @@ internal fun ConnectedCard(
                 )
             }
             Spacer(Modifier.height(12.dp))
-            Button(onClick = onStart, enabled = !busy) {
+            Button(
+                onClick = onStart,
+                enabled = !busy,
+                shape = RoundedCornerShape(10.dp),
+            ) {
                 Text(if (result.hasShares) "开始使用" else "仍然继续")
             }
         }

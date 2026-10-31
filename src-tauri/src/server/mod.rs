@@ -9,8 +9,10 @@
 
 pub mod auth;
 pub mod config;
+pub mod mdns;
 pub mod media;
 pub mod network;
+pub mod pairing;
 pub mod paths;
 pub mod routes;
 
@@ -62,25 +64,68 @@ pub struct ServerState {
     /// 类型纪律与 `notify` 完全一样: 里面只有 `std` 的东西(`Arc<StdMutex<…>>`), 绝不带
     /// Tauri 类型(见 `Notify` 上那段 —— 测试 exe 是**加载时**死, 不是变红)。
     pub clients: Arc<StdMutex<routes::ClientLog>>,
+    /// 配对状态机(5 分钟窗口 / 60 秒请求过期 / 每设备 10 秒 1 次 / 最多 3 个待确认)。
+    ///
+    /// 挂在状态上而不是做成进程级静态量, 理由与 `clients` 完全相同: 同一测试进程里多个用例
+    /// 若共用一份, "这次请求被限流了吗"会因为**别的用例**恰好刚请求过而假绿。
+    ///
+    /// 类型纪律: `PairingStore` 里只有 `std` + serde 的东西, 没有 Tauri 类型。
+    pub pairing: Arc<StdMutex<pairing::PairingStore>>,
+    /// mDNS 广播端。`into_state()` 给 [`mdns::DisabledAdvertiser`](测试/无广播);
+    /// 生产路径(`into_state_with_notifiers`)给真的 `MdnsAdvertiser`。
+    ///
+    /// 做成 trait 对象有两个理由, 缺一不可:
+    ///   · **测试**: 单测与契约测试绝不能真的起组播(会占 5353、会随机器网络环境变红);
+    ///   · **类型擦除**: 与 `notify` 同一条纪律 —— 这里不许出现 Tauri 类型。
+    pub advertiser: Arc<dyn mdns::Advertiser>,
+    /// 配对事件的发送端(见 [`pairing::PairingNotify`])。测试里是 `None`, 正式运行时由
+    /// `lib.rs` 用 `app.emit` 填上 —— **只有 `run()` 里那个闭包知道 Tauri 存在**。
+    pub pair_notify: Option<pairing::PairingNotify>,
 }
 
 impl config::ServerConfig {
     /// 把一份配置变成服务状态。**集成测试与单测共用这一条入口**(不带通知端, 事件分支跳过)。
+    ///
+    /// 两个"测试友好"的默认值都在这里: `advertiser` 是空实现(绝不起组播),
+    /// `pair_notify` 是 `None`(事件分支跳过)。生产路径走 `into_state_with_notifiers`。
     pub fn into_state(self) -> ServerState {
+        let paired = self.paired_devices.clone();
         ServerState {
             config: Arc::new(RwLock::new(self)),
             notify: None,
             clients: Arc::new(StdMutex::new(routes::ClientLog::default())),
+            pairing: Arc::new(StdMutex::new(pairing::PairingStore::with_paired(paired))),
+            advertiser: Arc::new(mdns::DisabledAdvertiser),
+            pair_notify: None,
         }
     }
 
-    /// 正式运行用: 带上通知端, 才能在手机改动后通知桌面端 UI 刷新(`lib.rs` 里构造)。
+    /// 带上 `decisions-changed` 的通知端(不广播 mDNS、不发配对事件)。
+    ///
+    /// 保留它是因为"只关心手机改动文件后刷新桌面端"的调用方不该被迫造一个 mDNS 广播端;
+    /// 正式运行请用 `into_state_with_notifiers`(见 `lib.rs` 的 `run()`)。
     pub fn into_state_with_notify(self, notify: Notify) -> ServerState {
-        ServerState {
-            config: Arc::new(RwLock::new(self)),
-            notify: Some(notify),
-            clients: Arc::new(StdMutex::new(routes::ClientLog::default())),
-        }
+        let mut st = self.into_state();
+        st.notify = Some(notify);
+        st
+    }
+
+    /// **正式运行用的那条入口**: 同时带上 `decisions-changed` 与配对事件的通知端,
+    /// 并把广播端换成真的 `MdnsAdvertiser`。
+    ///
+    /// 为什么把"真广播端"和"通知端"绑在同一个构造里: 只要有一个不带 Tauri 的入口会拿到真广播端,
+    /// 测试就可能真的起组播; 反过来只要有一个入口带了通知端却没广播端, 生产就会静默失去
+    /// mDNS。绑在一起之后, "生产 = 两样都有、测试 = 两样都没有"是一个结构上的事实。
+    pub fn into_state_with_notifiers(
+        self,
+        notify: Notify,
+        pair_notify: pairing::PairingNotify,
+    ) -> ServerState {
+        let mut st = self.into_state();
+        st.notify = Some(notify);
+        st.pair_notify = Some(pair_notify);
+        st.advertiser = Arc::new(mdns::MdnsAdvertiser::new());
+        st
     }
 }
 
@@ -310,10 +355,27 @@ struct Lifecycle {
     /// 有了它, 并发用例可以**等到**窗口真的开着再插进去(见 `mod tests` 的
     /// `concurrent_stop_during_bind_never_leaves_a_listener_behind`)。
     binding: Option<u64>,
+    /// 当前这一台服务正在用的 mDNS 广播端(`None` = 没有广播)。
+    ///
+    /// 为什么放在 `LIFECYCLE` 而不是 `ServerState`: [`stop`] 没有 `ServerState` 参数
+    /// (它的签名被十几条既有用例依赖), 而"停止监听就必须停止广播"是硬约束 ——
+    /// 让广播端与端口/停止开关同住一把锁, 二者就不可能在交错里各说各话。
+    advertiser: Option<Arc<dyn mdns::Advertiser>>,
+    /// 配对定时清理任务的取消旗(每台服务一个新旗; `stop` 置 true)。
+    ///
+    /// 用旗而不是 `JoinHandle::abort`: 任务每秒看一次旗, 最坏迟一秒退出 —— 与"abort 一个
+    /// 正在做文件/网络 IO 的任务"相比, 这个延迟换来的确定性更划算(它只碰内存)。
+    sweeper_cancel: Option<Arc<std::sync::atomic::AtomicBool>>,
 }
 
-static LIFECYCLE: StdMutex<Lifecycle> =
-    StdMutex::new(Lifecycle { gen: 0, port: None, shutdown: None, binding: None });
+static LIFECYCLE: StdMutex<Lifecycle> = StdMutex::new(Lifecycle {
+    gen: 0,
+    port: None,
+    shutdown: None,
+    binding: None,
+    advertiser: None,
+    sweeper_cancel: None,
+});
 
 /// 取生命周期锁。**中毒也照用**(`unwrap_or_else(|e| e.into_inner())`): 这个锁里放的是
 /// 普通状态, 不是"可能被写坏的不变量"; 而一旦因为别处 panic 就再也拿不到这把锁,
@@ -455,6 +517,159 @@ fn guard_refusal(confirm_public: bool) -> Option<String> {
     }
 }
 
+// ── 配对 / mDNS 的启动辅助 ───────────────────────────────────────────────────
+
+/// 32 个十六进制字符 = 合法的 `desktopId`(`auth::try_new_hex_id(16)` 的形状)。
+///
+/// 与 `config::token_is_valid` 同一条纪律: 长度对但形状不对的值宁可重新生成, 也不要把它
+/// 广播出去 —— 安卓拿它区分电脑, 一个怪值会让"这台电脑"每次重启都像一台新机器。
+fn desktop_id_is_valid(id: &str) -> bool {
+    id.len() == 32 && id.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+fn desktop_id_is_ready(st: &ServerState) -> Result<bool, String> {
+    Ok(desktop_id_is_valid(&st.config.read().map_err(|e| e.to_string())?.desktop_id))
+}
+
+/// **只把 desktopId 备进内存**, 不落盘; 返回"这次是不是真的生成了一枚"。
+///
+/// 与 `token_ready_in_memory` 完全对称: 调用方(`set_enabled` / `ensure_token`)攒齐要写的
+/// 东西之后**一次**落盘, 避免"两次写、中间失败留下半成品"。
+///
+/// 双重检查是刻意的: 读锁确认"确实没有"之后, 拿写锁时别人可能已经补上了一枚 ——
+/// 那就用他的(desktopId 的价值全在"稳定", 谁生成的不重要)。
+fn desktop_id_ready_in_memory(st: &ServerState) -> Result<bool, String> {
+    if desktop_id_is_ready(st)? {
+        return Ok(false);
+    }
+    let fresh = auth::try_new_hex_id(16)?;
+    let mut cfg = st.config.write().map_err(|e| e.to_string())?;
+    if desktop_id_is_valid(&cfg.desktop_id) {
+        return Ok(false);
+    }
+    cfg.desktop_id = fresh;
+    Ok(true)
+}
+
+/// 取一枚可用的 `desktopId`, 缺了就**在内存里**补上(落盘由调用方负责)。
+///
+/// 广播路径用它: mDNS TXT 的 `id=` 不能是空串, 否则安卓没法区分两台电脑。
+/// 随机数不可用只返回 `Err` —— 调用方放弃广播, 服务照常。
+fn ensure_desktop_id_in_memory(st: &ServerState) -> Result<String, String> {
+    desktop_id_ready_in_memory(st)?;
+    Ok(st.config.read().map_err(|e| e.to_string())?.desktop_id.clone())
+}
+
+/// 配对窗口此刻开着吗? 读锁中毒按**关着**处理(fail-closed: 绝不多广播一个 `pair=open`)。
+fn pairing_open(st: &ServerState) -> bool {
+    st.pairing
+        .lock()
+        .map(|s| s.window_open())
+        .unwrap_or(false)
+}
+
+/// 这一次 start 要不要广播、广播什么。
+///
+/// 返回 `None` 的三种情况, 都是"不广播"而不是"失败":
+///   · 网络类别为公用 / 读不出来(`should_refuse_to_start` 给理由)—— 契约 §0.1;
+///   · 随机数不可用, 拿不到 `desktopId`;
+///   · 一个局域网 IPv4 都没有(手机发现了也连不上, 那比发现不到更糟)。
+///
+/// 注意: 这里**只读**状态(必要时在内存里补 desktopId), 不落盘 —— start() 没有 app 数据目录,
+/// 而 desktopId 的落盘在 `set_enabled` / `boot` 那两条真正持有目录的路径上已经做过。
+fn advertise_for(st: &ServerState) -> Option<(mdns::AdvertiseInfo, bool)> {
+    let hints = current_hints();
+    if network::should_refuse_to_start(&hints).is_some() {
+        return None;
+    }
+    let desktop_id = match ensure_desktop_id_in_memory(st) {
+        Ok(id) => id,
+        Err(e) => {
+            eprintln!("[server] mDNS 未广播: {}", e);
+            return None;
+        }
+    };
+    let info = mdns::AdvertiseInfo::from_hints(&desktop_id, &hints);
+    if info.ips.is_empty() {
+        return None;
+    }
+    Some((info, pairing_open(st)))
+}
+
+/// 把配对窗口的开关状态同步到 mDNS TXT(`pair=open|closed`)。失败只记一行 ——
+/// 真正的闸门在状态机里, TXT 只是给安卓看的提示(见 `mdns.rs` 模块头)。
+fn sync_pair_advertisement(st: &ServerState) {
+    if let Err(e) = st.advertiser.set_pair_open(pairing_open(st)) {
+        eprintln!("[server] mDNS pair 状态更新失败: {}", e);
+    }
+}
+
+/// 发一条 `pairing-changed`(窗口开关 / 批准 / 拒绝 / 过期 / 移除之后)。
+/// 没有通知端(单测、集成测试)就跳过 —— 那是一条真实可达的分支。
+fn emit_pairing_changed(st: &ServerState) {
+    if let Some(notify) = &st.pair_notify {
+        let snapshot = st
+            .pairing
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .snapshot();
+        notify(pairing::PairingEvent::Changed(snapshot));
+    }
+}
+
+/// 清理一次配对状态, 并在**真的变了**的时候更新广播 / 发事件。
+///
+/// 只在变化时通知是刻意的: 每秒都发 `pairing-changed` 会让桌面端每秒重渲染一次,
+/// 而那个列表在绝大多数秒里一个字都没变。
+fn sweep_and_sync(st: &ServerState) -> pairing::SweepReport {
+    let report = st
+        .pairing
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .sweep();
+    if report.window_closed || report.expired > 0 {
+        sync_pair_advertisement(st);
+        emit_pairing_changed(st);
+    }
+    report
+}
+
+/// 把状态机里的已配对列表写回配置(**只为落盘**, 展示读的是状态机的快照)。
+fn paired_into_config(st: &ServerState) -> Result<(), String> {
+    let paired = st
+        .pairing
+        .lock()
+        .map_err(|e| e.to_string())?
+        .paired_devices();
+    st.config.write().map_err(|e| e.to_string())?.paired_devices = paired;
+    Ok(())
+}
+
+/// 落盘失败之后, 让状态机也回到盘上那一份 —— 否则界面会继续显示一台"其实没保存"的设备。
+fn realign_pairing_store_from_config(st: &ServerState) {
+    let disk_paired = st
+        .config
+        .read()
+        .map(|c| c.paired_devices.clone())
+        .unwrap_or_default();
+    st.pairing
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .set_paired_devices(disk_paired);
+}
+
+/// 状态机错误 → 桌面端看得懂的一句中文(Tauri 命令的 `Err` 直接显示给用户)。
+fn pair_error_message(e: pairing::PairError) -> String {
+    match e {
+        pairing::PairError::Closed => "配对窗口已关闭, 请先在电脑上点「配对新设备」".into(),
+        pairing::PairError::RateLimited => "请求过于频繁, 请稍后再试".into(),
+        pairing::PairError::BadRequest => "配对请求不完整".into(),
+        pairing::PairError::TooManyPending => "待确认的配对请求已满(最多 3 个)".into(),
+        pairing::PairError::NotFound => "找不到这条配对请求(可能已过期)".into(),
+        pairing::PairError::Expired => "这条配对请求已过期".into(),
+        pairing::PairError::RandomUnavailable => "系统随机数不可用, 请重试".into(),
+    }
+}
 
 /// 起服务。**用 Tauri 的运行时 spawn**(Task 1 已验证可行), 不另建 runtime。
 ///
@@ -521,7 +736,27 @@ pub async fn start(state: ServerState) -> Result<u16, String> {
                 // 实际绑到的端口。与 `port` 不同的唯一情形是配置里写了 0(让系统挑) ——
                 // 那时把 0 存进状态, 界面会显示一个谁都不该去连的端口。
                 let bound = listener.local_addr().map(|a| a.port()).unwrap_or(port);
+                // ── mDNS 广播的触发条件(计划 §0.1) ──────────────────────────────
+                // "服务真的在监听 **且** 网络类别允许"才广播。这里一次算好, 装进
+                // `LIFECYCLE` 时再登记 —— 中间不碰网络(探测是同步的, 且已经做过一次)。
+                //
+                // 为什么"公用/读不出类别"连广播都不做(哪怕用户确认后服务能起来):
+                // 那是计划 §0.1 的冻结契约。确认放行的是"我愿意承担明文端口的风险",
+                // 不是"我愿意让同一张不可信网络上的任意设备看见我"。手输/扫码照旧可用。
+                let advertise = advertise_for(&state);
                 let (tx, mut rx) = tokio::sync::watch::channel(false);
+                let sweeper_cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+                // 广播在临界区**之前**起: `ServiceDaemon::new()` 会起线程/开 socket, 那种事
+                // 不该占着 `LIFECYCLE`(stop() 会因为等这把锁而被推迟)。登记仍然在临界区里;
+                // 而"起了却没登记就取消"的那条路会显式把它停掉(见下面的取消分支)。
+                let mut advertise_started = false;
+                if let Some((info, pair_open)) = &advertise {
+                    match state.advertiser.start(bound, info, *pair_open) {
+                        Ok(()) => advertise_started = true,
+                        // mDNS 是增强, 不是服务能否工作的前提: 失败只记一行, 服务照常起。
+                        Err(e) => eprintln!("[server] mDNS 未广播: {}", e),
+                    }
+                }
                 // **安装这一步是整段代码的心脏。** 三个动作 —— 判断还能不能装、装停止开关、
                 // 存端口 —— 必须在**同一次**临界区里完成, 中间不许有任何 `.await`/放锁的点:
                 // Critical 2 的那两个交错窗口, 就是从把它们拆开的地方钻出来的。
@@ -543,6 +778,11 @@ pub async fn start(state: ServerState) -> Result<u16, String> {
                         drop(lc);
                         // 没装上去的监听器一个字节都不留: 端口在这一行就放开了。
                         drop(listener);
+                        // 广播也要一起收掉 —— 否则局域网里会留着一台"能看见、连不上"的电脑,
+                        // 而它连 LIFECYCLE 都没登记(没有人能再停掉它)。
+                        if advertise_started {
+                            state.advertiser.stop();
+                        }
                         let msg = "服务在启动过程中被关闭, 未开始监听(端口已放开)".to_string();
                         record_start_error(msg.clone());
                         return Err(msg);
@@ -550,7 +790,33 @@ pub async fn start(state: ServerState) -> Result<u16, String> {
                     lc.shutdown = Some(tx);
                     lc.port = Some(bound);
                     lc.binding = None;
+                    // 广播端与"停止开关"同住 LIFECYCLE(见 `Lifecycle::advertiser`):
+                    // 于是"停止监听"一定能停掉广播, 不存在两边各说各话的交错。
+                    // 登记的是**这一次 start 用的那个**广播端 —— 测试注入的
+                    // `RecordingAdvertiser` 也走这里, 所以起停能被确定性地断言。
+                    lc.advertiser = Some(state.advertiser.clone());
+                    lc.sweeper_cancel = Some(sweeper_cancel.clone());
                 }
+                // ── 配对窗口的定时清理(每秒一次) ──────────────────────────────
+                // 没有它, "5 分钟窗口"和"60 秒请求"只在有人来访问时才被判定 —— 到期的窗口
+                // 不会自己关上, mDNS 的 `pair=open` 会一直挂着, 桌面端也收不到 `pairing-changed`。
+                // 取消旗与广播端同住 LIFECYCLE, 所以 stop() 一定会把它一起停掉。
+                //
+                // `MissedTickBehavior::Delay`: 机器休眠醒来之后不要连补一串 tick ——
+                // 那些"补课"对清理没有意义, 只会在一瞬间多扫几次。
+                let sweep_state = state.clone();
+                let sweep_cancel = sweeper_cancel.clone();
+                tauri::async_runtime::spawn(async move {
+                    let mut tick = tokio::time::interval(std::time::Duration::from_secs(1));
+                    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+                    loop {
+                        tick.tick().await;
+                        if sweep_cancel.load(std::sync::atomic::Ordering::Relaxed) {
+                            break;
+                        }
+                        sweep_and_sync(&sweep_state);
+                    }
+                });
                 clear_start_error();
                 // **整张路由表只有一个入口** `routes::router`, 鉴权层罩住全部(见模块头)。
                 let app = routes::router(state.clone());
@@ -577,12 +843,25 @@ pub async fn start(state: ServerState) -> Result<u16, String> {
                         .await;
                     // 只有"我这一代"才有资格清状态: 否则上一台的收尾会把**新一台**的端口
                     // 抹掉, 状态说"没在跑"而实际上在监听。
-                    {
+                    //
+                    // 广播与清理任务也在这里兜底收掉: 正常路径是 `stop()` 先收(它会把代数
+                    // 推进, 于是这里看到代数不同、什么都不做)。走得到的只有"serve 自己结束"
+                    // (监听器出错) —— 那种情况下**绝不能**继续广播一台已经不监听的服务。
+                    let (dead_advertiser, dead_sweeper) = {
                         let mut lc = lifecycle();
                         if lc.gen == gen {
                             lc.port = None;
                             lc.shutdown = None;
+                            (lc.advertiser.take(), lc.sweeper_cancel.take())
+                        } else {
+                            (None, None)
                         }
+                    };
+                    if let Some(cancel) = dead_sweeper {
+                        cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+                    }
+                    if let Some(advertiser) = dead_advertiser {
+                        advertiser.stop();
                     }
                     if let Err(e) = served {
                         eprintln!("[server] 服务结束: {}", e);
@@ -626,14 +905,29 @@ pub async fn start(state: ServerState) -> Result<u16, String> {
 /// 顺带清 `LAST_ERROR`: 用户已经把它关了, 还挂着一句上一次的启动失败理由是噪音。
 /// (关闭路径自己若在落盘上失败, 会在 `stop()` **之后**记一条新的理由 —— 见 `set_enabled`。)
 pub fn stop() {
-    let mut lc = lifecycle();
-    if let Some(tx) = lc.shutdown.take() {
+    // 与端口/停止开关在同一次临界区里**取走**广播端与清理任务, 但把它们真正停掉放在锁外:
+    // `Advertiser::stop` 要碰 mdns-sd 自己的锁, 不该让它占着 `LIFECYCLE`。
+    //
+    // 取走而不是克隆: 停一次就够, 而且下一次 `start` 会在同一个广播端上重新注册 ——
+    // 那台对象是状态里长期存在的(`ServerState::advertiser`), 不是每次 start 新造的。
+    let (tx, advertiser, sweeper_cancel) = {
+        let mut lc = lifecycle();
+        let tx = lc.shutdown.take();
+        lc.port = None;
+        // 代数推进: **作废所有在途 start 的票据** —— 这是"stop 卡在 bind 中途"唯一可靠的解药。
+        lc.gen += 1;
+        (tx, lc.advertiser.take(), lc.sweeper_cancel.take())
+    };
+    if let Some(tx) = tx {
         let _ = tx.send(true);
     }
-    lc.port = None;
-    // 代数推进: **作废所有在途 start 的票据** —— 这是"stop 卡在 bind 中途"唯一可靠的解药。
-    lc.gen += 1;
-    drop(lc);
+    if let Some(cancel) = sweeper_cancel {
+        cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+    // **广播随监听一起停**(契约 §0.1): 服务/应用停了还让局域网看见一台连不上的电脑, 是谎言。
+    if let Some(advertiser) = advertiser {
+        advertiser.stop();
+    }
     clear_start_error();
 }
 
@@ -836,26 +1130,69 @@ pub struct ChangedFields {
     pub shares: bool,
     /// M4′ Task 3: `set_server_read_only` 改过的字段。
     pub read_only: bool,
+    /// mDNS 配对: 首次开启服务时可能**补上**一枚 `desktopId`(见 `desktop_id_ready_in_memory`)。
+    /// 落盘失败后它必须跟着回滚, 否则广播出去的 id 在重启后会换一个。
+    pub desktop_id: bool,
+    /// mDNS 配对: `approve_pairing` / `forget_paired_device` 改过的字段。
+    pub paired: bool,
 }
 
 impl ChangedFields {
     /// 开关命令改过的字段: `enabled` 一定算; token 只在这次**真的**换了一枚时才算
     /// (没换却撤 token, 会把并发换上的那枚抹掉)。
+    ///
+    /// `desktop_id` 无条件算: 落盘失败时把内存对齐到盘上那一份**永远**是安全的方向 ——
+    /// 没有变化时盘上与内存是同一个值, 对齐等于 no-op; 有变化时它正是要撤回的那一个。
     pub fn switch(token_replaced: bool) -> Self {
-        Self { enabled: true, token: token_replaced, shares: false, read_only: false }
+        Self {
+            enabled: true,
+            token: token_replaced,
+            shares: false,
+            read_only: false,
+            desktop_id: true,
+            paired: false,
+        }
     }
 
     /// `rotate_server_token` 改过的字段。
-    pub const TOKEN: Self =
-        Self { enabled: false, token: true, shares: false, read_only: false };
+    pub const TOKEN: Self = Self {
+        enabled: false,
+        token: true,
+        shares: false,
+        read_only: false,
+        desktop_id: false,
+        paired: false,
+    };
 
     /// `add_share` / `remove_share` 改过的字段。
-    pub const SHARES: Self =
-        Self { enabled: false, token: false, shares: true, read_only: false };
+    pub const SHARES: Self = Self {
+        enabled: false,
+        token: false,
+        shares: true,
+        read_only: false,
+        desktop_id: false,
+        paired: false,
+    };
 
     /// `set_server_read_only` 改过的字段(M4′ Task 3)。
-    pub const READ_ONLY: Self =
-        Self { enabled: false, token: false, shares: false, read_only: true };
+    pub const READ_ONLY: Self = Self {
+        enabled: false,
+        token: false,
+        shares: false,
+        read_only: true,
+        desktop_id: false,
+        paired: false,
+    };
+
+    /// `approve_pairing` / `forget_paired_device` 改过的字段。
+    pub const PAIRED: Self = Self {
+        enabled: false,
+        token: false,
+        shares: false,
+        read_only: false,
+        desktop_id: false,
+        paired: true,
+    };
 }
 
 /// 落盘; **失败就按盘对齐**(`changed` 里的字段)并回一句给用户看的理由。
@@ -1013,6 +1350,9 @@ pub async fn set_enabled(
         // ④ 失败时**不**回滚开关: 用户的选择照旧留着(下次开机还会再试一次), 而服务并没有
         // 在监听 —— `running` 与 `enabled` 在状态里是分开的, 界面据实显示即可。
         let token_replaced = token_ready_in_memory(st)?;
+        // desktopId 与 token 同一条纪律: 一起备进内存、**一次**落盘(见上面的 minor ②)。
+        // 它决定 mDNS TXT 里的 `id=`, 所以"首次开启"时缺了它就必须当场补上。
+        desktop_id_ready_in_memory(st)?;
         write_enabled(st, true)?;
         // 测试专用窗口(生产构建里这一行不存在, 也不留分支): 复审复现那个谎用的插入点。
         #[cfg(test)]
@@ -1174,6 +1514,116 @@ pub async fn set_read_only(
     status_of_state(st)
 }
 
+// ── 配对窗口(桌面端那半边的入口) ──────────────────────────────────────────
+//
+// Tauri 命令(`lib.rs`)只负责把 AppHandle 翻译成 `&ServerState` / `&Path`, 实现全在这里。
+// 这样"窗口到期/落盘失败/状态机拒绝"这些路径都能被单测真的走一遍, 而不是只有真机点得动。
+
+/// 打开 5 分钟配对窗口(再点一次 = 把到期时间往后推)。
+///
+/// 立刻把 `pair=open` 写进 mDNS TXT 并发一条 `pairing-changed` —— 安卓据此把设备从
+/// "请先在电脑上点配对新设备"翻成"可配对", 用户不用等下一次轮询。
+pub fn open_pairing_window(st: &ServerState) -> Result<pairing::PairingWindow, String> {
+    let window = st
+        .pairing
+        .lock()
+        .map_err(|e| e.to_string())?
+        .open_window();
+    sync_pair_advertisement(st);
+    emit_pairing_changed(st);
+    Ok(window)
+}
+
+/// 关闭配对窗口。还挂着的待确认请求一并作废(状态机负责), 已批准的记录不受影响。
+pub fn close_pairing_window(st: &ServerState) -> Result<(), String> {
+    st.pairing
+        .lock()
+        .map_err(|e| e.to_string())?
+        .close_window();
+    sync_pair_advertisement(st);
+    emit_pairing_changed(st);
+    Ok(())
+}
+
+/// 桌面端要的整份配对状态(§0.3)。**只读**: 不发事件、不改任何东西。
+pub fn pairing_status_of(st: &ServerState) -> Result<pairing::PairingStatus, String> {
+    Ok(st.pairing.lock().map_err(|e| e.to_string())?.snapshot())
+}
+
+/// 批准一个请求: 状态机记下这台设备, 再把它**落盘**(`pairedDevices`)。
+///
+/// 批准本身先发生(手机下一次轮询就能拿到 token —— 那是用户点"允许"的意图), 落盘只是让
+/// 列表在重启后还在。落盘失败时:
+///   · 配置与状态机都按盘对齐(界面显示的就是重启后会看到的那一份);
+///   · 返回带说明的 `Err` —— 不能只说"失败", 因为**批准其实成功了**, 用户需要知道手机上
+///     已经能连上, 只是这条记录没保存下来。
+pub async fn approve_pairing(
+    st: &ServerState,
+    app_data_dir: &Path,
+    request_id: &str,
+) -> Result<(), String> {
+    let _serialized = CONFIG_WRITE_LOCK.lock().await;
+
+    st.pairing
+        .lock()
+        .map_err(|e| e.to_string())?
+        .approve(request_id)
+        .map_err(pair_error_message)?;
+    paired_into_config(st)?;
+    let saved = persist_or_realign(st, app_data_dir, ChangedFields::PAIRED, "已配对设备");
+    if let Err(e) = saved {
+        // 状态机里那台设备是"内存里成功、盘上没成功"的那一份 —— 一起对齐回盘上。
+        realign_pairing_store_from_config(st);
+        emit_pairing_changed(st);
+        return Err(format!("已允许这台设备, 但{}", e));
+    }
+    emit_pairing_changed(st);
+    Ok(())
+}
+
+/// 拒绝一个请求。**不要求窗口还开着**(拒绝永远比批准安全), 也不落盘 ——
+/// 被拒绝的设备不该出现在任何持久记录里。
+pub fn deny_pairing(st: &ServerState, request_id: &str) -> Result<(), String> {
+    st.pairing
+        .lock()
+        .map_err(|e| e.to_string())?
+        .deny(request_id)
+        .map_err(pair_error_message)?;
+    emit_pairing_changed(st);
+    Ok(())
+}
+
+/// "忘记"一台已配对设备并落盘。
+///
+/// ⚠️ **v1 不吊销 token**(平台约束, 见 `config.rs` 的 `paired_devices` 注释): 这只是把它
+/// 从列表里拿掉。真正吊销要走"轮换配对码"。
+///
+/// 未知 `deviceId` 是幂等的 `Ok`(界面可能拿着一条旧列表) —— 没什么可保存, 也就不写盘。
+pub async fn forget_paired_device(
+    st: &ServerState,
+    app_data_dir: &Path,
+    device_id: &str,
+) -> Result<(), String> {
+    let _serialized = CONFIG_WRITE_LOCK.lock().await;
+
+    let removed = st
+        .pairing
+        .lock()
+        .map_err(|e| e.to_string())?
+        .forget(device_id);
+    if !removed {
+        return Ok(());
+    }
+    paired_into_config(st)?;
+    if let Err(e) = persist_or_realign(st, app_data_dir, ChangedFields::PAIRED, "已配对设备") {
+        realign_pairing_store_from_config(st);
+        emit_pairing_changed(st);
+        return Err(e);
+    }
+    emit_pairing_changed(st);
+    Ok(())
+}
+
 /// 读内存里的开关。**读不到(锁中毒)或 false**。
 ///
 /// 现在的用途只有一个: 落盘失败之后**给界面拼那句理由**(`persist_failure_reason`) —— 那时
@@ -1223,6 +1673,12 @@ fn realign_from_disk(st: &ServerState, app_data_dir: &Path, changed: ChangedFiel
     }
     if changed.read_only {
         cfg.read_only = disk.read_only;
+    }
+    if changed.desktop_id {
+        cfg.desktop_id = disk.desktop_id;
+    }
+    if changed.paired {
+        cfg.paired_devices = disk.paired_devices;
     }
 }
 
@@ -1423,11 +1879,21 @@ fn ensure_token<F>(st: &ServerState, app_data_dir: &Path, gen_token: F) -> Resul
 where
     F: FnOnce() -> Result<String, String>,
 {
-    if token_is_ready(st)? {
+    // 两个字段**一起**判定、一次写入: 只缺一个时也走同一次落盘, 不在盘上留半成品
+    // (与 `set_enabled` 的 minor ② 是同一条纪律)。
+    //
+    // desktopId 是 mDNS 配对带来的: 首次起服务时它和 token 一样是"此刻才该生成"的东西。
+    // 没有它, 安卓会把每次重启后的同一台电脑看成新电脑(见 `config.rs` 的字段注释)。
+    let token_ready = token_is_ready(st)?;
+    let id_ready = desktop_id_is_ready(st)?;
+    if token_ready && id_ready {
         return Ok(());
     }
-    let fresh = gen_token()?;
-    st.config.write().map_err(|e| e.to_string())?.token = fresh;
+    if !token_ready {
+        let fresh = gen_token()?;
+        st.config.write().map_err(|e| e.to_string())?.token = fresh;
+    }
+    desktop_id_ready_in_memory(st)?;
     save_config(st, app_data_dir)
 }
 
@@ -1453,6 +1919,7 @@ mod tests {
                 port: 0,
                 token: "t".repeat(64),
                 shares: Vec::new(),
+                ..Default::default()
             }
             .into_state(),
         );
@@ -1561,6 +2028,7 @@ mod tests {
             port: config::DEFAULT_PORT,
             token: String::new(), // Default 不再生成 token, 所以这是真实可达的状态
             shares: Vec::new(),
+            ..Default::default()
         }
         .into_state();
 
@@ -1595,6 +2063,7 @@ mod tests {
                 port: 0,
                 token: bad.to_string(),
                 shares: Vec::new(),
+                ..Default::default()
             }
             .into_state();
             let err = tokio::time::timeout(std::time::Duration::from_secs(10), start(st))
@@ -1643,6 +2112,7 @@ mod tests {
             port: base,
             token: "d".repeat(64),
             shares: Vec::new(),
+            ..Default::default()
         }
         .into_state();
         let err = tokio::time::timeout(std::time::Duration::from_secs(30), start(st))
@@ -1695,6 +2165,7 @@ mod tests {
             port: 28_876,
             token: token.clone(),
             shares: Vec::new(),
+            ..Default::default()
         }
         .into_state();
 
@@ -1846,6 +2317,7 @@ mod tests {
             port: 29_876,
             token: "c".repeat(64),
             shares: Vec::new(),
+            ..Default::default()
         }
         .into_state();
 
@@ -1911,6 +2383,7 @@ mod tests {
             port: config::DEFAULT_PORT,
             token: "b".repeat(64), // token 已可用 → `token_ready_in_memory` 不换 token
             shares: Vec::new(),
+            ..Default::default()
         }
         .into_state();
 
@@ -1963,6 +2436,7 @@ mod tests {
             port: 0,
             token: String::new(),
             shares: Vec::new(),
+            ..Default::default()
         }
         .into_state();
         seams::fail_next_persist("模拟: 这一次写失败了");
@@ -2023,6 +2497,7 @@ mod tests {
             port: 0,
             token: "9".repeat(64),
             shares: Vec::new(),
+            ..Default::default()
         }
         .into_state();
         save_config(&st, &dir).expect("先落一份 盘上=false 的配置");
@@ -2100,6 +2575,7 @@ mod tests {
                 port: 0,
                 token: old.clone(),
                 shares: Vec::new(),
+                ..Default::default()
             }
             .into_state();
             save_config(&st, &dir).expect("先落一份'旧 token'的配置");
@@ -2131,6 +2607,7 @@ mod tests {
                 port: 0,
                 token: "5".repeat(64),
                 shares: vec![old_share.clone()],
+                ..Default::default()
             }
             .into_state();
             save_config(&st, &dir).expect("先落一份'只有一个旧共享根'的配置");
@@ -2165,6 +2642,7 @@ mod tests {
                 port: 0,
                 token: "6".repeat(64),
                 shares: vec![a.clone(), b.clone()],
+                ..Default::default()
             }
             .into_state();
             save_config(&st, &dir).expect("先落一份'两个共享根'的配置");
@@ -2215,6 +2693,7 @@ mod tests {
             port: 0,
             token: "3".repeat(64),
             shares: Vec::new(),
+            ..Default::default()
         }
         .into_state();
         save_config(&st, &dir).expect("先落一份合法配置");
@@ -2288,6 +2767,7 @@ mod tests {
             port: 0,
             token: "4".repeat(64),
             shares: Vec::new(),
+            ..Default::default()
         }
         .into_state();
         save_config(&st, &dir).expect("先落一份合法配置");
@@ -2366,6 +2846,7 @@ mod tests {
             port: base,
             token: "7".repeat(64),
             shares: Vec::new(),
+            ..Default::default()
         }
         .into_state();
 
@@ -2462,6 +2943,7 @@ mod tests {
             port: 31_876,
             token: "8".repeat(64),
             shares: Vec::new(),
+            ..Default::default()
         }
         .into_state();
         save_config(&st, &dir).expect("先把一份合法的配置落盘");
@@ -2572,6 +3054,7 @@ mod tests {
                 port: 27_876,
                 token: "5".repeat(64),
                 shares: Vec::new(),
+                ..Default::default()
             }
             .into_state();
             let port = start_on_tauri_runtime(st).expect("应能起服务");
@@ -2617,6 +3100,7 @@ mod tests {
             port: 0,
             token: String::new(), // token 不可用 → start 拒绝并记下理由
             shares: Vec::new(),
+            ..Default::default()
         }
         .into_state();
         let _ = start_on_tauri_runtime(st.clone()).expect_err("空 token 必须被拒");
@@ -2647,6 +3131,7 @@ mod tests {
             port: 0,
             token: "6".repeat(64),
             shares: Vec::new(),
+            ..Default::default()
         }
         .into_state();
         let port = start_on_tauri_runtime(st.clone()).expect("应能起服务");
@@ -2735,6 +3220,7 @@ mod tests {
             port: 0,
             token: "7".repeat(64), // token 是好的 → 唯一的拦路者只能是那道防护
             shares: Vec::new(),
+            ..Default::default()
         }
         .into_state();
 
@@ -2768,6 +3254,7 @@ mod tests {
             port: 0,
             token: "8".repeat(64),
             shares: Vec::new(),
+            ..Default::default()
         }
         .into_state();
 
@@ -2801,6 +3288,7 @@ mod tests {
             port: 0,
             token: "9".repeat(64),
             shares: Vec::new(),
+            ..Default::default()
         }
         .into_state();
 
@@ -2846,6 +3334,7 @@ mod tests {
             port: 0,
             token: "a".repeat(64),
             shares: Vec::new(),
+            ..Default::default()
         }
         .into_state();
 
@@ -2875,6 +3364,7 @@ mod tests {
             port: 0,
             token: "b".repeat(64),
             shares: Vec::new(),
+            ..Default::default()
         }
         .into_state();
 
@@ -2910,6 +3400,7 @@ mod tests {
             port: 0,
             token: "c".repeat(64),
             shares: Vec::new(),
+            ..Default::default()
         }
         .into_state();
 
@@ -2950,6 +3441,7 @@ mod tests {
             port: 0,
             token: "d".repeat(64), // token 是好的 → 唯一的拦路者只能是那道防护
             shares: Vec::new(),
+            ..Default::default()
         }
         .into_state();
 
@@ -2988,6 +3480,7 @@ mod tests {
             port: 0,
             token: "e".repeat(64),
             shares: Vec::new(),
+            ..Default::default()
         }
         .into_state();
 
@@ -3182,6 +3675,7 @@ mod tests {
             port: 8123,
             token: token.clone(),
             shares: Vec::new(),
+            ..Default::default()
         }
         .into_state();
 
@@ -3224,6 +3718,7 @@ mod tests {
             port: taken, // 故意写一个**已经被占住**的端口
             token: token.clone(),
             shares: Vec::new(),
+            ..Default::default()
         }
         .into_state();
 
@@ -3272,6 +3767,7 @@ mod tests {
             port: config::DEFAULT_PORT,
             token: "f".repeat(64),
             shares: Vec::new(),
+            ..Default::default()
         }
         .into_state();
 
@@ -3285,5 +3781,178 @@ mod tests {
         let off = set_read_only(&st, &dir, false).await.expect("关闭只读");
         assert!(!off.read_only);
         assert!(!config::ServerConfig::load(&dir).read_only, "关闭同样要落盘");
+    }
+
+    // ════════════════════════════════════════════════════════════════════════
+    // mDNS 配对 · Workstream A(广播生命周期 / desktopId / 已配对设备落盘)
+    // ════════════════════════════════════════════════════════════════════════
+
+    /// 记录调用的广播端。**绝不起组播** —— 单测依赖这一点: 真的组播会占 5353, 而且
+    /// 结果随本机网络环境变红(与生产路径用 `MdnsAdvertiser` 是刻意的分离)。
+    #[derive(Default)]
+    struct RecordingAdvertiser {
+        calls: StdMutex<Vec<String>>,
+    }
+
+    impl RecordingAdvertiser {
+        fn record(&self, s: String) {
+            self.calls.lock().unwrap_or_else(|e| e.into_inner()).push(s);
+        }
+        fn calls(&self) -> Vec<String> {
+            self.calls.lock().unwrap_or_else(|e| e.into_inner()).clone()
+        }
+    }
+
+    impl mdns::Advertiser for RecordingAdvertiser {
+        fn start(
+            &self,
+            port: u16,
+            info: &mdns::AdvertiseInfo,
+            pair_open: bool,
+        ) -> Result<(), String> {
+            self.record(format!(
+                "start port={port} host={} id={} ips={:?} pair={pair_open}",
+                info.host, info.desktop_id, info.ips
+            ));
+            Ok(())
+        }
+        fn set_pair_open(&self, open: bool) -> Result<(), String> {
+            self.record(format!("pair={open}"));
+            Ok(())
+        }
+        fn stop(&self) {
+            self.record("stop".into());
+        }
+    }
+
+    /// **广播与监听同生同死**(契约 §0.1): start 之后开始广播, stop 之后必须停止;
+    /// 配对窗口开/关要同步到 TXT 的 `pair=open|closed`。
+    ///
+    /// 变异靶子: 把 `start()` 里 `lc.advertiser = ...` 那一行删掉 → 这条的 `stop` 断言当场红;
+    /// 把 `open_pairing_window` 里 `sync_pair_advertisement` 删掉 → `pair=true` 那条红。
+    #[tokio::test]
+    async fn server_start_advertises_and_stop_unregisters() {
+        let _serialized = GLOBAL_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        reset_server_state();
+        // 注入一份"专用网络 + 一个 LAN 地址"的探测结果: 真实网络类别没法在测试里改,
+        // 而"公用网络下不广播"的现场只能靠注入造出来(见 `current_hints`)。
+        seams::set_hints_override(private_hints());
+
+        let mut st = config::ServerConfig {
+            read_only: false,
+            enabled: true,
+            port: 0,
+            token: "8".repeat(64),
+            shares: Vec::new(),
+            desktop_id: "0123456789abcdef0123456789abcdef".into(),
+            ..Default::default()
+        }
+        .into_state();
+        let recorder = Arc::new(RecordingAdvertiser::default());
+        st.advertiser = recorder.clone();
+
+        let port = start_on_tauri_runtime(st.clone()).expect("专用网络 + 好 token 必须起得来");
+        let started = recorder
+            .calls()
+            .into_iter()
+            .find(|c| c.starts_with("start "))
+            .expect("start 之后必须广播");
+        assert!(started.contains(&format!("port={port}")), "端口必须是真绑上的那个: {started}");
+        assert!(
+            started.contains("id=0123456789abcdef0123456789abcdef"),
+            "TXT 的 id 必须是状态里的 desktopId: {started}"
+        );
+        assert!(started.contains("pair=false"), "窗口默认关着, 首次广播必须是 pair=false: {started}");
+
+        // 窗口开 → TXT 变 open; 关 → 变 closed。
+        open_pairing_window(&st).expect("开配对窗口");
+        assert!(
+            recorder.calls().iter().any(|c| c == "pair=true"),
+            "开窗必须把 pair=open 同步到 mDNS: {:?}",
+            recorder.calls()
+        );
+        close_pairing_window(&st).expect("关配对窗口");
+        assert!(
+            recorder.calls().iter().any(|c| c == "pair=false"),
+            "关窗必须把 pair=closed 同步到 mDNS: {:?}",
+            recorder.calls()
+        );
+
+        stop();
+        assert!(
+            recorder.calls().iter().any(|c| c == "stop"),
+            "停止监听必须停止广播(否则局域网里留着一台连不上的电脑): {:?}",
+            recorder.calls()
+        );
+        seams::clear();
+    }
+
+    /// `desktopId` **只生成一次、必须落盘、之后稳定**; 已配对设备批准后落盘, 忘记后也落盘。
+    ///
+    /// 变异靶子: 把 `set_enabled`/`ensure_token` 里的 `desktop_id_ready_in_memory` 删掉 →
+    /// 第一条断言红(盘上没有 id); 把 `approve_pairing` 里的 `persist_or_realign` 删掉 →
+    /// "重启后仍看得见这台设备"那条红。
+    #[tokio::test]
+    async fn desktop_id_is_stable_and_paired_devices_persist() {
+        let dir = tmp_dir("pair_persist");
+        std::fs::create_dir_all(&dir).expect("建临时目录");
+        let st = config::ServerConfig {
+            read_only: false,
+            enabled: false,
+            port: config::DEFAULT_PORT,
+            token: "9".repeat(64),
+            shares: Vec::new(),
+            ..Default::default()
+        }
+        .into_state();
+
+        // token 已经可用 → 生成器绝不该被调用(调了就说明"只在缺的时候生成"这条被破坏)。
+        ensure_token(&st, &dir, || panic!("token 可用时不许再碰随机数")).expect("补 desktopId");
+        let id = st.config.read().unwrap_or_else(|e| e.into_inner()).desktop_id.clone();
+        assert!(desktop_id_is_valid(&id), "desktopId 必须是 32 位十六进制: {id}");
+        assert_eq!(
+            config::ServerConfig::load(&dir).desktop_id,
+            id,
+            "desktopId 必须落盘 —— 否则每次重启安卓都会看到一台'新'电脑"
+        );
+
+        // 幂等: 第二次不换 id(它必须稳定)。
+        ensure_token(&st, &dir, || panic!("token 可用时不许再碰随机数")).expect("幂等");
+        assert_eq!(
+            st.config.read().unwrap_or_else(|e| e.into_inner()).desktop_id,
+            id,
+            "desktopId 不许每次调用都换"
+        );
+
+        // 配对 → 批准 → 落盘; 解绑 → 落盘也清掉。
+        open_pairing_window(&st).expect("开窗");
+        let challenge = st
+            .pairing
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .request(
+                pairing::PairRequest {
+                    device_id: "dev-1".into(),
+                    device_name: "Pixel 8".into(),
+                    app_version: "1.2.1".into(),
+                },
+                "192.168.3.10",
+            )
+            .expect("窗口开着必须接受");
+        approve_pairing(&st, &dir, &challenge.request_id)
+            .await
+            .expect("批准并落盘");
+
+        let disk = config::ServerConfig::load(&dir);
+        assert_eq!(disk.paired_devices.len(), 1, "批准之后必须落盘");
+        assert_eq!(disk.paired_devices[0].device_id, "dev-1");
+        assert_eq!(pairing_status_of(&st).expect("快照").paired.len(), 1);
+
+        forget_paired_device(&st, &dir, "dev-1").await.expect("忘记设备");
+        assert!(
+            config::ServerConfig::load(&dir).paired_devices.is_empty(),
+            "忘记之后盘上也要清掉"
+        );
+        assert!(pairing_status_of(&st).expect("快照").paired.is_empty());
     }
 }

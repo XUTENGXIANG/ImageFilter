@@ -10,6 +10,7 @@ import { PhotoViewer } from "./viewer";
 import { useScanner } from "./useScanner";
 import { TitleBar } from "./components/title-bar";
 import { MacPermissionGuide } from "./components/macos-permission-guide";
+import { PairingDialogHost } from "./components/pairing-dialog";
 import { ExifPanel } from "./components/exif-panel";
 import { WelcomeGuide } from "./components/welcome-guide";
 import { ScrollFadeZone } from "./components/scroll-fade-zone";
@@ -1044,6 +1045,11 @@ function App({ osCapabilities }: { osCapabilities: OsCapabilities }) {
         open={lrcProgressOpen}
         onOpenChange={setLrcProgressOpen}
       />
+
+      {/* mDNS 配对确认框(计划 2026-10-25 Task B2)。
+          挂在应用根: 无论设置对话框开着哪一页、甚至完全没开, 手机发起的配对请求都要能
+          被看到 —— 请求只活 60 秒, 藏在任何面板里都等于错过。 */}
+      <PairingDialogHost />
 
       {/* 弹出提示浮窗 — 渐变出现停留1秒后消失 */}
       <div
