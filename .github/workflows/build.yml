@@ -46,6 +46,22 @@ jobs:
         if: matrix.platform == 'macos-latest'
         run: brew install ffmpeg
 
+      # GITHUB_TOKEN 即使有 contents: write，createRelease 仍可能返回 403
+      # "Resource not accessible by integration"。先自己建 draft，tauri-action
+      # 就只会走"找到 release + 上传资产"，不再调 createRelease。
+      - name: Ensure draft release exists
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ github.ref_name }}"
+          gh release view "$TAG" >/dev/null 2>&1 || \
+            gh release create "$TAG" --draft \
+              --title "ImageFilter $TAG" \
+              --notes "ImageFilter $TAG
+新增功能：
+- 请按 docs/ImageFilter-更新说明.md 对应版本段落填写" || \
+            gh release view "$TAG" >/dev/null
+
       # 发布约束：Release 简介必须使用 ImageFilter vX.Y.Z / 新增功能：/ 条目 的模板。
       # 对应版本的完整文案写进 docs/ImageFilter-更新说明.md，发布前替换这里的占位。
       - name: Build & upload installers
