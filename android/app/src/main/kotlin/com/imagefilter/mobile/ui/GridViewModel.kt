@@ -13,10 +13,13 @@ import com.imagefilter.mobile.data.ReadAction
 import com.imagefilter.mobile.data.ReadMessages
 import com.imagefilter.mobile.data.ReadSource
 import com.imagefilter.mobile.data.ScannedPhotoDto
+import com.imagefilter.mobile.data.SyncChallengeDto
 import com.imagefilter.mobile.data.ThumbnailSize
 import com.imagefilter.mobile.data.WriteMessages
 import com.imagefilter.mobile.data.apiCodeFor
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -199,6 +202,10 @@ data class GridState(
     val lastBatchNote: String? = null,
     /** **待重试队列**(持久的那一份, 规格 §9)的界面镜像。 */
     val pending: PendingState = PendingState(),
+    /** 正在手动同步(推未同步 + 拉照片/决策)。 */
+    val syncing: Boolean = false,
+    /** 一次手动同步的结论; 顶栏显示几秒后自动消失。 */
+    val syncNote: String? = null,
 ) {
     /** 顶部的张数 —— 来自 `scan` 的返回长度(失败且没有格子时说 [GRID_COUNT_UNKNOWN])。 */
     val countLabel: String
@@ -303,6 +310,11 @@ class GridViewModel(
      * 这条承诺**静默失效**, 而那正是本任务唯一的价值点。
      */
     private val pending: PendingStore,
+    /**
+     * 电脑同步确认弹窗里显示的手机名。生产由 `GridScreen` 传
+     * `DeviceIdentity.deviceName()`；JVM 单测用默认值，不依赖 `Build.MODEL`。
+     */
+    private val deviceName: String = "Android",
     /**
      * 注入点: 生产路径就是默认值 —— [ApiClient] 内部的 client 走
      * [com.imagefilter.mobile.data.SharedHttpClient.forToken], 与 Coil 是**同一个实例**
@@ -610,6 +622,119 @@ class GridViewModel(
         // 这一批里成了的那些已经出队列、没成的留在里面 —— 角标必须跟着动。
         refreshPending()
         return result
+    }
+
+    /**
+     * 手动「同步」: 先把手机上的改动推给电脑, 再把照片列表与决策拉回来。
+     *
+     * 顺序:
+     *   1. [loadPending] 把队列里属于这个文件夹的意图装回本地(重启后 store 是空的, 不装就推不出去);
+     *   2. [retryUnsynced] 推这个文件夹里所有未同步;
+     *   3. [retryAllPending] 把队列里其余文件夹 / 仍然失败的项也推一遍;
+     *   4. [loadAll] 重新拉照片 + 决策 + 队列。
+     *
+     * 第 2、3 步在离线时会对同一项各试一次 —— 手动同步的语义就是"能试的都试一遍",
+     * 这个代价比"按了同步却漏掉一张"小。
+     */
+    suspend fun syncNow() {
+        if (_state.value.syncing) return
+        _state.update { it.copy(syncing = true, syncNote = "等待电脑确认…") }
+        try {
+            // 方案 A: **先让电脑弹窗确认**，手机在 approved 之前一个决策都不推。
+            // pendingItems 只是给弹窗看的量级；真正的写入仍要过 PUT /decisions 的白名单与鉴权。
+            val pendingBefore = pending.snapshot().count
+            val unsyncedBefore = decisions.unsynced().size
+            val challenge = try {
+                api.requestSync(deviceName, pendingBefore + unsyncedBefore)
+            } catch (e: ApiException) {
+                _state.update { it.copy(syncNote = syncRequestFailure(e)) }
+                return
+            } catch (e: IOException) {
+                currentCoroutineContext().ensureActive()
+                _state.update { it.copy(syncNote = "电脑端没有响应同步请求") }
+                return
+            }
+
+            if (!awaitSyncApproval(challenge)) return
+
+            _state.update { it.copy(syncNote = "电脑已允许，正在同步…") }
+            loadPending()
+            retryUnsynced()
+            retryAllPending()
+            loadAll()
+            val pendingLeft = _state.value.pending.count
+            val unsyncedLeft = _state.value.unsyncedCount
+            _state.update {
+                it.copy(
+                    syncNote = when {
+                        it.error != null -> "同步没完成：照片没读到"
+                        pendingLeft > 0 -> "还有 $pendingLeft 项待重试"
+                        unsyncedLeft > 0 -> "还有 $unsyncedLeft 张未确认"
+                        else -> "已同步"
+                    },
+                )
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            _state.update { it.copy(syncNote = "同步没完成") }
+        } finally {
+            // 取消也要复位: 否则按钮会永远停在"同步中…"。
+            _state.update { it.copy(syncing = false) }
+        }
+    }
+
+    /**
+     * 等电脑上那张确认框给出结论。每 1 秒轮询一次，直到 approved / denied / expired
+     * 或服务端给的 expiresAt 到期。**只有 approved 才返回 true**。
+     */
+    private suspend fun awaitSyncApproval(challenge: SyncChallengeDto): Boolean {
+        val deadline = challenge.expiresAt
+        while (true) {
+            val status = try {
+                api.syncStatus(challenge.requestId)
+            } catch (e: ApiException) {
+                _state.update { it.copy(syncNote = syncRequestFailure(e)) }
+                return false
+            } catch (e: IOException) {
+                currentCoroutineContext().ensureActive()
+                _state.update { it.copy(syncNote = "电脑端没有响应同步确认") }
+                return false
+            }
+            when (status.status) {
+                "approved" -> return true
+                "denied" -> {
+                    _state.update { it.copy(syncNote = "电脑拒绝了这次同步") }
+                    return false
+                }
+                "expired" -> {
+                    _state.update { it.copy(syncNote = "电脑没有确认（已过期）") }
+                    return false
+                }
+                "pending" -> Unit
+                else -> {
+                    _state.update { it.copy(syncNote = "电脑返回了未知的同步状态") }
+                    return false
+                }
+            }
+            if (System.currentTimeMillis() >= deadline) {
+                _state.update { it.copy(syncNote = "电脑没有确认（已过期）") }
+                return false
+            }
+            delay(1_000)
+        }
+    }
+
+    private fun syncRequestFailure(e: ApiException): String =
+        if (e.httpStatus == 404) {
+            "电脑端版本不支持同步确认，请更新电脑端"
+        } else {
+            "同步请求失败（${e.code}）"
+        }
+
+    /** 顶栏那条同步结论自动消失(由界面在 3 秒后调用)。 */
+    fun clearSyncNote() {
+        _state.update { it.copy(syncNote = null) }
     }
 
     /** 把 store 里那份**唯一**的真相抄进界面状态(网格不自己缓存第二份决策)。 */

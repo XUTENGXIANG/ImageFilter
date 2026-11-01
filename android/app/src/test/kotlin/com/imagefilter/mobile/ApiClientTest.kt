@@ -341,4 +341,40 @@ class ApiClientTest {
         assertTrue(ping.requiresToken)
         assertEquals("/api/v1/ping", server.takeRequest().path)
     }
+
+    @Test
+    fun request_sync_posts_device_and_pending_items() = runTest {
+        server.enqueue(
+            MockResponse().setResponseCode(202)
+                .setBody("""{"requestId":"r1","expiresAt":1700000000000}"""),
+        )
+        val challenge = client().requestSync("Pixel 9", 3)
+        assertEquals("r1", challenge.requestId)
+        assertEquals(1700000000000L, challenge.expiresAt)
+
+        val req = server.takeRequest()
+        assertEquals("POST", req.method)
+        assertEquals("/api/v1/sync/request", req.requestUrl!!.encodedPath)
+        assertEquals("Bearer $token", req.getHeader("Authorization"))
+        assertEquals(
+            """{"deviceName":"Pixel 9","pendingItems":3}""",
+            req.body.readUtf8(),
+        )
+    }
+
+    @Test
+    fun sync_status_gets_the_request_id_and_reads_the_closed_status() = runTest {
+        server.enqueue(
+            MockResponse().setResponseCode(200)
+                .setBody("""{"requestId":"r1","status":"approved"}"""),
+        )
+        val status = client().syncStatus("r1")
+        assertEquals("r1", status.requestId)
+        assertEquals("approved", status.status)
+
+        val req = server.takeRequest()
+        assertEquals("GET", req.method)
+        assertEquals("/api/v1/sync/status", req.requestUrl!!.encodedPath)
+        assertEquals("r1", req.requestUrl!!.queryParameter("requestId"))
+    }
 }

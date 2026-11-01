@@ -3,11 +3,18 @@
 package com.imagefilter.mobile.ui
 
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.calculatePan
 import androidx.compose.foundation.gestures.calculateZoom
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Column
@@ -17,6 +24,8 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -25,8 +34,12 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.State
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.derivedStateOf
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
@@ -53,6 +66,17 @@ import coil3.compose.AsyncImage
 import coil3.request.ImageRequest
 import com.imagefilter.mobile.data.Pairing
 import com.imagefilter.mobile.data.WriteAction
+import com.imagefilter.mobile.ui.components.AppFilterChip
+import com.imagefilter.mobile.ui.components.AppHint
+import com.imagefilter.mobile.ui.components.AppIconButton
+import com.imagefilter.mobile.ui.components.AppIcons
+import com.imagefilter.mobile.ui.components.AppInlineTopBar
+import com.imagefilter.mobile.ui.components.AppTextButton
+import com.imagefilter.mobile.ui.components.rememberAppHaptics
+import com.imagefilter.mobile.ui.theme.AppMotion
+import com.imagefilter.mobile.ui.theme.AppRadius
+import com.imagefilter.mobile.ui.theme.AppSpacing
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlin.math.abs
 
@@ -120,12 +144,10 @@ fun SwipeScreen(
         swipeThresholdPx(LocalConfiguration.current.screenWidthDp.dp.toPx())
     }
     val scope = rememberCoroutineScope()
+    val haptics = rememberAppHaptics()
 
     /** 手势语义(左 = 废弃 / 右 = 保留 / 只写星级是**默认**; 用户可在这一页改)。 */
     var config by remember { mutableStateOf(DEFAULT_SWIPE_CONFIG) }
-
-    /** 手指带动的水平偏移(卡片跟手画它; 松手清零 = 回弹)。 */
-    var dragX by remember { mutableStateOf(0f) }
 
     // key 里有 items: 换了这一批(网格里换了筛选条件)必须换一份状态, 不许把上一批留在屏幕上。
     val vm = remember(pairing, items, startIndex, decisions, thresholdPx) {
@@ -147,6 +169,29 @@ fun SwipeScreen(
         )
     }
     val state by vm.state.collectAsState()
+
+    /**
+     * 手指带动的水平偏移。
+     *
+     * 拖动必须是**逐事件直接写值**（`floatValue`），不能在 `awaitEachGesture` 的受限协程里
+     * `snapTo` —— 那个作用域不允许调用会真正挂起的函数。松手时才启动一次
+     * [Animatable.animateTo]：从当前位移弹回 0，`dragSettle` 只做一次轻微过冲后停稳。
+     *
+     * 每一帧只在 `graphicsLayer` 里读 [dragX]，不把整页重组掉；这就是之前掉帧的来源。
+     * `remember(currentPath)`：写入成功换下一张时，新卡片从全新的 0 开始，不继承上一张的回弹。
+     */
+    val currentPath = state.current?.path
+    val dragX = remember(currentPath) { mutableFloatStateOf(0f) }
+    val settleJob = remember { mutableStateOf<Job?>(null) }
+    /**
+     * 松手后**等回弹播完**才提交的决策。网络一快时, 旧代码会在回弹还没播完就把卡片换掉,
+     * 看起来就是"松手直接跳帧消失"。这里把决策押后到 spring 结束; 如果用户立刻开始下一次
+     * 拖拽, 新一次 [awaitFirstDown] 会先把这份决策补交, 不会丢。
+     */
+    var pendingSwipe by remember(currentPath) { mutableStateOf<SwipeDirection?>(null) }
+    DisposableEffect(currentPath) {
+        onDispose { settleJob.value?.cancel() }
+    }
 
     /**
      * 待重试的项数(角标画的数)。
@@ -172,7 +217,7 @@ fun SwipeScreen(
     ImageFilterTheme(darkTheme = true) {
         val p = LocalPhotoPalette.current
 
-        Surface(modifier = Modifier.fillMaxSize()) {
+        Surface(modifier = Modifier.fillMaxSize(), color = Color.Black) {
             Column(modifier = Modifier.fillMaxSize()) {
                 SwipeTopBar(
                     title = state.title,
@@ -205,9 +250,16 @@ fun SwipeScreen(
                         // 而两个检测器叠在一起必然互相抢事件(那正是 §8.2 点名要避免的事)。
                         // key 用 `vm`: 它换了(换了这一批)才重建手势; `dragX` 每帧都在变,
                         // 绝不能把它放进 key —— 那会在拖动中途把这一场手势掐掉。
-                        .pointerInput(vm) {
+                        .pointerInput(vm, dragX) {
                             awaitEachGesture {
                                 awaitFirstDown(requireUnconsumed = true)
+                                // 新手指打断回弹: 先补交上一次还没提交的决策, 再跟这一次。
+                                settleJob.value?.cancel()
+                                val interrupted = pendingSwipe
+                                pendingSwipe = null
+                                if (interrupted != null && !vm.state.value.writing) {
+                                    scope.launch { vm.swipe(interrupted, config) }
+                                }
                                 var dragged = 0f
                                 var pinched = false
                                 var released = false
@@ -220,16 +272,22 @@ fun SwipeScreen(
                                         zoom != 1f -> {
                                             pinched = true
                                             dragged = 0f
-                                            dragX = 0f
+                                            dragX.floatValue = 0f
                                             vm.onTransform(zoom = zoom, panX = 0f, panY = 0f)
                                         }
                                         // ② 查看态: 单指**平移**, 绝不滑卡(缩回 1x 时 applyZoom 自动归位)
                                         pinched || vm.state.value.isViewing ->
                                             vm.onTransform(zoom = 1f, panX = pan.x, panY = pan.y)
-                                        // ③ 决策态: 卡片跟手
+                                        // ③ 决策态: 卡片跟手(直接写值, 不挂起)
                                         else -> {
+                                            val before = abs(dragged)
                                             dragged += pan.x
-                                            dragX = dragged
+                                            dragX.floatValue = dragged
+                                            // 刚越过 25% 阈值时给一次"过线"触觉 —— 只响一次,
+                                            // 不是每帧; 用户的眼睛在看照片, 手指需要知道"这一滑算数"。
+                                            if (before < thresholdPx && abs(dragged) >= thresholdPx) {
+                                                haptics.threshold()
+                                            }
                                         }
                                     }
                                     if (event.changes.none { it.pressed }) {
@@ -239,16 +297,32 @@ fun SwipeScreen(
                                         event.changes.forEach { it.consume() }
                                     }
                                 }
-                                // 松手: 过阈值才决策, 没过就回弹(卡片跟手回到原位)
+                                // 松手: 过阈值才决策; **无论决策与否, 卡片都先弹回原位**。
+                                // 只有这一段在普通协程里做 spring —— 受限的手势作用域里不做挂起调用。
                                 val direction = if (pinched || vm.state.value.isViewing) {
                                     null
                                 } else {
                                     swipeDirectionFor(dragged, thresholdPx)
                                 }
-                                dragX = 0f
-                                // 写入在飞的时候不再收一次决策(与底部按钮同一条纪律: 别自己制造乱序)
-                                if (direction != null && !vm.state.value.writing) {
-                                    scope.launch { vm.swipe(direction, config) }
+                                pendingSwipe = direction
+                                settleJob.value?.cancel()
+                                settleJob.value = scope.launch {
+                                    // 从松手时的当前位置起步(不是从 0), 这样短拖/长拖都不会跳。
+                                    val anim = Animatable(dragX.floatValue)
+                                    anim.animateTo(
+                                        targetValue = 0f,
+                                        animationSpec = AppMotion.dragSettle,
+                                    ) {
+                                        dragX.floatValue = value
+                                    }
+                                    // 回弹**播完**才提交决策: 否则网络快时卡片会在动画中途消失。
+                                    // 写入放在 scope 里(不是这个 job), 这样换张时取消回弹 job
+                                    // 不会顺手取消一次已经在飞的网络请求。
+                                    val toCommit = pendingSwipe
+                                    pendingSwipe = null
+                                    if (toCommit != null && !vm.state.value.writing) {
+                                        scope.launch { vm.swipe(toCommit, config) }
+                                    }
                                 }
                             }
                         },
@@ -268,24 +342,33 @@ fun SwipeScreen(
                             onLoaded = { vm.onDefaultLoaded() },
                             onFailed = { scope.launch { vm.onDefaultFailed(it) } },
                             modifier = Modifier.graphicsLayer {
-                                translationX = dragX
+                                // 只读绘制层: 拖动/回弹的每一帧不触发整页重组。
+                                translationX = dragX.floatValue
                                 // 轻微旋转: 纯观感。没有它, 卡片更像"平移的图片"而不是"被甩出去的卡片"
-                                rotationZ = dragX / 60f
+                                rotationZ = dragX.floatValue / 60f
                             },
                         )
                     }
 
-                    // 拖到哪一侧就预告那一侧的动作(过阈值前后都看得见"松手会发生什么")
-                    val dragging = swipeDirectionFor(dragX, thresholdPx) ?: when {
-                        dragX > 0f -> SwipeDirection.Right
-                        dragX < 0f -> SwipeDirection.Left
-                        else -> null
+                    // 拖到哪一侧就预告那一侧的动作(过阈值前后都看得见"松手会发生什么")。
+                    // 用 derivedStateOf 只在**方向变化**时重组; 透明度则由角标自己在
+                    // graphicsLayer 里读 dragX, 不跟手指逐帧重组。
+                    val dragging by remember(dragX, thresholdPx) {
+                        derivedStateOf {
+                            swipeDirectionFor(dragX.floatValue, thresholdPx) ?: when {
+                                dragX.floatValue > 0f -> SwipeDirection.Right
+                                dragX.floatValue < 0f -> SwipeDirection.Left
+                                else -> null
+                            }
+                        }
                     }
-                    if (dragging != null && thresholdPx > 0f) {
+                    val dragDirection = dragging
+                    if (dragDirection != null && thresholdPx > 0f) {
                         SwipeBadge(
-                            direction = dragging,
-                            action = config.actionFor(dragging),
-                            fade = (abs(dragX) / thresholdPx).coerceIn(0f, 1f),
+                            direction = dragDirection,
+                            action = config.actionFor(dragDirection),
+                            dragState = dragX,
+                            thresholdPx = thresholdPx,
                         )
                     }
 
@@ -407,16 +490,18 @@ fun SwipeScreen(
  */
 @Composable
 private fun SwipeCardBack(photo: ViewerPhoto, url: String, imageLoader: ImageLoader) {
+    val p = LocalPhotoPalette.current
     Surface(
         modifier = Modifier
             .fillMaxSize()
-            .padding(12.dp)
+            .padding(AppSpacing.md)
             .graphicsLayer {
                 scaleX = 0.94f
                 scaleY = 0.94f
+                alpha = 0.72f
             },
-        shape = RoundedCornerShape(12.dp),
-        tonalElevation = 1.dp,
+        shape = RoundedCornerShape(AppRadius.card),
+        color = p.s2,
     ) {
         AsyncImage(
             model = url,
@@ -424,7 +509,7 @@ private fun SwipeCardBack(photo: ViewerPhoto, url: String, imageLoader: ImageLoa
             // 读屏只念当前这张(下面那张是"还有一张"的视觉暗示, 不是内容)
             contentDescription = null,
             contentScale = ContentScale.Fit,
-            placeholder = ColorPainter(MaterialTheme.colorScheme.surfaceVariant),
+            placeholder = ColorPainter(p.fill),
             modifier = Modifier.fillMaxSize(),
         )
     }
@@ -441,10 +526,11 @@ private fun SwipeCard(
     onFailed: (Throwable?) -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val p = LocalPhotoPalette.current
     Surface(
-        modifier = modifier.fillMaxSize().padding(12.dp),
-        shape = RoundedCornerShape(12.dp),
-        tonalElevation = 3.dp,
+        modifier = modifier.fillMaxSize().padding(AppSpacing.md),
+        shape = RoundedCornerShape(AppRadius.card),
+        color = p.s2,
     ) {
         Box(modifier = Modifier.fillMaxSize()) {
             // key(retryNonce): 「重试」要真的重建这一张(URL 不变时 Coil 不会自己重发)
@@ -454,24 +540,25 @@ private fun SwipeCard(
                     imageLoader = imageLoader,
                     contentDescription = photo.displayName,
                     contentScale = ContentScale.Fit,
-                    placeholder = ColorPainter(MaterialTheme.colorScheme.surfaceVariant),
-                    error = ColorPainter(MaterialTheme.colorScheme.errorContainer),
+                    placeholder = ColorPainter(p.fill),
+                    error = ColorPainter(p.errorSoft),
                     onSuccess = { onLoaded() },
                     onError = { onFailed(it.result.throwable) },
                     modifier = Modifier.fillMaxSize(),
                 )
             }
             Text(
-                photo.displayName,
-                style = MaterialTheme.typography.labelLarge,
+                text = photo.displayName,
+                style = MaterialTheme.typography.labelMedium,
+                color = p.textPrimary,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier
                     .align(Alignment.BottomStart)
-                    .padding(8.dp)
-                    .clip(RoundedCornerShape(6.dp))
-                    .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.75f))
-                    .padding(horizontal = 6.dp, vertical = 2.dp),
+                    .padding(AppSpacing.sm)
+                    .clip(RoundedCornerShape(AppRadius.badge))
+                    .background(p.s0.copy(alpha = 0.78f))
+                    .padding(horizontal = 8.dp, vertical = 3.dp),
             )
         }
     }
@@ -484,22 +571,30 @@ private fun SwipeCard(
  * 章上的字来自 [SwipeAction], 所以配成"左右互换"时它会跟着换 —— **绝不**写死"右滑=保留"。
  */
 @Composable
-private fun BoxScope.SwipeBadge(direction: SwipeDirection, action: SwipeAction, fade: Float) {
+private fun BoxScope.SwipeBadge(
+    direction: SwipeDirection,
+    action: SwipeAction,
+    dragState: State<Float>,
+    thresholdPx: Float,
+) {
     val p = LocalPhotoPalette.current
     val keep = action == SwipeAction.Keep
     Surface(
         color = if (keep) p.accent else p.error,
-        shape = RoundedCornerShape(8.dp),
+        shape = RoundedCornerShape(AppRadius.row),
         modifier = Modifier
             .align(if (direction == SwipeDirection.Right) Alignment.TopStart else Alignment.TopEnd)
             .padding(20.dp)
-            .graphicsLayer { alpha = fade },
+            .graphicsLayer {
+                alpha = (abs(dragState.value) / thresholdPx).coerceIn(0f, 1f)
+            },
     ) {
         Text(
-            actionWord(action),
+            text = actionWord(action),
+            // 压在绿/红实底上, 恒白是照片上的固定搭配, 不跟主题走。
             color = Color.White,
             style = MaterialTheme.typography.titleMedium,
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 7.dp),
         )
     }
 }
@@ -519,32 +614,26 @@ private fun SwipeTopBar(
     onClose: () -> Unit,
 ) {
     val p = LocalPhotoPalette.current
-    Surface(color = p.s1) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                // ⚠️ **必须在 padding 之前**: 少了这一行, 「撤销」整颗按钮落在状态栏的触摸区里
-                // ——实测在按钮正中点三次都没反应(见 [topBarInsets] 的 KDoc)。
-                .topBarInsets()
-                .padding(horizontal = 4.dp, vertical = 4.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text(
-                title,
-                style = MaterialTheme.typography.titleMedium,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f).padding(start = 8.dp),
+    AppInlineTopBar(
+        title = title,
+        container = Color.Black,
+        navigation = {
+            AppIconButton(
+                icon = AppIcons.Close,
+                contentDescription = "关闭",
+                onClick = onClose,
+                tint = p.textPrimary,
             )
+        },
+        actions = {
             // 撤销: **步数看得见**(为 0 / 正在写时禁用)—— 一个永远可点却什么都不做的按钮
             // 比没有这个按钮更坏。
-            TextButton(
+            AppTextButton(
+                text = if (undoCount > 0) "撤销 $undoCount" else "撤销",
                 onClick = onUndo,
                 enabled = undoCount > 0 && !writing,
-                colors = ButtonDefaults.textButtonColors(contentColor = p.textSecondary),
-            ) {
-                Text(if (undoCount > 0) "撤销 $undoCount" else "撤销")
-            }
+                color = p.textSecondary,
+            )
             // 角标**本身就是按钮**: 点一下打开重试面板(那里能逐项看原因、逐项重试、放弃);
             // 没有动作的警告等于没警告。显示什么就按什么 —— 判定在 [topBarBadge] 一处。
             val badge = topBarBadge(pendingCount = pendingCount, unsyncedLabel = unsyncedLabel)
@@ -556,12 +645,8 @@ private fun SwipeTopBar(
                     onRetryUnsynced = onRetryUnsynced,
                 )
             }
-            TextButton(
-                onClick = onClose,
-                colors = ButtonDefaults.textButtonColors(contentColor = p.textSecondary),
-            ) { Text("关闭") }
-        }
-    }
+        },
+    )
 }
 
 /**
@@ -574,38 +659,53 @@ private fun SwipeConfigRow(config: SwipeConfig, onConfig: (SwipeConfig) -> Unit)
     // 写入方式不是每张都要看的东西：默认只留一行手势图例，点「写入方式」才展开。
     var open by remember { mutableStateOf(false) }
     val p = LocalPhotoPalette.current
-    Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp)) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = AppSpacing.page),
+    ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(
-                swipeLegend(config),
+                text = swipeLegend(config),
                 style = MaterialTheme.typography.bodySmall,
+                color = p.textSecondary,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.weight(1f),
             )
-            TextButton(
+            AppTextButton(
+                text = if (open) "收起" else "写入方式",
                 onClick = { open = !open },
-                colors = ButtonDefaults.textButtonColors(contentColor = p.textSecondary),
-            ) { Text(if (open) "收起" else "写入方式", style = MaterialTheme.typography.labelSmall) }
+                color = p.textSecondary,
+            )
         }
-        if (open) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                for (mode in SwipeMode.entries) {
-                    val selected = mode == config.mode
-                    TextButton(
-                        onClick = { onConfig(config.copy(mode = mode)) },
-                        colors = ButtonDefaults.textButtonColors(
-                            contentColor = if (selected) p.accent else p.textSecondary,
-                        ),
-                    ) {
-                        Text(if (selected) "● ${modeName(mode)}" else modeName(mode))
+        AnimatedVisibility(
+            visible = open,
+            enter = expandVertically() + fadeIn(),
+            exit = shrinkVertically() + fadeOut(),
+        ) {
+            Column {
+                Row(
+                    modifier = Modifier.horizontalScroll(rememberScrollState()),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    for (mode in SwipeMode.entries) {
+                        AppFilterChip(
+                            selected = mode == config.mode,
+                            onClick = { onConfig(config.copy(mode = mode)) },
+                            label = modeName(mode),
+                        )
+                        Spacer(Modifier.width(6.dp))
                     }
                 }
-                Spacer(Modifier.weight(1f))
-                TextButton(
-                    onClick = { onConfig(config.reversed()) },
-                    colors = ButtonDefaults.textButtonColors(contentColor = p.textSecondary),
-                ) { Text("左右互换") }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Spacer(Modifier.weight(1f))
+                    AppTextButton(
+                        text = "左右互换",
+                        onClick = { onConfig(config.reversed()) },
+                        color = p.accentText,
+                    )
+                }
             }
         }
     }

@@ -359,4 +359,27 @@ class GridViewModelTest {
         assertEquals("1 张", gridCountLabel(1))
         assertEquals("412 张", gridCountLabel(412))
     }
+
+    @Test
+    fun sync_waits_for_the_desktop_and_sends_nothing_when_denied() = runTest {
+        val expiresAt = System.currentTimeMillis() + 60_000
+        server.enqueue(
+            MockResponse().setResponseCode(202)
+                .setBody("""{"requestId":"r1","expiresAt":$expiresAt}"""),
+        )
+        server.enqueue(
+            MockResponse().setResponseCode(200)
+                .setBody("""{"requestId":"r1","status":"denied"}"""),
+        )
+
+        val vm = viewModel()
+        vm.syncNow()
+
+        assertEquals("电脑拒绝了这次同步", vm.state.value.syncNote)
+        assertFalse("同步结束后按钮必须能再按", vm.state.value.syncing)
+        // 只有"请求 + 轮询"两个请求; 被拒绝时一个 scan / decisions 都不许发
+        assertEquals(2, server.requestCount)
+        assertEquals("/api/v1/sync/request", server.takeRequest().requestUrl!!.encodedPath)
+        assertEquals("/api/v1/sync/status", server.takeRequest().requestUrl!!.encodedPath)
+    }
 }

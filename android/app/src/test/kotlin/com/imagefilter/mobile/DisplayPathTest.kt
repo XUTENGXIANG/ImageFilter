@@ -2,7 +2,9 @@
 // SPDX-License-Identifier: MIT
 package com.imagefilter.mobile
 
+import com.imagefilter.mobile.data.FolderEntryDto
 import com.imagefilter.mobile.ui.displayPath
+import com.imagefilter.mobile.ui.secondaryLabel
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
@@ -50,6 +52,14 @@ class DisplayPathTest {
         assertEquals(volume, displayPath(volume))
         // 前缀后面既不是盘符也不是 UNC 的, 一律不动(不猜)。
         assertEquals("\\\\?\\not-a-path", displayPath("\\\\?\\not-a-path"))
+    }
+
+    @Test
+    fun a_root_rows_secondary_label_hides_the_verbatim_prefix() {
+        // 抽屉里根行的第二行就是路径; 它必须与 `AppPathText` 走同一个显示函数,
+        // 否则同一个目录在抽屉里是 `\\?\F:\`、在别处是 `F:\`。
+        val root = FolderEntryDto(path = "\\\\?\\F:\\", name = "F:")
+        assertEquals("F:\\", secondaryLabel(root, isRoot = true))
     }
 
     @Test

@@ -267,3 +267,29 @@ internal fun parentDirOf(canonicalPath: String): String? {
     val head = canonicalPath.substring(0, sep)
     return if (head.endsWith(':')) "$head\\" else head
 }
+
+/**
+ * `POST /api/v1/sync/request` 的请求体(方案 A: 电脑确认后才推拉)。
+ *
+ * `pendingItems` 只是给电脑弹窗看的量级, 不是鉴权条件 —— 真正的写仍然由
+ * `PUT /decisions` 的白名单与鉴权守着。
+ */
+@Serializable
+data class SyncRequestDto(
+    val deviceName: String,
+    val pendingItems: Int,
+)
+
+/** 202 的响应体; `expiresAt` 是 unix 毫秒, 与配对请求同一口径。 */
+@Serializable
+data class SyncChallengeDto(
+    val requestId: String = "",
+    val expiresAt: Long = 0L,
+)
+
+/** `GET /api/v1/sync/status` 的返回体; `status` 是 pending/approved/denied/expired 闭集。 */
+@Serializable
+data class SyncStatusDto(
+    val requestId: String = "",
+    val status: String = "",
+)

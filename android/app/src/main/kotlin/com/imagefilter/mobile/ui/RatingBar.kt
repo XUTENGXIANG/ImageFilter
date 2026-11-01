@@ -2,34 +2,42 @@
 // SPDX-License-Identifier: MIT
 package com.imagefilter.mobile.ui
 
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
+import com.imagefilter.mobile.ui.components.AppCard
+import com.imagefilter.mobile.ui.components.AppIcons
+import com.imagefilter.mobile.ui.components.AppTextButton
+import com.imagefilter.mobile.ui.components.appClickable
+import com.imagefilter.mobile.ui.components.rememberAppHaptics
+import com.imagefilter.mobile.ui.theme.AppMotion
+import com.imagefilter.mobile.ui.theme.AppSpacing
 import com.imagefilter.mobile.ui.theme.LocalPhotoPalette
 import com.imagefilter.mobile.ui.theme.PhotoColors
 
@@ -55,20 +63,9 @@ internal val LABEL_COLORS: Map<String, Color> = mapOf(
  * "再点一次当前颜色 = 清掉"来自 [labelAfterTap], "写成功了没有"来自服务端回报。
  * 它只做两件事: 把点击变成回调, 把状态画出来。
  *
- * 键位语义与桌面端对齐(README 快捷键表): 0 星用「✕ 废弃」表示 —— 与服务端
- * `xmp:Rating = 0` 是同一件事; 拖动/打分本身不触发切图(切图是手势那一层的事)。
- *
- * ⚠️ **决定要画哪一档的判断全部在纯函数里**([ratingKnowledgeLabel]), 这里只把它画出来:
- *   · 第一行的星星是**合并之后**的值(本地意图优先) —— 它**不代表**电脑上是几星;
- *   · `desktopRating = Unknown` 时, 星星右边多一个 [RATING_UNKNOWN_MARK] 角标, 下面那行
- *     写"电脑上：没读到（未知）"。**这就是"未知"与"没有星级"在屏幕上的区别** ——
- *     少了它, 一次失败的读取会让一张 4/5 星的照片看起来与"没评过"一模一样, 而一次点击
- *     就是一次绝对赋值(拦截在 [ViewerViewModel.setRating], 那是**执法点**, 这里只是画);
- *   · 确知是几星的**那两档说的是"上次读到"**, 不是"电脑上现在" —— 打一次分就会让这一行过时的
- *     原因与取舍写在 [ratingKnowledgeLabel] 的 KDoc 里(FIX 3)。
- *
- * ⚠️ **本组件的真实观感没有真机验证**(本轮没有设备): 星星是文本字形(★/☆)、
- * 色标是圆点, 布局在三个 Row 里, 不依赖任何新依赖(没有引入 material-icons)。
+ * 苹果风落点: 从"整宽 S1 条"改成一张**浮起来的圆角卡片**（18dp、S2、四周留 12dp）;
+ * 星星换成自绘图标（实心/空心）, 每颗 44dp 命中; 色点外圈也是 44dp。打分/选色给一次
+ * 触觉 —— 这一页用户的眼睛在看照片, 手指需要知道"点到了"。
  */
 @Composable
 fun RatingBar(
@@ -94,57 +91,65 @@ fun RatingBar(
     modifier: Modifier = Modifier,
 ) {
     val p = LocalPhotoPalette.current
-    Surface(color = p.s1) {
-        Column(
-            modifier = modifier
-                .fillMaxWidth()
-                // ⚠️ 底部要让开系统手势条: 否则那条**半透明的手势把手**会横穿色标那一行 ——
-                // 它恰好只压住最后一个色点(紫), 看上去就像"紫色被选中了", 而这张照片
-                // 其实一个色标都没有(见 [bottomBarInsets] 的 KDoc)。
-                .bottomBarInsets()
-                .padding(horizontal = 12.dp, vertical = 6.dp),
-        ) {
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            // 底部要让开系统手势条: 否则那条半透明手势把手会横穿色标那一行。
+            .bottomBarInsets()
+            .padding(horizontal = AppSpacing.md, vertical = AppSpacing.sm),
+    ) {
+        AppCard(padding = AppSpacing.lg) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 // 0 = 废弃: 与桌面端 X 键、与服务端 xmp:Rating=0 同一件事。
-                TextButton(
+                AppTextButton(
+                    text = "✕ 废弃",
                     onClick = { onRating(0) },
                     enabled = enabled,
-                    colors = ButtonDefaults.textButtonColors(contentColor = p.textSecondary),
-                ) { Text("✕ 废弃") }
+                    color = if (rating == 0) p.pending else p.textSecondary,
+                )
                 Spacer(Modifier.weight(1f))
                 StarRow(rating = rating, enabled = enabled, onRating = onRating)
-                // 星级**未知**时的角标: 与"确知没有星级"(什么都不画)必须看得出来。
-                if (desktopRating == DesktopRating.Unknown) {
+            }
+
+            Spacer(Modifier.size(4.dp))
+
+            // 电脑上那一份知识: 三态各说各的(屏幕上那颗星星是合并之后的值, 不能代表电脑)。
+            // 时态([desktopRatingFromWrite])也一起交给纯函数 —— 界面里不写这一条判断。
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = ratingKnowledgeLabel(desktopRating, desktopRatingFromWrite),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (desktopRating == DesktopRating.Unknown) {
+                        p.pending
+                    } else {
+                        p.textMuted
+                    },
+                    modifier = Modifier.weight(1f),
+                )
+                if (writing) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(14.dp),
+                        strokeWidth = 2.dp,
+                        color = p.accentText,
+                    )
                     Spacer(Modifier.width(6.dp))
                     Text(
-                        RATING_UNKNOWN_MARK,
-                        fontSize = 14.sp,
-                        color = p.pending,
-                        modifier = Modifier.padding(horizontal = 2.dp),
+                        text = "正在写到电脑…",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = p.textSecondary,
                     )
                 }
             }
 
-            // 两行之间**用高度**隔开: 一个 width 的 Spacer 在 Column 里是零高的(等于没写)。
-            Spacer(Modifier.height(2.dp))
-
-            // 电脑上那一份知识: 三态各说各的(屏幕上那颗星星是合并之后的值, 不能代表电脑)。
-            // 时态([desktopRatingFromWrite])也一起交给纯函数 —— 界面里不写这一条判断。
-            Text(
-                ratingKnowledgeLabel(desktopRating, desktopRatingFromWrite),
-                style = MaterialTheme.typography.bodySmall,
-                color = if (desktopRating == DesktopRating.Unknown) {
-                    p.pending
-                } else {
-                    MaterialTheme.colorScheme.onSurfaceVariant
-                },
-            )
-
-            Spacer(Modifier.height(2.dp))
+            Spacer(Modifier.size(2.dp))
 
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("色标", style = MaterialTheme.typography.bodySmall)
-                Spacer(Modifier.width(6.dp))
+                Text(
+                    text = "色标",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = p.textSecondary,
+                )
+                Spacer(Modifier.width(4.dp))
                 for (name in LABELS) {
                     LabelDot(
                         name = name,
@@ -154,64 +159,119 @@ fun RatingBar(
                     )
                 }
                 Spacer(Modifier.weight(1f))
-                if (writing) {
-                    CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 2.dp)
-                    Spacer(Modifier.width(6.dp))
-                    Text("正在写到电脑…", style = MaterialTheme.typography.bodySmall)
-                } else {
-                    // 当前色标的中文名(肉眼能看出"点上去了没有")
-                    Text(
-                        if (label == null) "无标签" else "标签：${labelName(label)}",
-                        style = MaterialTheme.typography.bodySmall,
-                    )
-                }
+                // 当前色标的中文名(肉眼能看出"点上去了没有")
+                Text(
+                    text = if (label == null) "无标签" else "标签：${labelName(label)}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = p.textMuted,
+                )
             }
         }
     }
 }
 
-/** 1–5 星。用文本字形而不是图标库: 本项目**不新增依赖**(material-icons-extended 不小)。 */
+/** 1–5 星。用自绘图标而不是图标库: 本项目**不新增依赖**(material-icons-extended 不小)。 */
 @Composable
 private fun StarRow(rating: Int?, enabled: Boolean, onRating: (Int) -> Unit) {
-    val p = LocalPhotoPalette.current
-    Row(horizontalArrangement = Arrangement.End, verticalAlignment = Alignment.CenterVertically) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
         for (stars in 1..5) {
-            val filled = rating != null && stars <= rating
-            Text(
-                text = if (filled) "★" else "☆",
-                fontSize = 26.sp,
-                color = if (filled) p.star else MaterialTheme.colorScheme.outline,
-                modifier = Modifier
-                    .clip(CircleShape)
-                    .clickable(
-                        enabled = enabled,
-                        role = Role.Button,
-                        onClickLabel = "打 $stars 星",
-                    ) { onRating(stars) }
-                    .padding(horizontal = 4.dp, vertical = 2.dp),
+            StarButton(
+                filled = rating != null && stars <= rating,
+                enabled = enabled,
+                label = "打 $stars 星",
+                onClick = { onRating(stars) },
             )
         }
     }
 }
 
-/** 一个色标圆点。选中的那个加一圈描边 —— 颜色本身在色弱下不可靠, 描边是第二重信号。 */
 @Composable
-private fun LabelDot(name: String, selected: Boolean, enabled: Boolean, onClick: () -> Unit) {
+private fun StarButton(
+    filled: Boolean,
+    enabled: Boolean,
+    label: String,
+    onClick: () -> Unit,
+) {
     val p = LocalPhotoPalette.current
-    val color = LABEL_COLORS[name] ?: MaterialTheme.colorScheme.surfaceVariant
+    val haptics = rememberAppHaptics()
+    val source = remember { MutableInteractionSource() }
+    val tint by animateColorAsState(
+        targetValue = if (filled) p.star else p.textMuted,
+        animationSpec = tween(140),
+        label = "star-tint",
+    )
+    val scale by animateFloatAsState(
+        targetValue = if (filled) 1f else 0.9f,
+        animationSpec = AppMotion.bouncy,
+        label = "star-scale",
+    )
+    Box(
+        modifier = Modifier
+            .size(44.dp)
+            .clip(CircleShape)
+            .appClickable(
+                interactionSource = source,
+                enabled = enabled,
+                role = Role.Button,
+                onClick = {
+                    haptics.select()
+                    onClick()
+                },
+            ),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(
+            imageVector = if (filled) AppIcons.Star else AppIcons.StarOutline,
+            contentDescription = label,
+            tint = if (enabled) tint else p.textMuted.copy(alpha = 0.45f),
+            modifier = Modifier
+                .size(26.dp)
+                .graphicsLayer {
+                    scaleX = scale
+                    scaleY = scale
+                },
+        )
+    }
+}
+
+/** 一个色标圆点。44dp 命中区包着 22dp 的色点 —— 视觉不变, 手指不用瞄准。 */
+@Composable
+private fun LabelDot(
+    name: String,
+    selected: Boolean,
+    enabled: Boolean,
+    onClick: () -> Unit,
+) {
+    val p = LocalPhotoPalette.current
+    val haptics = rememberAppHaptics()
+    val source = remember { MutableInteractionSource() }
+    val color = LABEL_COLORS[name] ?: p.textMuted
     // 1dp 描边: 浅色 / 深色都让色点在照片与面板上有一条自己的边界 —— 颜色本身是数据,
     // 但"这是一个圆点"不该靠背景色碰巧相同来判断。选中时把描边加粗到 2dp(第二重信号)。
     val ringWidth = if (selected) 2.dp else 1.dp
-    val ringColor = if (selected) MaterialTheme.colorScheme.onSurface else p.labelRing
+    val ringColor = if (selected) p.textPrimary else p.labelRing
     Box(
         modifier = Modifier
-            .padding(horizontal = 3.dp)
-            .size(22.dp)
+            .size(44.dp)
             .clip(CircleShape)
-            .background(color)
-            .border(ringWidth, ringColor, CircleShape)
-            .clickable(enabled = enabled, role = Role.Button, onClickLabel = "色标 ${labelName(name)}") {
-                onClick()
-            },
-    )
+            .appClickable(
+                interactionSource = source,
+                enabled = enabled,
+                role = Role.Button,
+                onClickLabel = "色标 ${labelName(name)}",
+                onClick = {
+                    haptics.tick()
+                    onClick()
+                },
+            ),
+        contentAlignment = Alignment.Center,
+    ) {
+        Box(
+            modifier = Modifier
+                .size(22.dp)
+                .clip(CircleShape)
+                .background(color)
+                .border(ringWidth, ringColor, CircleShape),
+        )
+    }
 }

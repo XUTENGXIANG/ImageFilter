@@ -8,6 +8,7 @@ import android.content.ContextWrapper
 import android.content.pm.ApplicationInfo
 import android.os.Handler
 import android.os.Looper
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -47,6 +48,11 @@ import com.imagefilter.mobile.data.PairStatusResult
 import com.imagefilter.mobile.data.Pairing
 import com.imagefilter.mobile.data.PairingApi
 import com.imagefilter.mobile.data.PairingStore
+import com.imagefilter.mobile.ui.components.AppHint
+import com.imagefilter.mobile.ui.components.AppLargeHeader
+import com.imagefilter.mobile.ui.components.AppLoadingRow
+import com.imagefilter.mobile.ui.components.AppSectionLabel
+import com.imagefilter.mobile.ui.theme.AppSpacing
 import com.imagefilter.mobile.ui.theme.LocalPhotoPalette
 import kotlinx.coroutines.delay
 
@@ -152,23 +158,25 @@ private fun ConnectPage(
 
     val status = statusLineFor(state)
 
-    Column(modifier = Modifier.fillMaxSize().topBarInsets().bottomBarInsets()) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(p.s0)
+            .bottomBarInsets(),
+    ) {
+        AppLargeHeader(
+            title = "连接电脑",
+            subtitle = "在同一 Wi-Fi 下找到电脑，点一下即可配对。",
+        )
         Column(
             modifier = Modifier
                 .weight(1f)
                 .verticalScroll(rememberScrollState())
-                .padding(horizontal = 24.dp),
+                .padding(horizontal = AppSpacing.page),
         ) {
-            Spacer(Modifier.height(24.dp))
-            Text(
-                "连接电脑",
-                style = MaterialTheme.typography.titleLarge,
-                color = p.textPrimary,
-            )
-            Spacer(Modifier.height(6.dp))
             // 全屏**只有这一行**状态。每个分支自己的说明都在下面那张卡里, 不重复。
             ConnectStatusLine(status = status.text, busy = status.busy)
-            Spacer(Modifier.height(24.dp))
+            Spacer(Modifier.height(AppSpacing.xxl))
 
             when (state) {
                 ConnectState.Searching -> if (showEmptyCard) {
@@ -176,17 +184,11 @@ private fun ConnectPage(
                 }
 
                 is ConnectState.Devices -> {
-                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Column(verticalArrangement = Arrangement.spacedBy(AppSpacing.sm)) {
                         for (device in state.devices) {
-                            DeviceRow(device = device, onClick = { onSelect(device) })
+                            DeviceCard(device = device, onClick = { onSelect(device) })
                         }
                     }
-                    Spacer(Modifier.height(12.dp))
-                    Text(
-                        "点一台电脑，然后在电脑上点「允许」。",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = p.textMuted,
-                    )
                 }
 
                 is ConnectState.Waiting -> WaitingCard(
@@ -195,19 +197,7 @@ private fun ConnectPage(
                 )
 
                 // 只可能停留一帧: LaunchedEffect 随后把整个页面换成已配对的主界面。
-                is ConnectState.Approved -> Row(verticalAlignment = Alignment.CenterVertically) {
-                    CircularProgressIndicator(
-                        modifier = Modifier.size(18.dp),
-                        strokeWidth = 2.dp,
-                        color = p.accentText,
-                    )
-                    Spacer(Modifier.width(10.dp))
-                    Text(
-                        "配对成功，正在进入…",
-                        style = MaterialTheme.typography.bodyLarge,
-                        color = p.textPrimary,
-                    )
-                }
+                is ConnectState.Approved -> AppLoadingRow("配对成功，正在进入…")
 
                 is ConnectState.Denied -> ConnectErrorCard(
                     head = "配对没成功",
@@ -224,7 +214,7 @@ private fun ConnectPage(
                 )
             }
 
-            Spacer(Modifier.height(24.dp))
+            Spacer(Modifier.height(AppSpacing.xxl))
         }
 
         // 底部入口: 设备列表态常驻; 搜索刚开始时也在(用户可能一眼就知道自己要用高级模式);
@@ -232,7 +222,7 @@ private fun ConnectPage(
         val showBottomAdvanced = state is ConnectState.Devices ||
             (state is ConnectState.Searching && !showEmptyCard)
         if (showBottomAdvanced) ConnectAdvancedToggle(onClick = onAdvanced)
-        Spacer(Modifier.height(8.dp))
+        Spacer(Modifier.height(AppSpacing.sm))
     }
 }
 

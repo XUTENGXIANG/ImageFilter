@@ -3,6 +3,8 @@
 package com.imagefilter.mobile.ui
 
 import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.Arrangement
@@ -16,6 +18,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -33,6 +36,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
@@ -42,12 +46,21 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import coil3.compose.AsyncImage
 import coil3.request.ImageRequest
 import com.imagefilter.mobile.data.Pairing
 import com.imagefilter.mobile.data.ViewerAction
 import com.imagefilter.mobile.data.WriteAction
+import com.imagefilter.mobile.ui.components.AppCard
+import com.imagefilter.mobile.ui.components.AppErrorCard
+import com.imagefilter.mobile.ui.components.AppIconButton
+import com.imagefilter.mobile.ui.components.AppIcons
+import com.imagefilter.mobile.ui.components.AppInlineTopBar
+import com.imagefilter.mobile.ui.components.AppTextButton
+import com.imagefilter.mobile.ui.theme.AppRadius
+import com.imagefilter.mobile.ui.theme.AppSpacing
 import com.imagefilter.mobile.ui.theme.ImageFilterTheme
 import com.imagefilter.mobile.ui.theme.LocalPhotoPalette
 import kotlinx.coroutines.launch
@@ -134,6 +147,7 @@ fun ViewerScreen(
     // 查看器/滑卡的画布与 chrome **始终深色**（与桌面 `viewer.tsx` 的 bg-black/95 一致）：
     // 浅色主题只换目录/网格/设置，不把看片的那块画布变白 —— 照片才是屏幕上最亮的东西。
     ImageFilterTheme(darkTheme = true) {
+        val p = LocalPhotoPalette.current
         Surface(modifier = Modifier.fillMaxSize(), color = Color.Black) {
             Column(modifier = Modifier.fillMaxSize()) {
                 ViewerTopBar(
@@ -203,8 +217,8 @@ fun ViewerScreen(
                                 imageLoader = imageLoader,
                                 contentDescription = state.current?.displayName,
                                 contentScale = ContentScale.Fit,
-                                placeholder = ColorPainter(MaterialTheme.colorScheme.surfaceVariant),
-                                error = ColorPainter(MaterialTheme.colorScheme.errorContainer),
+                                placeholder = ColorPainter(p.fill),
+                                error = ColorPainter(p.errorSoft),
                                 onSuccess = { vm.onDefaultLoaded() },
                                 onError = { scope.launch { vm.onDefaultFailed(it.result.throwable) } },
                                 modifier = Modifier.fillMaxSize(),
@@ -349,31 +363,37 @@ internal fun WriteFailureCard(
     onDismiss: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    Card(
-        modifier = modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer),
+    val p = LocalPhotoPalette.current
+    val shape = RoundedCornerShape(AppRadius.card)
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .clip(shape)
+            .background(p.errorSoft)
+            .border(Dp.Hairline, p.error.copy(alpha = 0.28f), shape)
+            .padding(AppSpacing.lg),
     ) {
-        Column(modifier = Modifier.padding(12.dp)) {
-            Text(head, style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.error)
-            Spacer(Modifier.height(6.dp))
-            Text(text, style = MaterialTheme.typography.bodySmall)
-            Spacer(Modifier.height(4.dp))
-            Row(horizontalArrangement = Arrangement.End, modifier = Modifier.fillMaxWidth()) {
-                // 只有"重试"需要一个额外的出口: 现在不方便重试的用户可以把这句话收起来,
-                // **改动本身与"未同步"标记都留着**(dismiss 不会假装写成了)。
-                if (action == WriteAction.RETRY) {
-                    TextButton(onClick = onDismiss) { Text("知道了") }
-                }
-                TextButton(
-                    onClick = when (action) {
-                        WriteAction.RETRY -> onRetry
-                        WriteAction.RELOAD_FOLDER -> onReloadFolder
-                        // 手机上做不了重新配对(那要去目录页的「设置」)→ 关掉查看器, 那是唯一的下一步
-                        WriteAction.RECONNECT -> onReconnect
-                        WriteAction.PC_SIDE, WriteAction.DISMISS, null -> onDismiss
-                    },
-                ) { Text(actionLabel.ifBlank { "知道了" }) }
+        Text(head, style = MaterialTheme.typography.titleSmall, color = p.error)
+        Spacer(Modifier.height(6.dp))
+        Text(text.replace("**", ""), style = MaterialTheme.typography.bodySmall, color = p.textPrimary)
+        Spacer(Modifier.height(4.dp))
+        Row(horizontalArrangement = Arrangement.End, modifier = Modifier.fillMaxWidth()) {
+            // 只有"重试"需要一个额外的出口: 现在不方便重试的用户可以把这句话收起来,
+            // **改动本身与"未同步"标记都留着**(dismiss 不会假装写成了)。
+            if (action == WriteAction.RETRY) {
+                AppTextButton(text = "知道了", onClick = onDismiss, color = p.textSecondary)
             }
+            AppTextButton(
+                text = actionLabel.ifBlank { "知道了" },
+                onClick = when (action) {
+                    WriteAction.RETRY -> onRetry
+                    WriteAction.RELOAD_FOLDER -> onReloadFolder
+                    // 手机上做不了重新配对(那要去目录页的「设置」)→ 关掉查看器, 那是唯一的下一步
+                    WriteAction.RECONNECT -> onReconnect
+                    WriteAction.PC_SIDE, WriteAction.DISMISS, null -> onDismiss
+                },
+                color = p.error,
+            )
         }
     }
 }
@@ -391,41 +411,41 @@ private fun ViewerTopBar(
     onClose: () -> Unit,
 ) {
     val p = LocalPhotoPalette.current
-    Surface(color = p.s1) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                // ⚠️ **必须在 padding 之前**: 顶栏底色照旧铺到屏幕最上沿, 让开的是内容 ——
-                // 少了这一行, 「关闭」与「未同步·重试」整颗按钮都落在状态栏的触摸区里,
-                // 真机上按不动(见 [topBarInsets] 的 KDoc)。
-                .topBarInsets()
-                .padding(horizontal = 4.dp, vertical = 4.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text(
-                title,
-                style = MaterialTheme.typography.titleMedium,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f).padding(start = 8.dp),
+    AppInlineTopBar(
+        title = title,
+        container = Color.Black,
+        navigation = {
+            AppIconButton(
+                icon = AppIcons.Close,
+                contentDescription = "关闭",
+                onClick = onClose,
+                tint = p.textPrimary,
             )
+        },
+        actions = {
             if (highResLoading) {
-                CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
-                Spacer(Modifier.width(4.dp))
+                CircularProgressIndicator(
+                    modifier = Modifier.size(18.dp),
+                    strokeWidth = 2.dp,
+                    color = p.accentText,
+                )
             }
             // 未同步角标**本身就是按钮**: 点一下把这一批重试一遍(没有动作的警告等于没警告)。
             if (unsyncedLabel != null) {
-                TextButton(onClick = onRetryUnsynced) {
-                    Text(unsyncedLabel, color = p.pending)
-                }
+                AppTextButton(
+                    text = unsyncedLabel,
+                    onClick = onRetryUnsynced,
+                    color = p.pending,
+                )
             }
-            TextButton(onClick = onHighRes, enabled = canRequestHighRes) { Text("高清") }
-            TextButton(
-                onClick = onClose,
-                colors = ButtonDefaults.textButtonColors(contentColor = p.textSecondary),
-            ) { Text("关闭") }
-        }
-    }
+            AppTextButton(
+                text = "高清",
+                onClick = onHighRes,
+                enabled = canRequestHighRes,
+                color = p.textSecondary,
+            )
+        },
+    )
 }
 
 /**
@@ -442,29 +462,40 @@ internal fun ViewerNotice(
     onAction: (() -> Unit)? = null,
     onDismiss: (() -> Unit)? = null,
 ) {
-    Card(
-        modifier = modifier.fillMaxWidth().padding(12.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+    val p = LocalPhotoPalette.current
+    AppCard(
+        modifier = modifier.padding(horizontal = AppSpacing.md, vertical = AppSpacing.sm),
+        padding = AppSpacing.lg,
     ) {
-        Column(modifier = Modifier.padding(12.dp)) {
-            if (loading) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
-                    Spacer(Modifier.width(12.dp))
-                    Text(text, style = MaterialTheme.typography.bodySmall)
-                }
-            } else {
-                Text(text, style = MaterialTheme.typography.bodySmall)
+        if (loading) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(18.dp),
+                    strokeWidth = 2.dp,
+                    color = p.accentText,
+                )
+                Spacer(Modifier.width(10.dp))
+                Text(
+                    text = text,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = p.textPrimary,
+                )
             }
-            if (actionLabel != null || onDismiss != null) {
-                Spacer(Modifier.height(4.dp))
-                Row(horizontalArrangement = Arrangement.End, modifier = Modifier.fillMaxWidth()) {
-                    if (onDismiss != null) {
-                        TextButton(onClick = onDismiss) { Text("知道了") }
-                    }
-                    if (actionLabel != null && onAction != null) {
-                        TextButton(onClick = onAction) { Text(actionLabel) }
-                    }
+        } else {
+            Text(
+                text = text,
+                style = MaterialTheme.typography.bodySmall,
+                color = p.textPrimary,
+            )
+        }
+        if (actionLabel != null || onDismiss != null) {
+            Spacer(Modifier.height(2.dp))
+            Row(horizontalArrangement = Arrangement.End, modifier = Modifier.fillMaxWidth()) {
+                if (onDismiss != null) {
+                    AppTextButton(text = "知道了", onClick = onDismiss, color = p.textMuted)
+                }
+                if (actionLabel != null && onAction != null) {
+                    AppTextButton(text = actionLabel, onClick = onAction)
                 }
             }
         }
@@ -485,28 +516,17 @@ internal fun ViewerErrorCard(
     onClose: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    Card(
-        modifier = modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer),
-    ) {
-        Column(modifier = Modifier.padding(16.dp)) {
-            Text(
-                error.head(),
-                style = MaterialTheme.typography.titleSmall,
-                color = MaterialTheme.colorScheme.error,
-            )
-            Spacer(Modifier.height(8.dp))
-            Text(error.text(), style = MaterialTheme.typography.bodyMedium)
-            Spacer(Modifier.height(8.dp))
-            TextButton(
-                onClick = when (error.action) {
-                    ViewerAction.RETRY -> onRetry
-                    ViewerAction.RELOAD_FOLDER -> onReloadFolder
-                    // 其余动作手机上都没有可做的事(去电脑上改 / 回目录页重新配对 / 放弃这一张),
-                    // 按下去就回网格 —— 那是唯一能做下一步的地方。
-                    ViewerAction.PC_SIDE, ViewerAction.RECONNECT, ViewerAction.DISMISS -> onClose
-                },
-            ) { Text(error.actionLabel) }
-        }
-    }
+    AppErrorCard(
+        head = error.head(),
+        text = error.text(),
+        onRetry = when (error.action) {
+            ViewerAction.RETRY -> onRetry
+            ViewerAction.RELOAD_FOLDER -> onReloadFolder
+            // 其余动作手机上都没有可做的事(去电脑上改 / 回目录页重新配对 / 放弃这一张),
+            // 按下去就回网格 —— 那是唯一能做下一步的地方。
+            ViewerAction.PC_SIDE, ViewerAction.RECONNECT, ViewerAction.DISMISS -> onClose
+        },
+        actionLabel = error.actionLabel,
+        modifier = modifier,
+    )
 }

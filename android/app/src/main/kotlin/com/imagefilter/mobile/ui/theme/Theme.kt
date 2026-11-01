@@ -122,76 +122,55 @@ private val LightColors = lightColorScheme(
 )
 
 /**
- * 字号阶梯。M3 默认的 bodySmall 是 12sp，中文在手机上偏小；
- * 这里抬到 13sp，10–11sp 只留给角标。
+ * 字号阶梯 —— 苹果 HIG 的"大标题 + 松正文"按中文重排过。
+ *
+ * 大标题（displayMedium 30/36）只给顶层页面；正文 15/22、说明 13/19，
+ * 10–11sp 只留给角标。行高与字号**反向**：标题紧、正文松。
  *
  * 中文**不加负字距**：桌面那套 `-0.2sp` 是给拉丁字母的，汉字全角，收紧会挤。
+ * 所以这里所有展示级字号也用 0 字距，靠字重与行高做层级。
  */
-private val PhotoTypography = Typography(
-    titleLarge = TextStyle(
-        fontFamily = FontFamily.Default,
-        fontWeight = FontWeight.Medium,
-        fontSize = 20.sp,
-        lineHeight = 26.sp,
-    ),
-    titleMedium = TextStyle(
-        fontFamily = FontFamily.Default,
-        fontWeight = FontWeight.Medium,
-        fontSize = 16.sp,
-        lineHeight = 22.sp,
-    ),
-    titleSmall = TextStyle(
-        fontFamily = FontFamily.Default,
-        fontWeight = FontWeight.Medium,
-        fontSize = 14.sp,
-        lineHeight = 20.sp,
-    ),
-    bodyLarge = TextStyle(
-        fontFamily = FontFamily.Default,
-        fontWeight = FontWeight.Normal,
-        fontSize = 15.sp,
-        lineHeight = 22.sp,
-    ),
-    bodyMedium = TextStyle(
-        fontFamily = FontFamily.Default,
-        fontWeight = FontWeight.Normal,
-        fontSize = 14.sp,
-        lineHeight = 20.sp,
-    ),
-    bodySmall = TextStyle(
-        fontFamily = FontFamily.Default,
-        fontWeight = FontWeight.Normal,
-        fontSize = 13.sp,
-        lineHeight = 18.sp,
-    ),
-    labelLarge = TextStyle(
-        fontFamily = FontFamily.Default,
-        fontWeight = FontWeight.Medium,
-        fontSize = 13.sp,
-        lineHeight = 18.sp,
-    ),
-    labelMedium = TextStyle(
-        fontFamily = FontFamily.Default,
-        fontWeight = FontWeight.Medium,
-        fontSize = 12.sp,
-        lineHeight = 16.sp,
-    ),
-    labelSmall = TextStyle(
-        fontFamily = FontFamily.Default,
-        fontWeight = FontWeight.SemiBold,
-        fontSize = 11.sp,
-        lineHeight = 14.sp,
-        letterSpacing = 0.4.sp,
-    ),
+private fun appText(
+    weight: FontWeight,
+    size: Int,
+    lineHeight: Int,
+    letterSpacing: Float = 0f,
+) = TextStyle(
+    fontFamily = FontFamily.Default,
+    fontWeight = weight,
+    fontSize = size.sp,
+    lineHeight = lineHeight.sp,
+    letterSpacing = letterSpacing.sp,
 )
 
-/** 圆角阶梯：4 角标 / 8 行 / 10 面板按钮 / 12 卡片 / 16 弹窗。 */
+private val PhotoTypography = Typography(
+    displayLarge = appText(FontWeight.SemiBold, 34, 40),
+    displayMedium = appText(FontWeight.SemiBold, 30, 36),
+    displaySmall = appText(FontWeight.SemiBold, 26, 32),
+    headlineLarge = appText(FontWeight.SemiBold, 24, 30),
+    headlineMedium = appText(FontWeight.SemiBold, 21, 27),
+    headlineSmall = appText(FontWeight.SemiBold, 19, 25),
+    titleLarge = appText(FontWeight.SemiBold, 17, 23),
+    titleMedium = appText(FontWeight.Medium, 16, 22),
+    titleSmall = appText(FontWeight.Medium, 14, 20),
+    bodyLarge = appText(FontWeight.Normal, 16, 24),
+    bodyMedium = appText(FontWeight.Normal, 15, 22),
+    bodySmall = appText(FontWeight.Normal, 13, 19),
+    labelLarge = appText(FontWeight.Medium, 15, 20),
+    labelMedium = appText(FontWeight.Medium, 13, 17),
+    labelSmall = appText(FontWeight.SemiBold, 11, 14, letterSpacing = 0.3f),
+)
+
+/**
+ * 圆角阶梯（与 [AppRadius] 同一套）：6 角标 / 10 行 / 14 控件 / 18 卡片 / 22 浮层。
+ * sheet 的 28dp 顶部圆角在 `AppSheet` 里单独给（M3 的 Shapes 只有五档）。
+ */
 private val PhotoShapes = Shapes(
-    extraSmall = RoundedCornerShape(4.dp),
-    small = RoundedCornerShape(8.dp),
-    medium = RoundedCornerShape(10.dp),
-    large = RoundedCornerShape(12.dp),
-    extraLarge = RoundedCornerShape(16.dp),
+    extraSmall = RoundedCornerShape(AppRadius.badge),
+    small = RoundedCornerShape(AppRadius.row),
+    medium = RoundedCornerShape(AppRadius.control),
+    large = RoundedCornerShape(AppRadius.card),
+    extraLarge = RoundedCornerShape(AppRadius.panel),
 )
 
 /**

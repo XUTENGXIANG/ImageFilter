@@ -12,18 +12,22 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.imagefilter.mobile.ui.components.AppCard
+import com.imagefilter.mobile.ui.components.AppErrorCard
+import com.imagefilter.mobile.ui.components.AppPathText
+import com.imagefilter.mobile.ui.components.AppSheet
+import com.imagefilter.mobile.ui.components.AppSheetHeader
+import com.imagefilter.mobile.ui.components.AppStatusPill
+import com.imagefilter.mobile.ui.components.AppTextButton
+import com.imagefilter.mobile.ui.components.AppTone
+import com.imagefilter.mobile.ui.theme.AppSpacing
 import com.imagefilter.mobile.ui.theme.LocalPhotoPalette
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
@@ -41,10 +45,8 @@ import kotlinx.coroutines.launch
  *   · 全部重试**串行、一次一项**(见 [retryPending] 的 KDoc): 半成功/已经不存在的路径不能
  *     毒掉整批。界面上那句"一次一项"是**说出来**的 —— 用户会看到列表一项一项地变。
  *
- * ⚠️ **本文件的观感没有真机验证**(本轮没有设备, 也不为此引 Compose UI 测试依赖):
- * 面板的高度、长文案的换行、深色主题下的对比只能真机看(报告里的 UNVERIFIED 清单)。
- * 但**它画的每一个字**都来自有 JVM 用例钉住的纯函数([toPendingRows] / [pendingBadgeText] /
- * [topBarBadge] / [retryNote] / [abandonNote]) —— 所以"数对不对、话说得对不对"不是靠眼睛。
+ * 苹果风落点: 统一的 28dp 顶部圆角 sheet; 每一行是一张 18dp 卡片（文件名 + 目标胶囊 +
+ * 路径 + 原因 + 两个动作）, 放弃仍要二次确认。
  */
 
 /**
@@ -118,58 +120,59 @@ fun PendingBadgeButton(
     onRetryUnsynced: () -> Unit,
 ) {
     val p = LocalPhotoPalette.current
-    TextButton(
+    AppTextButton(
+        text = badge.label,
         onClick = if (badge.opensPanel) onOpenPanel else onRetryUnsynced,
         enabled = enabled,
-    ) {
-        Text(badge.label, color = p.pending)
-    }
+        color = p.pending,
+    )
 }
 
 /** 面板本体。 */
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun PendingSheet(panel: PendingPanel) {
-    ModalBottomSheet(onDismissRequest = panel.onClose) {
+    val p = LocalPhotoPalette.current
+    AppSheet(onDismissRequest = panel.onClose) {
+        AppSheetHeader(
+            title = "待重试（${panel.rows.size} 项）",
+            subtitle = "还没被电脑确认的改动；重启 App 也会保留。",
+            onClose = panel.onClose,
+        )
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp)
                 // 队列一般不长, 但"一般"不是"一定": 给一个上界, 免得面板盖满整屏
                 .heightIn(max = 520.dp)
-                .verticalScroll(rememberScrollState()),
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = AppSpacing.page, vertical = AppSpacing.sm),
         ) {
-            Text("待重试（${panel.rows.size} 项）", style = MaterialTheme.typography.titleMedium)
-            Spacer(Modifier.size(4.dp))
-            Text(
-                "这些是这台手机上**还没被电脑确认**的改动。关着电脑（或断网）时打的星级、标过的色标" +
-                    "都在这里，重启 App 也还在。",
-                style = MaterialTheme.typography.bodySmall,
-            )
-
             // 队列读不回来: 这一句必须在列表**之上** —— 它说的是"这个列表可能不完整"。
             if (panel.corrupted) {
-                Spacer(Modifier.size(8.dp))
-                Text(
-                    "这台手机上的待重试记录**没能读出来**（文件坏了或版本对不上）：下面这份列表可能" +
+                AppErrorCard(
+                    head = "待重试记录没能读出来",
+                    text = "这台手机上的待重试记录**没能读出来**（文件坏了或版本对不上）：下面这份列表可能" +
                         "不完整，之前没写进电脑的改动**可能已经丢了**。点「重试」只会重发还读得到的那些。",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.error,
                 )
+                Spacer(Modifier.size(AppSpacing.sm))
             }
 
             val note = panel.note
             if (note != null) {
-                Spacer(Modifier.size(8.dp))
-                Text(note, style = MaterialTheme.typography.bodyMedium)
+                Text(
+                    text = note.replace("**", ""),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = p.textPrimary,
+                )
+                Spacer(Modifier.size(AppSpacing.sm))
             }
 
-            Spacer(Modifier.size(8.dp))
-            HorizontalDivider()
-
             if (panel.rows.isEmpty()) {
-                Spacer(Modifier.size(12.dp))
-                Text("现在没有待重试的改动。", style = MaterialTheme.typography.bodyMedium)
+                Text(
+                    text = "现在没有待重试的改动。",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = p.textSecondary,
+                )
+                Spacer(Modifier.size(AppSpacing.sm))
             }
 
             for (row in panel.rows) {
@@ -181,9 +184,9 @@ fun PendingSheet(panel: PendingPanel) {
                     onAbandon = { panel.onAbandon(row.path) },
                     onCancelAbandon = panel.onCancelAbandon,
                 )
+                Spacer(Modifier.size(AppSpacing.sm))
             }
 
-            Spacer(Modifier.size(8.dp))
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.End,
@@ -191,13 +194,15 @@ fun PendingSheet(panel: PendingPanel) {
             ) {
                 // 只有一项时"全部重试"与那一项的「重试」是同一件事 —— 不画第二个同样的按钮。
                 if (panel.rows.size > 1) {
-                    TextButton(onClick = panel.onRetryAll, enabled = !panel.busy) {
-                        Text("全部重试（一次一项）")
-                    }
+                    AppTextButton(
+                        text = "全部重试（一次一项）",
+                        onClick = panel.onRetryAll,
+                        enabled = !panel.busy,
+                    )
                 }
-                TextButton(onClick = panel.onClose) { Text("关闭") }
+                AppTextButton(text = "关闭", onClick = panel.onClose)
             }
-            Spacer(Modifier.size(12.dp))
+            Spacer(Modifier.size(AppSpacing.md))
         }
     }
 }
@@ -212,53 +217,57 @@ private fun PendingRowCard(
     onAbandon: () -> Unit,
     onCancelAbandon: () -> Unit,
 ) {
-    Column(modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
+    val p = LocalPhotoPalette.current
+    AppCard(padding = AppSpacing.lg) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(
-                row.fileName,
+                text = row.fileName,
                 style = MaterialTheme.typography.titleSmall,
+                color = p.textPrimary,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.weight(1f),
             )
-            Text(row.target, style = MaterialTheme.typography.labelLarge)
+            Spacer(Modifier.size(AppSpacing.sm))
+            AppStatusPill(text = row.target, tone = AppTone.Warning)
         }
-        Spacer(Modifier.size(2.dp))
-        // 完整路径逐字显示(规范路径里的 verbatim 前缀是排查时唯一对得上的东西)
-        Text(
-            row.path,
-            style = MaterialTheme.typography.bodySmall,
-            fontFamily = FontFamily.Monospace,
-            maxLines = 2,
-            overflow = TextOverflow.Ellipsis,
-        )
         Spacer(Modifier.size(4.dp))
-        Text(row.reason, style = MaterialTheme.typography.bodySmall)
+        // 完整路径逐字显示(规范路径里的 verbatim 前缀是排查时唯一对得上的东西)
+        AppPathText(path = row.path, maxLines = 2)
+        Spacer(Modifier.size(6.dp))
+        Text(
+            text = row.reason.replace("**", ""),
+            style = MaterialTheme.typography.bodySmall,
+            color = p.textSecondary,
+        )
         Spacer(Modifier.size(2.dp))
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.End,
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            TextButton(onClick = onRetry, enabled = !busy) { Text("重试") }
+            AppTextButton(text = "重试", onClick = onRetry, enabled = !busy)
             // 放弃本地改动 = 丢掉用户自己的决定: 第一次只把按钮变成「确认放弃」并说明后果,
             // 第二次(同一张)才真的丢。判定在 ViewModel 里(见 [GridViewModel.requestAbandon])。
-            TextButton(onClick = onAbandon, enabled = !busy) {
-                Text(
-                    if (armed) "确认放弃" else "放弃本地改动",
-                    color = MaterialTheme.colorScheme.error,
-                )
-            }
+            AppTextButton(
+                text = if (armed) "确认放弃" else "放弃本地改动",
+                onClick = onAbandon,
+                enabled = !busy,
+                destructive = true,
+            )
         }
         if (armed) {
             Text(
-                "再点一次「确认放弃」就会把这一张在这台手机上的改动丢掉（电脑上不会有它的记录，" +
+                text = "再点一次「确认放弃」就会把这一张在这台手机上的改动丢掉（电脑上不会有它的记录，" +
                     "一个请求都不会发）。",
                 style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.error,
+                color = p.error,
             )
-            TextButton(onClick = onCancelAbandon) { Text("取消") }
+            AppTextButton(
+                text = "取消",
+                onClick = onCancelAbandon,
+                color = p.textSecondary,
+            )
         }
-        HorizontalDivider()
     }
 }

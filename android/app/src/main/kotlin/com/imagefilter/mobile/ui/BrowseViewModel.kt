@@ -119,7 +119,8 @@ const val NOT_COUNTED = "张数未统计"
  * 有视频时再补一段视频数(视频数量的显示入口保留在这里)。
  */
 fun secondaryLabel(entry: FolderEntryDto, isRoot: Boolean): String {
-    if (isRoot) return entry.path
+    // 根行的第二行是路径; 显示形态去掉 `\\?\`(传输仍然用 entry.path 原样)。
+    if (isRoot) return displayPath(entry.path)
     val base = if (entry.hasSubdirs) {
         "${entry.subfolderCount} 个文件夹"
     } else {

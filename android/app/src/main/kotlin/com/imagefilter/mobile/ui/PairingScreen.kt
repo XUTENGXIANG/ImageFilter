@@ -6,9 +6,11 @@ import android.Manifest
 import android.content.pm.PackageManager
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -35,6 +37,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.KeyboardType
@@ -56,6 +59,17 @@ import com.imagefilter.mobile.data.PairingScan
 import com.imagefilter.mobile.data.PairingStore
 import com.imagefilter.mobile.data.PairingValidator
 import com.imagefilter.mobile.data.scanPairingPayload
+import com.imagefilter.mobile.ui.components.AppButton
+import com.imagefilter.mobile.ui.components.AppButtonStyle
+import com.imagefilter.mobile.ui.components.AppCard
+import com.imagefilter.mobile.ui.components.AppCheckRow
+import com.imagefilter.mobile.ui.components.AppHint
+import com.imagefilter.mobile.ui.components.AppIconButton
+import com.imagefilter.mobile.ui.components.AppIcons
+import com.imagefilter.mobile.ui.components.AppLargeHeader
+import com.imagefilter.mobile.ui.components.AppTextField
+import com.imagefilter.mobile.ui.components.AppTextButton
+import com.imagefilter.mobile.ui.theme.AppSpacing
 import com.imagefilter.mobile.ui.theme.LocalPhotoPalette
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
@@ -102,6 +116,8 @@ fun ManualPairingScreen(onPaired: (Pairing) -> Unit, onBack: (() -> Unit)? = nul
     var verified by remember { mutableStateOf<LocalCheck.Ok?>(null) }
     var savingError by remember { mutableStateOf<String?>(null) }
     var busy by remember { mutableStateOf(false) }
+    /** 排查清单默认收起: 它是一整段"连不上时再看"的小字, 不该占首屏。 */
+    var checklistOpen by remember { mutableStateOf(false) }
     /** 每次输入变动 +1 —— 在飞的请求回来时用它判断"这份结论是不是已经过期了"。 */
     var generation by remember { mutableStateOf(0) }
 
@@ -229,161 +245,169 @@ fun ManualPairingScreen(onPaired: (Pairing) -> Unit, onBack: (() -> Unit)? = nul
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .verticalScroll(rememberScrollState())
-            // 这是首屏, 没有 Scaffold/TopAppBar 的 `windowInsets` 默认值 —— 少了这两行,
-            // 标题「配对电脑」会被状态栏压住, 最后那段说明会被手势条压住(见 [topBarInsets])。
-            .topBarInsets()
-            .bottomBarInsets()
-            .padding(24.dp),
+            .background(p.s0)
+            .bottomBarInsets(),
     ) {
-        // 高级模式的返回口。放在标题**上方**且很轻: 这一页的主角仍是「配对电脑」表单,
-        // 而「回去自动发现」是次要动作(用户多半是从发现失败才来到这里的)。
-        if (onBack != null) {
-            TextButton(
-                onClick = onBack,
-                colors = ButtonDefaults.textButtonColors(contentColor = p.textSecondary),
-                modifier = Modifier.heightIn(min = 48.dp),
-            ) { Text("‹ 自动发现") }
-        }
-        Text("配对电脑", style = MaterialTheme.typography.headlineSmall)
-        Spacer(Modifier.height(8.dp))
-        Text(
-            "手机不保存照片：连接电脑上的 ImageFilter，只拉缩略图与预览。",
-            style = MaterialTheme.typography.bodyMedium,
-        )
-        Spacer(Modifier.height(16.dp))
-
-        // 扫码(M4′ Task 1): 配对码是 64 位十六进制, 手输不现实 —— 二维码是唯一顺手的通道。
-        // **手输永远在**: 拒绝相机权限、设备没有相机、扫到别的二维码时, 它都是唯一的路。
-        OutlinedButton(
-            shape = RoundedCornerShape(10.dp),
-            onClick = {
-                val granted = ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) ==
-                    PackageManager.PERMISSION_GRANTED
-                if (granted) launchScanner() else permission.launch(Manifest.permission.CAMERA)
-            },
-            modifier = Modifier.fillMaxWidth(),
-        ) { Text("扫码配对（扫电脑设置页里的二维码）") }
-        Text(
-            "扫码只是把下面两个框填好，验证与保存跟手动输入走的是同一条路。",
-            style = MaterialTheme.typography.bodySmall,
-        )
-        val scanNoteText = scanNote
-        if (scanNoteText != null) {
-            Spacer(Modifier.height(4.dp))
-            Text(
-                scanNoteText,
-                // 填好了是普通色、"填不了/权限被拒"才是红的 —— 一次成功不该看着像出错
-                color = if (scanNoteIsError) {
-                    MaterialTheme.colorScheme.error
-                } else {
-                    MaterialTheme.colorScheme.onSurfaceVariant
-                },
-                style = MaterialTheme.typography.bodySmall,
-            )
-        }
-        Spacer(Modifier.height(12.dp))
-
-        OutlinedTextField(
-            value = url,
-            onValueChange = { url = it; invalidate() },
-            label = { Text("电脑地址") },
-            placeholder = { Text(PairingMessages.URL_EXAMPLE) },
-            singleLine = true,
-            isError = urlProblem != null,
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
-            // FIX 4: 形状要说在**一直看得见**的地方 —— 占位符只在框为空且聚焦时才出现,
-            // 而第一次配对的人正是看着空框在猜("localhost? 主机名? 要带端口吗?")。
-            // 出错时这一行换成那句话(**一处**说一件事, 不再另起一行重复)。
-            supportingText = {
-                Text(urlProblem?.let { PairingMessages.forInputProblem(it) } ?: PairingMessages.ADDRESS_HINT)
-            },
-            modifier = Modifier.fillMaxWidth(),
-        )
-        Spacer(Modifier.height(12.dp))
-
-        OutlinedTextField(
-            value = token,
-            onValueChange = { token = it; invalidate() },
-            label = { Text("配对码") },
-            placeholder = { Text("64 位十六进制字符") },
-            singleLine = true,
-            isError = tokenProblem != null,
-            visualTransformation = if (showToken) {
-                VisualTransformation.None
+        AppLargeHeader(
+            title = "配对电脑",
+            subtitle = "手机不保存照片，只拉缩略图与预览。",
+            navigation = if (onBack != null) {
+                {
+                    AppIconButton(
+                        icon = AppIcons.Back,
+                        contentDescription = "回到自动发现",
+                        onClick = onBack,
+                    )
+                }
             } else {
-                PasswordVisualTransformation()
+                null
             },
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Ascii),
-            supportingText = {
+        )
+
+        Column(
+            modifier = Modifier
+                .weight(1f)
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = AppSpacing.page),
+        ) {
+            // 扫码(M4′ Task 1): 配对码是 64 位十六进制, 手输不现实 —— 二维码是唯一顺手的通道。
+            // **手输永远在**: 拒绝相机权限、设备没有相机、扫到别的二维码时, 它都是唯一的路。
+            AppButton(
+                text = "扫码配对",
+                onClick = {
+                    val granted = ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) ==
+                        PackageManager.PERMISSION_GRANTED
+                    if (granted) launchScanner() else permission.launch(Manifest.permission.CAMERA)
+                },
+                style = AppButtonStyle.Secondary,
+                leadingIcon = AppIcons.Camera,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Spacer(Modifier.height(AppSpacing.sm))
+            AppHint("扫电脑设置页里的二维码，自动填好下面两项。")
+            val scanNoteText = scanNote
+            if (scanNoteText != null) {
+                Spacer(Modifier.height(AppSpacing.xs))
                 Text(
-                    tokenProblem?.let { PairingMessages.forInputProblem(it) }
-                        ?: PairingMessages.TOKEN_HINT,
+                    text = scanNoteText.replace("**", ""),
+                    // 填好了是普通色、"填不了/权限被拒"才是红的 —— 一次成功不该看着像出错
+                    color = if (scanNoteIsError) p.error else p.textSecondary,
+                    style = MaterialTheme.typography.bodySmall,
                 )
-            },
-            modifier = Modifier.fillMaxWidth(),
-        )
-        ShowTokenToggle(show = showToken, onChange = { showToken = !showToken })
-        Spacer(Modifier.height(4.dp))
-
-        OutlinedTextField(
-            value = note,
-            onValueChange = { note = it; invalidate() },
-            label = { Text("备注（可选）") },
-            placeholder = { Text("例如：家里的台式机") },
-            singleLine = true,
-            modifier = Modifier.fillMaxWidth(),
-        )
-        Spacer(Modifier.height(16.dp))
-
-        Row {
-            Button(
-                onClick = { testConnection() },
-                enabled = !busy,
-                shape = RoundedCornerShape(10.dp),
-            ) { Text("测试连接") }
-            if (busy) {
-                Spacer(Modifier.size(12.dp))
-                CircularProgressIndicator(modifier = Modifier.size(24.dp), strokeWidth = 2.dp)
             }
-        }
-        Spacer(Modifier.height(16.dp))
+            Spacer(Modifier.height(AppSpacing.xl))
 
-        when (val result = check) {
-            is PairingCheck.Connected -> ConnectedCard(result, busy, ::startUsing)
-            // FIX 6: 这张卡**不再**把那张四条清单抄一遍 —— 它就在下面常驻着([PairingMessages.CHECKLIST_HEAD] 那张),
-            // 同一屏上说两次只会让人以为是两件事。卡里留下的仍然是**可执行的那一句**。
-            is PairingCheck.Failed -> MessageCard(
-                head = "没连上",
-                body = PairingMessages.forFailureInWizard(result.code, result.unauthorizedCause),
+            AppTextField(
+                value = url,
+                onValueChange = { url = it; invalidate() },
+                label = "电脑地址",
+                placeholder = PairingMessages.URL_EXAMPLE,
+                isError = urlProblem != null,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
+                // FIX 4: 形状要说在**一直看得见**的地方 —— 占位符只在框为空且聚焦时才出现,
+                // 而第一次配对的人正是看着空框在猜("localhost? 主机名? 要带端口吗?")。
+                // 出错时这一行换成那句话(**一处**说一件事, 不再另起一行重复)。
+                supportingText = urlProblem
+                    ?.let { PairingMessages.forInputProblem(it) }
+                    ?: "形如 http://192.168.3.10:8765。",
             )
-            is PairingCheck.BadInput -> MessageCard(
-                head = "请先改一下输入",
-                body = PairingMessages.forInputProblem(result.problem),
+            Spacer(Modifier.height(AppSpacing.md))
+
+            AppTextField(
+                value = token,
+                onValueChange = { token = it; invalidate() },
+                label = "配对码",
+                placeholder = "64 位十六进制字符",
+                isError = tokenProblem != null,
+                visualTransformation = if (showToken) {
+                    VisualTransformation.None
+                } else {
+                    PasswordVisualTransformation()
+                },
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Ascii),
+                supportingText = tokenProblem
+                    ?.let { PairingMessages.forInputProblem(it) }
+                    ?: "64 位十六进制；从电脑设置页复制，或直接扫码。",
             )
-            null -> Unit
-        }
+            Spacer(Modifier.height(AppSpacing.xs))
+            AppCheckRow(
+                checked = showToken,
+                onCheckedChange = { showToken = it },
+                label = "显示配对码",
+                supporting = if (showToken) "现在能看见它" else "默认遮起来",
+            )
+            Spacer(Modifier.height(AppSpacing.md))
 
-        val saveErr = savingError
-        if (saveErr != null) MessageCard(head = "没保存成功", body = saveErr)
+            AppTextField(
+                value = note,
+                onValueChange = { note = it; invalidate() },
+                label = "备注（可选）",
+                placeholder = "例如：家里的台式机",
+            )
+            Spacer(Modifier.height(AppSpacing.xl))
 
-        Spacer(Modifier.height(24.dp))
-        // §1.3: 这四条都会表现为"手机连不上", 而用户从手机这侧看不出是哪一条 —— 常驻列出。
-        // 标题与失败卡里那句"按下面「…」里的四条逐一排查"取自**同一个**常量([PairingMessages.CHECKLIST_HEAD]),
-        // 所以改一处两处一起变(否则卡里会指着一个屏幕上不存在的标题)。
-        Card(modifier = Modifier.fillMaxWidth()) {
-            Column(modifier = Modifier.padding(16.dp)) {
-                Text(PairingMessages.CHECKLIST_HEAD, style = MaterialTheme.typography.titleSmall)
-                Spacer(Modifier.height(8.dp))
-                for (item in PairingMessages.PREREQUISITES) {
-                    Text("· $item", style = MaterialTheme.typography.bodySmall)
+            AppButton(
+                text = if (busy) "正在测试…" else "测试连接",
+                onClick = { testConnection() },
+                loading = busy,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Spacer(Modifier.height(AppSpacing.xl))
+
+            when (val result = check) {
+                is PairingCheck.Connected -> ConnectedCard(result, busy, ::startUsing)
+                // FIX 6: 这张卡**不再**把那张四条清单抄一遍 —— 它就在下面常驻着([PairingMessages.CHECKLIST_HEAD] 那张),
+                // 同一屏上说两次只会让人以为是两件事。卡里留下的仍然是**可执行的那一句**。
+                is PairingCheck.Failed -> MessageCard(
+                    head = "没连上",
+                    body = PairingMessages.forFailureInWizard(result.code, result.unauthorizedCause),
+                )
+                is PairingCheck.BadInput -> MessageCard(
+                    head = "请先改一下输入",
+                    body = PairingMessages.forInputProblem(result.problem),
+                )
+                null -> Unit
+            }
+
+            val saveErr = savingError
+            if (saveErr != null) MessageCard(head = "没保存成功", body = saveErr)
+
+            Spacer(Modifier.height(AppSpacing.section))
+            // §1.3: 这四条都会表现为"手机连不上", 而用户从手机这侧看不出是哪一条 —— 常驻列出。
+            // 标题与失败卡里那句"按下面「…」里的四条逐一排查"取自**同一个**常量([PairingMessages.CHECKLIST_HEAD]),
+            // 所以改一处两处一起变(否则卡里会指着一个屏幕上不存在的标题)。
+            AppCard(padding = AppSpacing.lg) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        text = PairingMessages.CHECKLIST_HEAD,
+                        style = MaterialTheme.typography.titleSmall,
+                        color = p.textPrimary,
+                        modifier = Modifier.weight(1f),
+                    )
+                    AppTextButton(
+                        text = if (checklistOpen) "收起" else "展开",
+                        onClick = { checklistOpen = !checklistOpen },
+                        color = p.textSecondary,
+                    )
+                }
+                if (checklistOpen) {
+                    Spacer(Modifier.height(AppSpacing.xs))
+                    for (item in PairingMessages.PREREQUISITES) {
+                        Text(
+                            text = "· $item",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = p.textSecondary,
+                        )
+                        Spacer(Modifier.height(2.dp))
+                    }
                 }
             }
+            Spacer(Modifier.height(AppSpacing.md))
+            AppHint("配对码相当于电脑上共享目录的钥匙，只存在这台手机的加密存储里（AndroidKeyStore）。")
+            Spacer(Modifier.height(AppSpacing.xxl))
         }
-        Spacer(Modifier.height(12.dp))
-        Text(
-            "配对码相当于电脑上共享目录的钥匙，只存在这台手机的加密存储里（AndroidKeyStore）。",
-            style = MaterialTheme.typography.bodySmall,
-        )
     }
 }

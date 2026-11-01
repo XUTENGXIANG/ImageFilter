@@ -37,6 +37,20 @@ data class PhotoPalette(
 
     /** 发丝线: 深色白 8% / 浅色黑 6%。1 个物理像素。 */
     val hairline: Color,
+    /** 强一级发丝线: 浮层、输入域、选中卡片的边界。 */
+    val hairlineStrong: Color,
+    /** 次级填充: 次要按钮、输入框、分组控件底座。 */
+    val fill: Color,
+    /** 更深一档的填充: 按下态、分段控件底座。 */
+    val fillStrong: Color,
+    /** 主色的柔和底: 选中行、图标底。 */
+    val accentSoft: Color,
+    /** 错误的柔和底: 错误卡容器。 */
+    val errorSoft: Color,
+    /** 模态遮罩。 */
+    val scrim: Color,
+    /** 浅色模式才用的柔影色; 深色模式不用大阴影(会糊成一团)。 */
+    val shadow: Color,
 
     val textPrimary: Color,
     val textSecondary: Color,
@@ -68,6 +82,13 @@ val DarkPalette = PhotoPalette(
     s2 = Color(0xFF18181B),
     s3 = Color(0xFF27272A),
     hairline = Color(0x14FFFFFF),
+    hairlineStrong = Color(0x1FFFFFFF),
+    fill = Color(0xFF1C1C20),
+    fillStrong = Color(0xFF2A2A2E),
+    accentSoft = Color(0x2600BC7D),
+    errorSoft = Color(0x26FF6467),
+    scrim = Color(0xB3000000),
+    shadow = Color(0x66000000),
     textPrimary = Color(0xFFF4F4F5),
     textSecondary = Color(0xFF9F9FA9),
     textMuted = Color(0xFF71717A),
@@ -92,6 +113,13 @@ val LightPalette = PhotoPalette(
     s2 = Color(0xFFFFFFFF),
     s3 = Color(0xFFFFFFFF),
     hairline = Color(0x0F000000),
+    hairlineStrong = Color(0x1A000000),
+    fill = Color(0xFFEFEFF1),
+    fillStrong = Color(0xFFE4E4E7),
+    accentSoft = Color(0x1F047857),
+    errorSoft = Color(0xFFFEE2E2),
+    scrim = Color(0x66000000),
+    shadow = Color(0x1F000000),
     textPrimary = Color(0xFF18181B),
     textSecondary = Color(0xFF52525B),
     // #71717A 压在最亮的 #F4F4F5 上只有 4.40:1；抬一档到 4.79:1。

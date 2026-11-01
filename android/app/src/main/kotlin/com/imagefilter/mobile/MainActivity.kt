@@ -7,8 +7,16 @@ import androidx.activity.ComponentActivity
 import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -40,9 +48,24 @@ import com.imagefilter.mobile.data.PairingStore
 import com.imagefilter.mobile.data.ThemeMode
 import com.imagefilter.mobile.data.ThemePreference
 import com.imagefilter.mobile.ui.BrowseScreen
+import com.imagefilter.mobile.ui.BrowseViewModel
 import com.imagefilter.mobile.ui.ConnectScreen
 import com.imagefilter.mobile.ui.GridScreen
+import com.imagefilter.mobile.ui.components.AppCard
+import com.imagefilter.mobile.ui.components.AppConfirmDialog
+import com.imagefilter.mobile.ui.components.AppGroupedCard
+import com.imagefilter.mobile.ui.components.AppHint
+import com.imagefilter.mobile.ui.components.AppIcons
+import com.imagefilter.mobile.ui.components.AppRow
+import com.imagefilter.mobile.ui.components.AppSectionLabel
+import com.imagefilter.mobile.ui.components.AppSegmentedControl
+import com.imagefilter.mobile.ui.components.AppSheet
+import com.imagefilter.mobile.ui.components.AppSheetBody
+import com.imagefilter.mobile.ui.components.AppSheetHeader
+import com.imagefilter.mobile.ui.theme.AppMotion
+import com.imagefilter.mobile.ui.theme.AppSpacing
 import com.imagefilter.mobile.ui.theme.ImageFilterTheme
+import com.imagefilter.mobile.ui.theme.LocalPhotoPalette
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 
@@ -148,112 +171,162 @@ private fun AppRoot(
     }
 
     val current = pairing
-    when {
-        !loaded -> Column(
+    val folder = openedFolder
+    // 目录树的状态必须活得比 BrowseScreen 久: 手机点一行直接进网格, 返回时不能把
+    // 用户已经展开的树和已读到的层一起扔掉。所以 ViewModel 放在这里, 由两页共用。
+    val browseVm = remember(current) { current?.let { BrowseViewModel(it) } }
+    val screen = when {
+        current == null -> AppScreen.Connect
+        folder == null -> AppScreen.Browse
+        else -> AppScreen.Grid
+    }
+
+    if (!loaded) {
+        Column(
             modifier = Modifier.fillMaxSize(),
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.Center,
         ) {
             CircularProgressIndicator()
         }
+        return
+    }
 
-        // 未配对 = 默认走 mDNS 自动发现(ConnectScreen); 手输地址/配对码/扫码收在它内部的
-        // 「高级模式」里, 成功后仍是同一个 onPaired —— 两条路径保存的是同一种 Pairing。
-        current == null -> ConnectScreen(onPaired = {
-            openedFolder = null
-            pairing = it
-        })
+    Box(modifier = Modifier.fillMaxSize()) {
+        // 页面转场: 前进从右侧进、后退从左侧进 —— 同一路径往返, 方向可读。
+        // 时长 260/180ms: 只有空间关系要说清时才用这么长, 别的交互仍然 <300ms。
+        AnimatedContent(
+            targetState = screen,
+            transitionSpec = {
+                if (targetState.ordinal > initialState.ordinal) {
+                    (slideInHorizontally(animationSpec = tween(AppMotion.enterMs)) { it / 5 } +
+                        fadeIn(animationSpec = tween(AppMotion.enterMs))) togetherWith
+                        (slideOutHorizontally(animationSpec = tween(AppMotion.exitMs)) { -it / 8 } +
+                            fadeOut(animationSpec = tween(AppMotion.exitMs)))
+                } else {
+                    (slideInHorizontally(animationSpec = tween(AppMotion.enterMs)) { -it / 5 } +
+                        fadeIn(animationSpec = tween(AppMotion.enterMs))) togetherWith
+                        (slideOutHorizontally(animationSpec = tween(AppMotion.exitMs)) { it / 8 } +
+                            fadeOut(animationSpec = tween(AppMotion.exitMs)))
+                }
+            },
+            label = "screen",
+        ) { target ->
+            when (target) {
+                // 未配对 = 默认走 mDNS 自动发现(ConnectScreen); 手输地址/配对码/扫码收在它内部的
+                // 「高级模式」里, 成功后仍是同一个 onPaired —— 两条路径保存的是同一种 Pairing。
+                AppScreen.Connect -> ConnectScreen(onPaired = {
+                    openedFolder = null
+                    pairing = it
+                })
 
-        else -> {
-            val folder = openedFolder
-            if (folder == null) {
-                BrowseScreen(
-                    pairing = current,
-                    onOpenFolder = { openedFolder = it },
-                    onSettings = { settingsOpen = true },
-                )
-            } else {
+                AppScreen.Browse -> if (current != null && browseVm != null) {
+                    BrowseScreen(
+                        pairing = current,
+                        vm = browseVm,
+                        onOpenFolder = { openedFolder = it },
+                        onSettings = { settingsOpen = true },
+                    )
+                }
+
                 // M1′ Task 5 的网格: 与 ApiClient 共用同一枚 token 的同一个 OkHttpClient
-                GridScreen(pairing = current, folder = folder, onBack = { openedFolder = null })
+                AppScreen.Grid -> if (current != null && folder != null) {
+                    GridScreen(pairing = current, folder = folder, onBack = { openedFolder = null })
+                }
             }
+        }
 
-            if (settingsOpen) {
-                PairingInfoDialog(
-                    pairing = current,
-                    themeMode = themeMode,
-                    onThemeMode = onThemeMode,
-                    onDismiss = { settingsOpen = false },
-                    onUnpair = {
-                        scope.launch {
-                            store.clear()
-                            settingsOpen = false
-                            openedFolder = null
-                            pairing = null
-                        }
-                    },
-                )
-            }
+        if (settingsOpen && current != null) {
+            SettingsSheet(
+                pairing = current,
+                themeMode = themeMode,
+                onThemeMode = onThemeMode,
+                onDismiss = { settingsOpen = false },
+                onUnpair = {
+                    scope.launch {
+                        store.clear()
+                        settingsOpen = false
+                        openedFolder = null
+                        pairing = null
+                    }
+                },
+            )
         }
     }
 }
 
-/** 「设置」弹窗: 连接信息 + 外观 + 重新配对。**token 一个字都不显示**(它是机密)。 */
+private enum class AppScreen { Connect, Browse, Grid }
+
+/**
+ * 「设置」sheet: 外观 + 连接信息 + 重新配对。**token 一个字都不显示**(它是机密)。
+ *
+ * 苹果风落点: 从 AlertDialog 改成底部 sheet; 外观用分段控件（互斥三档, 选中即生效,
+ * 没有"保存"）; 连接信息是一张只读分组卡; 重新配对是唯一的破坏性行, **二次确认**。
+ */
 @Composable
-private fun PairingInfoDialog(
+private fun SettingsSheet(
     pairing: Pairing,
     themeMode: ThemeMode,
     onThemeMode: (ThemeMode) -> Unit,
     onDismiss: () -> Unit,
     onUnpair: () -> Unit,
 ) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("已配对") },
-        text = {
-            Column {
-                Text(pairing.note.ifBlank { "（未命名）" }, style = MaterialTheme.typography.bodyLarge)
-                Spacer(Modifier.height(4.dp))
-                Text(pairing.url, style = MaterialTheme.typography.bodySmall)
-                Spacer(Modifier.height(16.dp))
-                AppearanceSection(mode = themeMode, onMode = onThemeMode)
-                Spacer(Modifier.height(16.dp))
-                Text(
-                    "配对码只存在这台手机的加密存储里（AndroidKeyStore），界面上不显示。" +
-                        "重新配对会清掉它，并回到配对向导。",
-                    style = MaterialTheme.typography.bodySmall,
-                )
-            }
-        },
-        confirmButton = { TextButton(onClick = onUnpair) { Text("重新配对") } },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("关闭") } },
-        modifier = Modifier.fillMaxWidth(),
-    )
-}
+    val p = LocalPhotoPalette.current
+    var confirmUnpair by remember { mutableStateOf(false) }
 
-/**
- * 「外观」三档: 跟随系统 / 浅色 / 深色。
- *
- * 用 M3 的 [FilterChip](项目里筛选栏已经在用同一种控件), 10dp 圆角(与按钮同一档);
- * 选中即写入, 没有"保存"按钮 —— 外观这种即时生效的设置, 多一步确认只会让人以为没生效。
- *
- * 选中标记不用 `✓` 前缀: chip 自身有 `selected` 状态与底色, 读屏也读得出来; 而且三个
- * 选项都很短, 再加一个符号会把中文挤成两行。
- */
-@Composable
-private fun AppearanceSection(mode: ThemeMode, onMode: (ThemeMode) -> Unit) {
-    Column {
-        Text("外观", style = MaterialTheme.typography.titleSmall)
-        Spacer(Modifier.height(8.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            for (option in ThemeMode.entries) {
-                FilterChip(
-                    selected = option == mode,
-                    onClick = { onMode(option) },
-                    label = { Text(option.label()) },
-                    shape = MaterialTheme.shapes.medium,
+    AppSheet(onDismissRequest = onDismiss) {
+        AppSheetHeader(title = "设置", onClose = onDismiss)
+        AppSheetBody {
+            AppCard(padding = AppSpacing.lg) {
+                AppSectionLabel("外观")
+                AppSegmentedControl(
+                    options = ThemeMode.entries,
+                    selected = themeMode,
+                    onSelect = onThemeMode,
+                    label = { it.label() },
                 )
             }
+
+            Spacer(Modifier.height(AppSpacing.xxl))
+            AppSectionLabel("这台电脑")
+            AppGroupedCard {
+                AppRow(
+                    title = pairing.note.ifBlank { "未命名电脑" },
+                    subtitle = pairing.url,
+                    leadingIcon = AppIcons.Computer,
+                )
+            }
+            Spacer(Modifier.height(AppSpacing.md))
+            AppHint("配对码只存在这台手机的加密存储里（AndroidKeyStore），界面上不显示。")
+
+            Spacer(Modifier.height(AppSpacing.xxl))
+            AppSectionLabel("连接")
+            AppGroupedCard {
+                AppRow(
+                    title = "重新配对",
+                    subtitle = "清掉这台手机上的配对信息，回到配对向导",
+                    leadingIcon = AppIcons.Refresh,
+                    titleColor = p.error,
+                    onClick = { confirmUnpair = true },
+                )
+            }
+            Spacer(Modifier.height(AppSpacing.xxl))
         }
+    }
+
+    if (confirmUnpair) {
+        AppConfirmDialog(
+            title = "重新配对？",
+            text = "这台手机上的配对信息会被清掉，之后要重新扫码或手输地址。" +
+                "照片和电脑上已有的星级不会受影响。",
+            confirmLabel = "重新配对",
+            onConfirm = {
+                confirmUnpair = false
+                onUnpair()
+            },
+            onDismiss = { confirmUnpair = false },
+            destructive = true,
+        )
     }
 }
 

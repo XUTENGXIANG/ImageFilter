@@ -3,6 +3,7 @@
 package com.imagefilter.mobile.ui
 
 import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -42,10 +43,22 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import coil3.ImageLoader
+import com.imagefilter.mobile.data.DeviceIdentity
 import com.imagefilter.mobile.data.FolderEntryDto
 import com.imagefilter.mobile.data.Pairing
+import com.imagefilter.mobile.ui.components.AppButton
+import com.imagefilter.mobile.ui.components.AppEmptyState
+import com.imagefilter.mobile.ui.components.AppErrorCard
+import com.imagefilter.mobile.ui.components.AppIconButton
+import com.imagefilter.mobile.ui.components.AppIcons
+import com.imagefilter.mobile.ui.components.AppInlineTopBar
+import com.imagefilter.mobile.ui.components.AppLoadingRow
+import com.imagefilter.mobile.ui.components.AppTextButton
+import com.imagefilter.mobile.ui.theme.AppSpacing
+import com.imagefilter.mobile.ui.theme.ImageFilterTheme
 import com.imagefilter.mobile.ui.theme.LocalPhotoPalette
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 /**
@@ -88,8 +101,12 @@ fun GridScreen(
      * 一圈读盘, 而且会让两页看到的队列不再是同一份。
      */
     val pending = remember { PendingStore.create(context) }
+    // 电脑弹窗里显示的手机名; 只读系统设置, 不落盘。
+    val deviceName = remember(context) { DeviceIdentity.create(context).deviceName() }
     // key 里带 folder.path: 换文件夹就是换一份状态, 不许把上一个文件夹的格子留在屏幕上
-    val vm = remember(pairing, folder.path) { GridViewModel(pairing, folder, pending) }
+    val vm = remember(pairing, folder.path, deviceName) {
+        GridViewModel(pairing, folder, pending, deviceName)
+    }
     val state by vm.state.collectAsState()
     val scope = rememberCoroutineScope()
     // ImageLoader 与 ViewModel 共用同一枚 token 的**同一个** OkHttpClient(见它的 KDoc)
@@ -183,7 +200,16 @@ fun GridScreen(
             scope = scope,
             onOpenViewer = { index -> viewerIndex = index },
             // 打开面板那一刻先解除武装(见 PendingPanel 的 KDoc)
-            onOpenPending = { vm.cancelAbandon(); pendingOpen = true },
+            // 打开面板前**先从持久队列重读一次**: 网格页停在后台时, 滑卡页可能刚写失败,
+            // 角标数的是队列实时快照, 而面板画的是 GridState 里那份旧快照 —— 不刷新会出现
+            // "角标说待重试 1、面板说 0 项"这种自相矛盾。
+            onOpenPending = {
+                vm.cancelAbandon()
+                scope.launch {
+                    vm.refreshPending()
+                    pendingOpen = true
+                }
+            },
             // ── 移动(M3′ Task 4)────────────────────────────────────────────
             move = moveState,
             // 长按/点选: 没在多选里就先进入多选并选中这一格; 已经在多选里就切换它
@@ -216,20 +242,18 @@ fun GridScreen(
             !moveState.selecting &&
             moveState.stage == MoveStage.Idle
         ) {
-            Button(
-                onClick = { cullQueue = state.visibleItems },
-                shape = RoundedCornerShape(10.dp),
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = p.accent,
-                    contentColor = p.onAccent,
-                ),
+            Box(
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
                     .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 12.dp)
-                    .height(48.dp),
+                    .bottomBarInsets()
+                    .padding(horizontal = AppSpacing.lg, vertical = AppSpacing.md),
             ) {
-                Text("开始筛片", style = MaterialTheme.typography.titleSmall)
+                AppButton(
+                    text = "开始筛片",
+                    onClick = { cullQueue = state.visibleItems },
+                    modifier = Modifier.fillMaxWidth().height(56.dp),
+                )
             }
         }
 
@@ -261,7 +285,16 @@ fun GridScreen(
                 // 滑卡页那个角标数的是**持久队列**里真的有的那些(它自己会一项一项地重数):
                 // 关着电脑滑了三张, 角标必须当场变成 3 —— 而不是等关掉这一页才更新。
                 pending = pending,
-                onOpenPending = { vm.cancelAbandon(); pendingOpen = true },
+                // 打开面板前**先从持久队列重读一次**: 网格页停在后台时, 滑卡页可能刚写失败,
+            // 角标数的是队列实时快照, 而面板画的是 GridState 里那份旧快照 —— 不刷新会出现
+            // "角标说待重试 1、面板说 0 项"这种自相矛盾。
+            onOpenPending = {
+                vm.cancelAbandon()
+                scope.launch {
+                    vm.refreshPending()
+                    pendingOpen = true
+                }
+            },
                 onClose = { cullQueue = null },
                 onReloadFolder = { scope.launch { vm.loadAll() } },
             )
@@ -297,19 +330,25 @@ fun GridScreen(
 
         // 待重试面板: **最上面一层**(它盖住网格、查看器、滑卡页与移动流程)。放在最后画, 顺序就是层级。
         if (pendingOpen) {
-            PendingSheet(
-                panel = pendingPanel(state, vm, scope) {
-                    // 关面板 = 解除武装(**下一次点「放弃本地改动」必须重新确认一次**)+ 真的收起来
-                    vm.cancelAbandon()
-                    pendingOpen = false
-                },
-            )
+            val panel = pendingPanel(state, vm, scope) {
+                // 关面板 = 解除武装(**下一次点「放弃本地改动」必须重新确认一次**)+ 真的收起来
+                vm.cancelAbandon()
+                pendingOpen = false
+            }
+            // 滑卡/查看器是强制深色画布: 从它们上面打开的面板必须跟着深色,
+            // 否则同一屏会同时出现黑底与白底两套主题。
+            if (viewerIndex != null || cullQueue != null) {
+                ImageFilterTheme(darkTheme = true) {
+                    PendingSheet(panel = panel)
+                }
+            } else {
+                PendingSheet(panel = panel)
+            }
         }
     }
 }
 
 /** 网格本体(顶栏 + 筛选栏 + 错误卡 + 格子)。查看器是它的**上层**, 见 [GridScreen]。 */
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun GridContent(
     vm: GridViewModel,
@@ -333,199 +372,193 @@ private fun GridContent(
     onCancelSelecting: () -> Unit,
 ) {
     val p = LocalPhotoPalette.current
-    Scaffold(
-        topBar = {
-            TopAppBar(
-                title = {
-                    Column {
-                        Text(
-                            folder.name.ifBlank { folder.path },
-                            style = MaterialTheme.typography.titleMedium,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                        // 张数来自 scan 的返回长度 —— 失败且一张都没有时它说的是"没读到", 不是"0 张"
-                        Text(
-                            state.countLabel,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = p.textMuted,
+    // 同步结论只在顶栏停 3 秒, 然后回到张数 —— 不留下一条常驻的小字。
+    // 同步**进行中**不清: 「等待电脑确认…」必须一直可见。
+    LaunchedEffect(state.syncNote, state.syncing) {
+        if (state.syncNote != null && !state.syncing) {
+            delay(3_000)
+            vm.clearSyncNote()
+        }
+    }
+    Column(modifier = Modifier.fillMaxSize().background(p.s0)) {
+        AppInlineTopBar(
+            // 多选模式下标题**就是**已选张数: 比在窄顶栏里再塞一行"已选 N 张"清楚。
+            title = if (move.selecting) move.selectionLabel else folder.name.ifBlank { folder.path },
+            subtitle = when {
+                move.selecting -> "点照片加入或移出这一批"
+                state.syncing -> state.syncNote ?: "正在同步…"
+                state.syncNote != null -> state.syncNote
+                else -> state.countLabel
+            },
+            container = p.s0,
+            navigation = {
+                AppIconButton(
+                    icon = AppIcons.Back,
+                    contentDescription = "返回目录",
+                    onClick = onBack,
+                )
+            },
+            actions = {
+                if (move.selecting) {
+                    AppTextButton(
+                        text = "移动到…",
+                        onClick = onStartMove,
+                        enabled = move.canStartMove,
+                    )
+                    AppIconButton(
+                        icon = AppIcons.Close,
+                        contentDescription = "退出多选",
+                        onClick = onCancelSelecting,
+                    )
+                } else {
+                    // 顶栏那**一个**角标(规格 §8.1): 显示什么与按下去做什么由 [topBarBadge]
+                    // 一处决定 —— 待重试队列非空时它就是队列项数(按下去打开重试面板),
+                    // 队列为空的窗口里退回"未同步 N 张·重试"(按下去把这一页未同步的推一遍)。
+                    // 两句话**数的是同一个集合**, 所以不会出现"角标说 3、按下去重试 2 张"。
+                    val badge = state.topBadge
+                    if (badge != null) {
+                        PendingBadgeButton(
+                            badge = badge,
+                            enabled = !state.pending.busy,
+                            onOpenPanel = onOpenPending,
+                            onRetryUnsynced = { scope.launch { vm.retryUnsynced() } },
                         )
                     }
-                },
-                navigationIcon = {
-                    TextButton(
-                        onClick = onBack,
-                        colors = ButtonDefaults.textButtonColors(contentColor = p.textSecondary),
-                    ) { Text("返回") }
-                },
-                actions = {
-                    // **多选模式**下顶栏换成移动那几个动作(已选 N 张 / 移动到… / 取消) —— 筛片与
-                    // 刷新在这个时候按下去只会让选中的那一批悄悄变样(筛片会改决策, 刷新会换列表)。
-                    if (move.selecting) {
-                        MoveSelectionActions(
-                            state = move,
-                            onStartMove = onStartMove,
-                            onCancel = onCancelSelecting,
-                        )
-                    } else {
-                        // 顶栏那**一个**角标(规格 §8.1): 显示什么与按下去做什么由 [topBarBadge]
-                        // 一处决定 —— 待重试队列非空时它就是队列项数(按下去打开重试面板),
-                        // 队列为空的窗口里退回"未同步 N 张·重试"(按下去把这一页未同步的推一遍)。
-                        // 两句话**数的是同一个集合**, 所以不会出现"角标说 3、按下去重试 2 张"。
-                        val badge = state.topBadge
-                        if (badge != null) {
-                            PendingBadgeButton(
-                                badge = badge,
-                                enabled = !state.pending.busy,
-                                onOpenPanel = onOpenPending,
-                                onRetryUnsynced = { scope.launch { vm.retryUnsynced() } },
-                            )
-                        }
-                        // 「筛片」不再挂在顶栏：它是这一页唯一的主动作，底部悬浮按钮更容易单手够到。
-                        TextButton(
-                            onClick = { scope.launch { vm.loadAll() } },
-                            colors = ButtonDefaults.textButtonColors(contentColor = p.textSecondary),
-                        ) { Text("刷新") }
-                    }
-                },
-                colors = TopAppBarDefaults.topAppBarColors(containerColor = p.s1),
-                modifier = Modifier.drawWithContent {
-                    drawContent()
-                    // 顶栏底部发丝线：不用实心灰边，也不依赖 elevation 的 tint。
-                    drawLine(
-                        color = p.hairline,
-                        start = Offset(0f, size.height),
-                        end = Offset(size.width, size.height),
-                        strokeWidth = 1f,
+                    // 手动同步: 推手机上的改动 + 拉电脑上的照片/星级。
+                    // 它替代了原来那个只有图标的「刷新」—— 用户找不到同步入口, 主要就是那里没有字。
+                    AppTextButton(
+                        text = if (state.syncing) "同步中…" else "同步",
+                        onClick = { scope.launch { vm.syncNow() } },
+                        enabled = !state.syncing,
+                        color = p.textSecondary,
                     )
-                },
+                }
+            },
+            showDivider = true,
+        )
+
+        // 路径不再常驻：顶栏已经有目录名 + 张数，路径只在目录页/抽屉里需要。
+        // 少这一行，照片网格能多出一行可见高度。
+        // 筛选栏(星级 / 色标 / 未同步, 规格 §8.1)。三个维度上的张数由 FilterCounts 给 ——
+        // 读不到电脑上原有的值时它说"未统计", 不拿 0 顶上。
+        FilterBar(
+            f = state.filters,
+            counts = state.counts,
+            shown = state.visibleItems.size,
+            total = state.items.size,
+            onChange = { vm.setFilters(it) },
+        )
+
+        val error = state.error
+        if (error != null) {
+            // 失败**就画在当前内容之上**, 而且不清空已经拿到的格子(下面照画)
+            AppErrorCard(
+                head = "这个文件夹的照片没读出来",
+                text = error.text(),
+                onRetry = { scope.launch { vm.loadAll() } },
+                modifier = Modifier.padding(horizontal = AppSpacing.page, vertical = AppSpacing.sm),
             )
-        },
-    ) { padding ->
-        Column(modifier = Modifier.padding(padding).fillMaxSize()) {
-            // 路径不再常驻：顶栏已经有目录名 + 张数，路径只在目录页/抽屉里需要。
-            // 少这一行，照片网格能多出一行可见高度。
-            // 筛选栏(星级 / 色标 / 未同步, 规格 §8.1)。三个维度上的张数由 FilterCounts 给 ——
-            // 读不到电脑上原有的值时它说"未统计", 不拿 0 顶上。
-            FilterBar(
-                f = state.filters,
-                counts = state.counts,
-                shown = state.visibleItems.size,
-                total = state.items.size,
-                onChange = { vm.setFilters(it) },
+        }
+
+        // 决策读取失败: **单独一张卡**, 与上面的文件列表失败分开 —— 照片照样能看,
+        // 受影响的是筛选栏上的张数与角标(所以正文必须说清这件事, 见 ReadMessages)。
+        val readFailure = state.readFailure
+        if (readFailure != null) {
+            ReadFailureCard(
+                head = state.readFailureHead.orEmpty(),
+                text = state.readFailureText.orEmpty(),
+                action = state.readFailureAction,
+                actionLabel = state.readFailureActionLabel.orEmpty(),
+                onRetry = { scope.launch { vm.loadDecisions() } },
+                // 「回目录页重新配对」在网格里能做的那一步就是返回(重新配对在目录页的「设置」)
+                onReconnect = onBack,
+                onDismiss = { vm.clearReadFailure() },
+                modifier = Modifier.padding(horizontal = AppSpacing.page, vertical = AppSpacing.xs),
             )
-            Spacer(Modifier.height(4.dp))
+        }
 
-            val error = state.error
-            if (error != null) {
-                // 失败**就画在当前内容之上**, 而且不清空已经拿到的格子(下面照画)
-                Box(modifier = Modifier.padding(horizontal = 12.dp)) {
-                    ErrorCard(
-                        head = "这个文件夹的照片没读出来",
-                        text = error.text(),
-                        onRetry = { scope.launch { vm.loadAll() } },
-                    )
-                }
-                Spacer(Modifier.height(8.dp))
+        // 重新推送"未同步"那一批的**批次级**结论(半成功必须说出来, 纪律②)
+        val batchNote = state.lastBatchNote
+        if (batchNote != null) {
+            HintCard(
+                body = batchNote,
+                modifier = Modifier.padding(horizontal = AppSpacing.page, vertical = AppSpacing.xs),
+            )
+        }
+
+        // **待重试记录读不回来**: 必须在页面上说出来。角标这时候是 0(读不到项), 而 0 会让
+        // 用户以为"没有待重试的改动" —— 那是一句在数据可能已经丢了的时候最坏的安静。
+        val pendingCorrupt = state.pendingCorruptedNotice
+        if (pendingCorrupt != null) {
+            HintCard(
+                body = pendingCorrupt,
+                modifier = Modifier.padding(horizontal = AppSpacing.page, vertical = AppSpacing.xs),
+            )
+        }
+
+        // 全 RAW 的说明(不是错误: 有照片, 只是缩略图那条链路不一样)
+        val notice = state.notice
+        if (notice != null) {
+            HintCard(
+                body = notice,
+                modifier = Modifier.padding(horizontal = AppSpacing.page, vertical = AppSpacing.xs),
+                collapsible = true,
+            )
+        }
+
+        when {
+            // 顺序要紧: 有错误时**不画**"正在读…"(否则用户以为还在转)
+            state.loading && !state.hasPhotos -> Box(
+                modifier = Modifier.fillMaxWidth().weight(1f).padding(AppSpacing.page),
+                contentAlignment = Alignment.TopStart,
+            ) {
+                AppLoadingRow("正在读这个文件夹里的照片…")
             }
 
-            // 决策读取失败: **单独一张卡**, 与上面的文件列表失败分开 —— 照片照样能看,
-            // 受影响的是筛选栏上的张数与角标(所以正文必须说清这件事, 见 ReadMessages)。
-            val readFailure = state.readFailure
-            if (readFailure != null) {
-                Box(modifier = Modifier.padding(horizontal = 12.dp)) {
-                    ReadFailureCard(
-                        head = state.readFailureHead.orEmpty(),
-                        text = state.readFailureText.orEmpty(),
-                        action = state.readFailureAction,
-                        actionLabel = state.readFailureActionLabel.orEmpty(),
-                        onRetry = { scope.launch { vm.loadDecisions() } },
-                        // 「回目录页重新配对」在网格里能做的那一步就是返回(重新配对在目录页的「设置」)
-                        onReconnect = onBack,
-                        onDismiss = { vm.clearReadFailure() },
-                    )
-                }
-                Spacer(Modifier.height(8.dp))
-            }
-
-            // 重新推送"未同步"那一批的**批次级**结论(半成功必须说出来, 纪律②)
-            val batchNote = state.lastBatchNote
-            if (batchNote != null) {
-                Box(modifier = Modifier.padding(horizontal = 12.dp)) {
-                    HintCard(body = batchNote)
-                }
-                Spacer(Modifier.height(8.dp))
-            }
-
-            // **待重试记录读不回来**: 必须在页面上说出来。角标这时候是 0(读不到项), 而 0 会让
-            // 用户以为"没有待重试的改动" —— 那是一句在数据可能已经丢了的时候最坏的安静。
-            val pendingCorrupt = state.pendingCorruptedNotice
-            if (pendingCorrupt != null) {
-                Box(modifier = Modifier.padding(horizontal = 12.dp)) {
-                    HintCard(body = pendingCorrupt)
-                }
-                Spacer(Modifier.height(8.dp))
-            }
-
-            // 全 RAW 的说明(不是错误: 有照片, 只是缩略图那条链路不一样)
-            val notice = state.notice
-            if (notice != null) {
-                HintCard(
-                    body = notice,
-                    modifier = Modifier.padding(horizontal = 12.dp),
-                    collapsible = true,
+            // 空目录改成一个空态: 图标 + 一句结论 + 原文（可展开）, 不再是一张顶到屏幕顶部的长文卡。
+            state.isEmpty -> Box(
+                modifier = Modifier.fillMaxWidth().weight(1f),
+                contentAlignment = Alignment.Center,
+            ) {
+                AppEmptyState(
+                    icon = AppIcons.Image,
+                    title = "这个文件夹里没有照片",
+                    body = state.emptyMessage ?: GRID_EMPTY,
                 )
-                Spacer(Modifier.height(8.dp))
             }
 
-            when {
-                // 顺序要紧: 有错误时**不画**"正在读…"(否则用户以为还在转)
-                state.loading && !state.hasPhotos -> Box(modifier = Modifier.padding(12.dp)) {
-                    LoadingRow("正在读这个文件夹里的照片…")
-                }
-
-                // 空目录不要用一张顶到屏幕顶部的长文卡：收成一行 + 「详情」，并居中。
-                state.isEmpty -> Box(
-                    modifier = Modifier.fillMaxWidth().weight(1f),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    HintCard(
-                        body = state.emptyMessage ?: GRID_EMPTY,
-                        collapsible = true,
-                        modifier = Modifier.padding(horizontal = 24.dp),
-                    )
-                }
-
-                // **有照片但全被筛掉**是另一句话: 说成"没有照片"会让用户以为照片丢了
-                state.allFilteredOut -> Box(
-                    modifier = Modifier.fillMaxWidth().weight(1f),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    HintCard(
-                        body = state.filteredOutNotice ?: filteredOutMessage(state.items.size),
-                        collapsible = true,
-                        modifier = Modifier.padding(horizontal = 24.dp),
-                    )
-                }
-
-                state.hasVisiblePhotos -> PhotoGrid(
-                    items = state.visibleItems,
-                    decisions = state.decisions,
-                    // 星级"知不知道"的判据只有一处([GridState.ratingKnown]) —— 格子与读屏描述
-                    // 都走它, 免得"读失败"在一个地方被画成"没评过"、在另一个地方被说成"未知"。
-                    ratingKnown = state::ratingKnown,
-                    imageLoader = imageLoader,
-                    onCellClick = onOpenViewer,
-                    // 多选模式: 点了是"选中/取消"而不是打开查看器(分派就在 PhotoGrid 里一处)
-                    selecting = move.selecting,
-                    selected = move.selected,
-                    onCellSelect = onCellSelect,
-                    onCellLongPress = onCellEnsureSelected,
+            // **有照片但全被筛掉**是另一句话: 说成"没有照片"会让用户以为照片丢了。
+            // 清除筛选放在空态里, 因为这是此刻唯一有用的动作。
+            state.allFilteredOut -> Box(
+                modifier = Modifier.fillMaxWidth().weight(1f),
+                contentAlignment = Alignment.Center,
+            ) {
+                AppEmptyState(
+                    icon = AppIcons.Image,
+                    title = "照片都被筛掉了",
+                    body = state.filteredOutNotice ?: filteredOutMessage(state.items.size),
+                    actionLabel = "清除筛选",
+                    onAction = { vm.setFilters(Filters()) },
                 )
-
-                // 失败且一张都没有: 上面那张错误卡就是全部内容, 这里不再画第二句话
-                else -> Unit
             }
+
+            state.hasVisiblePhotos -> PhotoGrid(
+                items = state.visibleItems,
+                decisions = state.decisions,
+                // 星级"知不知道"的判据只有一处([GridState.ratingKnown]) —— 格子与读屏描述
+                // 都走它, 免得"读失败"在一个地方被画成"没评过"、在另一个地方被说成"未知"。
+                ratingKnown = state::ratingKnown,
+                imageLoader = imageLoader,
+                onCellClick = onOpenViewer,
+                // 多选模式: 点了是"选中/取消"而不是打开查看器(分派就在 PhotoGrid 里一处)
+                selecting = move.selecting,
+                selected = move.selected,
+                onCellSelect = onCellSelect,
+                onCellLongPress = onCellEnsureSelected,
+            )
+
+            // 失败且一张都没有: 上面那张错误卡就是全部内容, 这里不再画第二句话
+            else -> Unit
         }
     }
 }
@@ -567,8 +600,8 @@ private fun ColumnScope.PhotoGrid(
         columns = GridCells.Adaptive(minSize = 112.dp),
         // weight(1f): 网格吃掉剩下的高度。少了它, 网格会按内容撑出屏幕(滚不动)
         modifier = Modifier.fillMaxWidth().weight(1f),
-        // 底部多留 76dp：最后一行格子不会被悬浮的「开始筛片」盖住。
-        contentPadding = PaddingValues(start = 4.dp, top = 4.dp, end = 4.dp, bottom = 76.dp),
+        // 底部多留 96dp：最后一行格子不会被悬浮的「开始筛片」盖住（56dp 按钮 + 12dp 边距 + 手势条）。
+        contentPadding = PaddingValues(start = 4.dp, top = 4.dp, end = 4.dp, bottom = 96.dp),
         verticalArrangement = Arrangement.spacedBy(4.dp),
         horizontalArrangement = Arrangement.spacedBy(4.dp),
     ) {

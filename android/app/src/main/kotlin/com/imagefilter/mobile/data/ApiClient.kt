@@ -112,6 +112,8 @@ class ApiClient(
         const val PREVIEW = "api/v1/preview"
         const val DECISIONS = "api/v1/decisions"
         const val MOVE = "api/v1/move"
+        const val SYNC_REQUEST = "api/v1/sync/request"
+        const val SYNC_STATUS = "api/v1/sync/status"
     }
 
     private fun url(endpoint: String, query: List<Pair<String, String>> = emptyList()): HttpUrl {
@@ -187,6 +189,23 @@ class ApiClient(
         val request = Request.Builder().url(url(Endpoint.DECISIONS)).put(body).build()
         return Json.decodeFromString(executeForJson(request))
     }
+
+    /**
+     * 手机「同步」的确认门: 先请求, 电脑弹窗允许/拒绝, 再由调用方轮询 [syncStatus]。
+     *
+     * 这一步**不发任何决策写入**；真正推送仍然必须等 [syncStatus] 回 `approved`。
+     * 202 Accepted 是正常成功响应（队列已排上），`executeForJson` 只认 2xx。
+     */
+    suspend fun requestSync(deviceName: String, pendingItems: Int): SyncChallengeDto {
+        val body = Json.encodeToString(SyncRequestDto(deviceName, pendingItems))
+            .toRequestBody(jsonMediaType)
+        val request = Request.Builder().url(url(Endpoint.SYNC_REQUEST)).post(body).build()
+        return Json.decodeFromString(executeForJson(request))
+    }
+
+    /** 轮询电脑对同步请求的结论；`status` 四态闭集见 [SyncStatusDto]。 */
+    suspend fun syncStatus(requestId: String): SyncStatusDto =
+        Json.decodeFromString(getJson(Endpoint.SYNC_STATUS, listOf("requestId" to requestId)))
 
     /**
      * 移动照片 + 同名边车。返回逐项结果 —— **半成功态必须显式**, 不许被压成一个布尔值。

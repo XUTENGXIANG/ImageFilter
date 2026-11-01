@@ -15,22 +15,32 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.material3.Button
-import androidx.compose.material3.Card
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.imagefilter.mobile.data.BrowseMessages
 import com.imagefilter.mobile.data.MoveMessages
 import com.imagefilter.mobile.data.MoveStatus
+import com.imagefilter.mobile.ui.components.AppButton
+import com.imagefilter.mobile.ui.components.AppButtonStyle
+import com.imagefilter.mobile.ui.components.AppCard
+import com.imagefilter.mobile.ui.components.AppDivider
+import com.imagefilter.mobile.ui.components.AppErrorCard
+import com.imagefilter.mobile.ui.components.AppHint
+import com.imagefilter.mobile.ui.components.AppIconButton
+import com.imagefilter.mobile.ui.components.AppIcons
+import com.imagefilter.mobile.ui.components.AppInlineTopBar
+import com.imagefilter.mobile.ui.components.AppLoadingRow
+import com.imagefilter.mobile.ui.components.AppPathText
+import com.imagefilter.mobile.ui.components.AppTextButton
+import com.imagefilter.mobile.ui.displayPath
+import com.imagefilter.mobile.ui.theme.AppSpacing
+import com.imagefilter.mobile.ui.theme.LocalPhotoPalette
 
 /**
  * **移动分类**(M3′ Task 4)的界面: 挑目标文件夹 → 确认 → 逐项结果与重试。
@@ -48,9 +58,8 @@ import com.imagefilter.mobile.data.MoveStatus
  *   · **重试只重发 `pendingSidecars`**(按钮的字与动作都由 [MoveRow.retryRequest] 决定 ——
  *     半成功项的照片已经搬走了, 它的 src 永远不会出现在任何请求里)。
  *
- * ⚠️ **本文件的观感没有真机验证**(本轮没有设备, 也不为此引 Compose UI 测试依赖):
- * 覆盖层的高度、长文案换行、深色主题下的对比只能真机看(报告里的 UNVERIFIED 清单)。
- * 但它画的每一个字都来自有 JVM 用例钉住的纯函数。
+ * 苹果风落点: 整屏覆盖层, 顶栏是 48dp 图标 + 一行标题; 选择器沿用浏览页的树行;
+ * 确认句是一张 18dp 卡片; 结果逐项卡片展示, 半成功用错误色标题。
  */
 
 /**
@@ -90,48 +99,56 @@ class MovePanel(
 @Composable
 fun MoveSheet(panel: MovePanel) {
     val state = panel.state
+    val p = LocalPhotoPalette.current
     // 系统返回键: 确认那一步退回选择器, 其余一律退出移动(与界面上那两个按钮同一套语义)
     BackHandler {
         if (state.stage == MoveStage.Confirming) panel.onBackToPicker() else panel.onClose()
     }
 
-    Surface(modifier = Modifier.fillMaxSize()) {
+    Surface(modifier = Modifier.fillMaxSize(), color = p.s0) {
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                // ⚠️ 顶栏那一行「关闭」与底部内容同样要避开系统栏: 这是整屏覆盖层, 没有
-                // Scaffold 的 `windowInsets` 默认值(见 [topBarInsets] 的 KDoc)。
-                .topBarInsets()
-                .bottomBarInsets()
-                .padding(16.dp),
+                .bottomBarInsets(),
         ) {
-            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(titleOf(state.stage), style = MaterialTheme.typography.titleMedium)
-                    Text(
-                        state.selectionLabel,
-                        style = MaterialTheme.typography.bodySmall,
+            AppInlineTopBar(
+                title = titleOf(state.stage),
+                subtitle = state.selectionLabel,
+                container = p.s0,
+                navigation = {
+                    AppIconButton(
+                        icon = AppIcons.Close,
+                        contentDescription = "关闭",
+                        onClick = panel.onClose,
                     )
+                },
+                showDivider = true,
+            )
+
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f)
+                    .padding(horizontal = AppSpacing.page, vertical = AppSpacing.sm),
+            ) {
+                // 批次级失败(整批 4xx/5xx / 断网): 单独一档, 与逐项结果分得清
+                val error = state.error
+                if (error != null) {
+                    AppErrorCard(
+                        head = "电脑没有接受这次移动",
+                        text = error,
+                        onRetry = panel.onConfirm,
+                    )
+                    Spacer(Modifier.height(AppSpacing.sm))
                 }
-                TextButton(onClick = panel.onClose) { Text("关闭") }
-            }
-            Spacer(Modifier.height(8.dp))
 
-            // 批次级失败(整批 4xx/5xx / 断网): 单独一档, 与逐项结果分得清
-            val error = state.error
-            if (error != null) {
-                ErrorCard(head = "电脑没有接受这次移动", text = error, onRetry = panel.onConfirm)
-                Spacer(Modifier.height(8.dp))
-            }
-
-            when (state.stage) {
-                MoveStage.Picking -> FolderPicker(panel)
-                MoveStage.Confirming -> ConfirmMove(panel)
-                MoveStage.Running -> LoadingRow("正在让电脑搬这些照片（先照片、后边车）…")
-                MoveStage.Result -> MoveResult(panel)
-                MoveStage.Idle -> HintCard(
-                    body = "还没开始：先回网格点几张照片，再按「移动到…」。",
-                )
+                when (state.stage) {
+                    MoveStage.Picking -> FolderPicker(panel)
+                    MoveStage.Confirming -> ConfirmMove(panel)
+                    MoveStage.Running -> AppLoadingRow("正在让电脑搬这些照片（先照片、后边车）…")
+                    MoveStage.Result -> MoveResult(panel)
+                    MoveStage.Idle -> AppHint("还没开始：先回网格点几张照片，再按「移动到…」。")
+                }
             }
         }
     }
@@ -139,7 +156,7 @@ fun MoveSheet(panel: MovePanel) {
 
 private fun titleOf(stage: MoveStage): String = when (stage) {
     MoveStage.Idle -> "移动照片"
-    MoveStage.Picking -> "选一个已有的目标文件夹"
+    MoveStage.Picking -> "选择目标文件夹"
     MoveStage.Confirming -> "确认移动"
     MoveStage.Running -> "正在移动"
     MoveStage.Result -> "移动结果"
@@ -151,39 +168,46 @@ private fun ColumnScope.FolderPicker(panel: MovePanel) {
     val picker = panel.picker
 
     // 这条限制**常驻**: 服务端没有 Mkdir, 手机端就是不能新建文件夹。
-    HintCard(body = picker.limitation)
-    Spacer(Modifier.height(4.dp))
-    Text(MoveMessages.NO_DELETE, style = MaterialTheme.typography.bodySmall)
-    Spacer(Modifier.height(8.dp))
+    // 默认收成一行 + 「详情」, 把高度留给目录树。
+    HintCard(body = picker.limitation, collapsible = true)
+    Spacer(Modifier.height(AppSpacing.xs))
 
     val rootsError = picker.rootsError
     when {
         // 已有根时刷新失败只提示, **不清空**眼前这棵树(与浏览页同一条)
         rootsError != null && !picker.hasRoots -> {
-            ErrorCard(head = "共享根没读出来", text = rootsError.text(), onRetry = panel.onRefreshRoots)
+            AppErrorCard(
+                head = "共享根没读出来",
+                text = rootsError.text(),
+                onRetry = panel.onRefreshRoots,
+            )
             return
         }
 
         picker.rootsLoading && !picker.hasRoots -> {
-            LoadingRow("正在读电脑上的共享根…")
+            AppLoadingRow("正在读电脑上的共享根…")
             return
         }
 
         !picker.hasRoots -> {
-            HintCard(body = BrowseMessages.NO_SHARES)
-            Spacer(Modifier.height(12.dp))
-            Button(onClick = panel.onRefreshRoots) { Text("刷新共享根") }
+            AppHint(BrowseMessages.NO_SHARES)
+            Spacer(Modifier.height(AppSpacing.md))
+            AppButton(
+                text = "刷新共享根",
+                onClick = panel.onRefreshRoots,
+                style = AppButtonStyle.Secondary,
+            )
             return
         }
     }
 
     if (rootsError != null) {
-        ErrorCard(
+        AppErrorCard(
             head = "共享根没刷新出来（下面这份是上次读到的）",
             text = rootsError.text(),
             onRetry = panel.onRefreshRoots,
         )
-        Spacer(Modifier.height(8.dp))
+        Spacer(Modifier.height(AppSpacing.sm))
     }
 
     // weight: 树吃掉剩下的高度(少了它, LazyColumn 会按内容撑出屏幕)
@@ -198,31 +222,32 @@ private fun ColumnScope.FolderPicker(panel: MovePanel) {
                 onClick = { panel.onPickRow(row.entry.path) },
                 onRetry = { panel.onPickRetry(row.entry.path) },
             )
+            AppDivider(modifier = Modifier.padding(start = 54.dp))
         }
     }
 
-    HorizontalDivider()
-    Spacer(Modifier.height(8.dp))
+    AppDivider()
+    Spacer(Modifier.height(AppSpacing.sm))
     Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
         val pickPath = picker.pickPath
         Text(
-            if (pickPath == null) "点上面任意一行选目标" else "目标：${picker.pickName}",
+            text = if (pickPath == null) "点上面任意一行选目标" else "目标：${picker.pickName}",
             style = MaterialTheme.typography.bodyMedium,
+            color = LocalPhotoPalette.current.textSecondary,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
             modifier = Modifier.weight(1f),
         )
-        Button(onClick = panel.onPickThisFolder, enabled = picker.canPick) { Text("移到这里") }
+        Spacer(Modifier.size(AppSpacing.sm))
+        AppButton(
+            text = "移到这里",
+            onClick = panel.onPickThisFolder,
+            enabled = picker.canPick,
+        )
     }
     val pickPath = picker.pickPath
     if (pickPath != null) {
-        Text(
-            pickPath,
-            style = MaterialTheme.typography.bodySmall,
-            fontFamily = FontFamily.Monospace,
-            maxLines = 2,
-            overflow = TextOverflow.Ellipsis,
-        )
+        AppPathText(path = pickPath, maxLines = 2, modifier = Modifier.padding(top = 4.dp))
     }
 }
 
@@ -230,15 +255,32 @@ private fun ColumnScope.FolderPicker(panel: MovePanel) {
 @Composable
 private fun ColumnScope.ConfirmMove(panel: MovePanel) {
     val state = panel.state
-    Card(modifier = Modifier.fillMaxWidth()) {
-        Column(modifier = Modifier.padding(16.dp)) {
-            Text(state.confirmText.orEmpty(), style = MaterialTheme.typography.bodyMedium)
-        }
+    AppCard(padding = AppSpacing.xl) {
+        Text(
+            // 文案表里用 ** 标强调; Compose 不渲染 Markdown, 显示前去掉星号(不改原文)。
+            text = state.confirmText.orEmpty().replace("**", ""),
+            style = MaterialTheme.typography.bodyMedium,
+            color = LocalPhotoPalette.current.textPrimary,
+        )
     }
-    Spacer(Modifier.height(12.dp))
-    Row(horizontalArrangement = Arrangement.End, modifier = Modifier.fillMaxWidth()) {
-        TextButton(onClick = panel.onBackToPicker, enabled = !state.busy) { Text("换一个文件夹") }
-        Button(onClick = panel.onConfirm, enabled = !state.busy) { Text("确认移动") }
+    Spacer(Modifier.height(AppSpacing.md))
+    Row(
+        horizontalArrangement = Arrangement.End,
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        AppTextButton(
+            text = "换一个文件夹",
+            onClick = panel.onBackToPicker,
+            enabled = !state.busy,
+            color = LocalPhotoPalette.current.textSecondary,
+        )
+        Spacer(Modifier.size(AppSpacing.sm))
+        AppButton(
+            text = "确认移动",
+            onClick = panel.onConfirm,
+            enabled = !state.busy,
+        )
     }
 }
 
@@ -249,88 +291,90 @@ private fun ColumnScope.MoveResult(panel: MovePanel) {
     val note = state.note
     if (note != null) {
         HintCard(body = note)
-        Spacer(Modifier.height(8.dp))
+        Spacer(Modifier.height(AppSpacing.sm))
     }
 
     // 只有真的还有待补边车时才画「重试全部」—— 一个永远摆着的按钮会让人以为还有事没做完
     if (state.retryableCount > 1) {
         Row(horizontalArrangement = Arrangement.End, modifier = Modifier.fillMaxWidth()) {
-            TextButton(onClick = panel.onRetryAll, enabled = !state.retryBusy) {
-                Text("重试全部仍然脱钩的（一次一项）")
-            }
+            AppTextButton(
+                text = "重试全部仍然脱钩的（一次一项）",
+                onClick = panel.onRetryAll,
+                enabled = !state.retryBusy,
+            )
         }
     }
 
     LazyColumn(modifier = Modifier.fillMaxWidth().weight(1f)) {
         items(state.rows, key = { it.src }) { row ->
             MoveResultRow(row = row, busy = state.retryBusy, onRetry = { panel.onRetryOne(row.src) })
+            Spacer(Modifier.height(AppSpacing.sm))
         }
     }
 
-    Spacer(Modifier.height(8.dp))
+    Spacer(Modifier.height(AppSpacing.sm))
     Row(horizontalArrangement = Arrangement.End, modifier = Modifier.fillMaxWidth()) {
-        TextButton(onClick = panel.onClose) { Text("完成") }
+        AppTextButton(text = "完成", onClick = panel.onClose)
     }
 }
 
 /** 结果里的一行: 状态 + 现在在哪 + 重试边车。 */
 @Composable
 private fun MoveResultRow(row: MoveRow, busy: Boolean, onRetry: () -> Unit) {
+    val p = LocalPhotoPalette.current
     val half = row.displayStatus == MoveStatus.HALF_SUCCESS
-    Column(modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
+    AppCard(padding = AppSpacing.lg) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(
-                row.head,
+                text = row.head,
                 style = MaterialTheme.typography.titleSmall,
-                color = if (half) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface,
+                color = if (half) p.error else p.textPrimary,
                 modifier = Modifier.weight(1f),
             )
-            Text(row.fileName, style = MaterialTheme.typography.labelLarge)
-        }
-        Spacer(Modifier.size(2.dp))
-        Text(row.src, style = MaterialTheme.typography.bodySmall, fontFamily = FontFamily.Monospace, maxLines = 2, overflow = TextOverflow.Ellipsis)
-        val dest = row.dest
-        if (dest != null) {
+            Spacer(Modifier.size(AppSpacing.sm))
             Text(
-                "→ $dest",
-                style = MaterialTheme.typography.bodySmall,
-                fontFamily = FontFamily.Monospace,
-                maxLines = 2,
+                text = row.fileName,
+                style = MaterialTheme.typography.labelMedium,
+                color = p.textMuted,
+                maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
         }
         Spacer(Modifier.size(4.dp))
-        Text(row.text, style = MaterialTheme.typography.bodySmall)
+        AppPathText(path = row.src, maxLines = 2)
+        val dest = row.dest
+        if (dest != null) {
+            Text(
+                text = "→ " + displayPath(dest),
+                style = MaterialTheme.typography.bodySmall,
+                color = p.textMuted,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        Spacer(Modifier.size(6.dp))
+        Text(
+            text = row.text.replace("**", ""),
+            style = MaterialTheme.typography.bodySmall,
+            color = p.textSecondary,
+        )
         val retryNote = row.retryNote
         if (retryNote != null) {
             Spacer(Modifier.size(2.dp))
-            Text(retryNote, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+            Text(
+                text = retryNote.replace("**", ""),
+                style = MaterialTheme.typography.bodySmall,
+                color = p.error,
+            )
         }
         if (row.canRetry) {
             Row(horizontalArrangement = Arrangement.End, modifier = Modifier.fillMaxWidth()) {
-                TextButton(onClick = onRetry, enabled = !busy) { Text("重试边车") }
+                AppTextButton(
+                    text = "重试边车",
+                    onClick = onRetry,
+                    enabled = !busy,
+                )
             }
         }
-        HorizontalDivider()
-    }
-}
-
-/**
- * 顶栏在多选模式下的那几个动作。
- *
- * 与 [PendingBadgeButton] 同一条纪律: **显示什么 = 按下去做什么**(数量与动作都在这里一处决定),
- * 免得出现"角标说 3、按下去只移 2 张"这种分裂。
- */
-@Composable
-fun MoveSelectionActions(
-    state: MoveState,
-    onStartMove: () -> Unit,
-    onCancel: () -> Unit,
-) {
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        Text(state.selectionLabel, style = MaterialTheme.typography.labelLarge)
-        Spacer(Modifier.size(4.dp))
-        TextButton(onClick = onStartMove, enabled = state.canStartMove) { Text("移动到…") }
-        TextButton(onClick = onCancel) { Text("取消") }
     }
 }
