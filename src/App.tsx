@@ -13,6 +13,7 @@ import { useLocalStorageBoolean } from "./hooks/use-local-storage-setting";
 import { TitleBar } from "./components/title-bar";
 import { MacPermissionGuide } from "./components/macos-permission-guide";
 import { PairingDialogHost } from "./components/pairing-dialog";
+import { SyncDialogHost } from "./components/sync-dialog";
 import { ExifPanel } from "./components/exif-panel";
 import { WelcomeGuide } from "./components/welcome-guide";
 import { ScrollFadeZone } from "./components/scroll-fade-zone";
@@ -1132,6 +1133,10 @@ function App({ osCapabilities }: { osCapabilities: OsCapabilities }) {
           挂在应用根: 无论设置对话框开着哪一页、甚至完全没开, 手机发起的配对请求都要能
           被看到 —— 请求只活 60 秒, 藏在任何面板里都等于错过。 */}
       <PairingDialogHost />
+
+      {/* 手机「同步」确认框（方案 A）：电脑允许后手机才会推拉。
+          与配对弹窗同一条理由挂在应用根：请求只活 60 秒，藏在设置面板里等于错过。 */}
+      <SyncDialogHost />
 
       {/* 轻提示 — 短暂出现、自动消失；失败红色 / 成功 emerald / 普通信息 zinc。
           通过 portal 挂到 body 顶层：对话框 / 菜单 / 面板各建各的 stacking context，

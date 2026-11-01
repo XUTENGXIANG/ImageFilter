@@ -507,4 +507,17 @@ export default {
     unavailable: "Unknown pairing status: {reason}",
   },
 
+  // Sync confirmation gate (option A)
+  sync: {
+    requestTitle: "Sync request from phone",
+    requestBody: "This phone wants to sync ratings and labels. It will only push pending changes and re-read the desktop after you allow it.",
+    device: "Device: {name}",
+    items: "{n} pending item(s)",
+    expiresIn: "This request expires in {seconds}s",
+    expired: "This request has expired",
+    allow: "Allow",
+    deny: "Deny",
+    actionFailed: "Action failed: {reason}",
+  },
+
 };

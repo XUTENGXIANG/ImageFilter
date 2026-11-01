@@ -25,6 +25,7 @@ import {
   lrcErrKey, planLrcImport, readLrcMode, writeLrcMode,
   type LrcNotice, type LrcPhase, type LrcSendMode, type LrcSentInfo,
 } from "./lightroom";
+import { SYNC_APPROVED_EVENT, SYNC_APPROVED_WINDOW_MS } from "./lib/sync";
 
 function entryToNode(entry: FolderEntry): FolderNode {
   return {
@@ -123,6 +124,14 @@ export function useScanner() {
   const xmpInFlightPathsRef = useRef<Set<string>>(new Set());
   // 代次: 切文件夹后旧读盘结果必须整体丢弃
   const xmpGenRef = useRef(0);
+  /**
+   * 方案 A 的"本次同步已批准"窗口。
+   *
+   * 手机的同步请求在电脑上被允许之后，`sync-dialog` 派发一个 DOM 事件；这里在
+   * 2 分钟内放行 `decisions-changed` 的远端合并，**即使** XMP 边车档位是 ask/off。
+   * 这是"用户刚批准过这一次同步"的显式同意，不是把全局档位偷偷改掉。
+   */
+  const syncApprovedUntilRef = useRef(0);
   const xmpSeqRef = useRef(0);
   const xmpFailedRef = useRef<Set<string>>(new Set());
   const xmpNotifiedRef = useRef<Set<string>>(new Set());
@@ -1084,23 +1093,34 @@ export function useScanner() {
   // `listen` 走动态 import: `@tauri-apps/api/event` 只在真实 Tauri 上下文里可用, 而
   // 浏览器探针(vite dev)里 `window.__TAURI_INTERNALS__` 不存在 —— 那里必须安静地不订阅,
   // 绝不能让一次 unhandled rejection 冒到控制台(这条 hook 是桌面端主路径)。
+  // 方案 A: 同步弹窗点「允许」后放行远端合并。监听一个 DOM 事件即可，不需要再开
+  // 一条 Tauri 事件通道 —— 弹窗与 useScanner 都在同一个 WebView 里。
+  useEffect(() => {
+    const onApproved = () => {
+      syncApprovedUntilRef.current = Date.now() + SYNC_APPROVED_WINDOW_MS;
+    };
+    window.addEventListener(SYNC_APPROVED_EVENT, onApproved);
+    return () => window.removeEventListener(SYNC_APPROVED_EVENT, onApproved);
+  }, []);
+
   useEffect(() => {
     let unlisten: (() => void) | undefined;
     let alive = true;
     void (async () => {
       const { listen } = await import("@tauri-apps/api/event");
       const off = await listen<{ paths: string[] }>("decisions-changed", async (e) => {
-        // ① 档位闸门(与 loadFolder 的 `xmpModeRef.current === "on"` 同一条): 事件是
-        // "手机往卡里写了字节", 而 off/ask 未答的语义是"这台电脑不读写边车"。少了这一条,
-        // off 档下也会去读卡并把卡上的值搬进本地 map。
-        if (xmpModeRef.current !== "on") return;
+        // ① 闸门: XMP 档位为 on, **或**电脑刚批准过一次手机同步(方案 A 的显式同意窗口)。
+        // 后者让"手机点同步 → 电脑弹窗允许 → 星级/标签出现在电脑上"成立, 而不要求用户
+        // 先把全局 XMP 档位改成 on。
         const paths = e.payload?.paths ?? [];
         if (paths.length === 0) return;
+        const approvedNow = () => Date.now() < syncApprovedUntilRef.current;
+        if (xmpModeRef.current !== "on" && !approvedNow()) return;
         const remotes = await invoke<DecisionRead[]>("read_decisions", { filePaths: paths });
         if (remotes.length === 0) return;
-        // 读盘是 await 的: 期间用户可能已经把档位切到 off(含探测失败后的自动降级) ——
-        // 那时整体丢弃, 与 loadFolder 的代次纪律同款(下次开文件夹会重新校准)。
-        if (xmpModeRef.current !== "on") return;
+        // 读盘是 await 的: 期间档位可能切到 off(或批准窗口刚好过期) ——
+        // 与 loadFolder 的代次纪律同款, 整体丢弃(下次开文件夹会重新校准)。
+        if (xmpModeRef.current !== "on" && !approvedNow()) return;
         // ② 键空间 + 未落盘保护。`read_decisions` 是**回声**语义(路径原样回传), 所以
         // remotes 的 path 就是事件里那些 `\\?\...`; 直接 merge 会写进一个谁也不会再读到
         // 的新键 —— 手机上打了分、电脑上界面还是旧的(用起来像 bug), 而且 localStorage

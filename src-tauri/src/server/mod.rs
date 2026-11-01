@@ -15,6 +15,7 @@ pub mod network;
 pub mod pairing;
 pub mod paths;
 pub mod routes;
+pub mod sync;
 
 use axum::{
     http::StatusCode,
@@ -38,6 +39,10 @@ use std::sync::{Arc, Mutex as StdMutex, RwLock};
 /// (实测: 保留 `Option<AppHandle>` 字段 → 两个测试 exe 都起不来; 去掉之后正常)。
 /// 类型擦除之后, 只有 `lib.rs` 里那个只在 `run()` 里被引用的闭包知道 Tauri 的存在。
 pub type Notify = Arc<dyn Fn(&[String]) + Send + Sync>;
+
+/// `sync-request` 的发送端 —— 与 [`Notify`] 完全同一条类型擦除纪律：
+/// 测试 exe 里不能出现任何 Tauri 类型。
+pub type SyncNotify = Arc<dyn Fn(sync::PendingSync) + Send + Sync>;
 
 /// 服务运行期状态。
 ///
@@ -81,6 +86,10 @@ pub struct ServerState {
     /// 配对事件的发送端(见 [`pairing::PairingNotify`])。测试里是 `None`, 正式运行时由
     /// `lib.rs` 用 `app.emit` 填上 —— **只有 `run()` 里那个闭包知道 Tauri 存在**。
     pub pair_notify: Option<pairing::PairingNotify>,
+    /// 手机「同步」确认门的状态机（单条待确认请求）。
+    pub sync: Arc<StdMutex<sync::SyncStore>>,
+    /// `sync-request` 的发送端；测试里 `None`，生产由 `lib.rs` 填上。
+    pub sync_notify: Option<SyncNotify>,
 }
 
 impl config::ServerConfig {
@@ -97,6 +106,8 @@ impl config::ServerConfig {
             pairing: Arc::new(StdMutex::new(pairing::PairingStore::with_paired(paired))),
             advertiser: Arc::new(mdns::DisabledAdvertiser),
             pair_notify: None,
+            sync: Arc::new(StdMutex::new(sync::SyncStore::new())),
+            sync_notify: None,
         }
     }
 
@@ -120,10 +131,12 @@ impl config::ServerConfig {
         self,
         notify: Notify,
         pair_notify: pairing::PairingNotify,
+        sync_notify: SyncNotify,
     ) -> ServerState {
         let mut st = self.into_state();
         st.notify = Some(notify);
         st.pair_notify = Some(pair_notify);
+        st.sync_notify = Some(sync_notify);
         st.advertiser = Arc::new(mdns::MdnsAdvertiser::new());
         st
     }

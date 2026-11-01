@@ -15,6 +15,7 @@
 //!      连只读元数据的 `browse`/`scan` 也一样: 白名单是"能不能看"的红线, 不是"能不能改"。
 
 use super::pairing::{PairRequest, PairStatus, PairingEvent};
+use super::sync::{SyncChallenge, SyncError, SyncRequest};
 use super::{auth, media, network, paths, ApiError, ServerState};
 use crate::xmp::{DecisionWrite, WriteSummary};
 use axum::body::Body;
@@ -730,6 +731,63 @@ fn endpoint_routes() -> Router<ServerState> {
         // mDNS 配对(§0.2): 免 Bearer, 但窗口/限流/过期全在状态机里; token 只在批准后出现。
         .route(PAIR_REQUEST_PATH, post(pair_request))
         .route(PAIR_STATUS_PATH, get(pair_status))
+        // 手机「同步」的确认门: 先请求, 桌面端弹窗允许/拒绝, 手机轮询状态后才真正推拉。
+        .route("/api/v1/sync/request", post(sync_request))
+        .route("/api/v1/sync/status", get(sync_status))
+}
+
+/// `GET /api/v1/sync/status` 的查询串。
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SyncStatusQuery {
+    request_id: String,
+}
+
+fn map_sync_error(e: SyncError) -> ApiError {
+    match e {
+        SyncError::BadRequest => ApiError::BadRequest,
+        SyncError::NotFound => ApiError::NotFound,
+        SyncError::RandomUnavailable => ApiError::Internal,
+    }
+}
+
+/// 手机发起同步请求 → 桌面端弹窗。
+///
+/// 202 而不是 200: 语义是"已排进待确认队列", 与配对请求一致。
+async fn sync_request(
+    State(st): State<ServerState>,
+    J(req): J<SyncRequest>,
+) -> Result<Response, ApiError> {
+    let pending = {
+        let mut store = st.sync.lock().map_err(|_| ApiError::Internal)?;
+        store.request(req).map_err(map_sync_error)?
+    };
+    // 锁外发事件: 与 decisions_put 同一条纪律, 通知端不许在状态锁里跑。
+    if let Some(notify) = st.sync_notify.as_ref() {
+        notify(pending.clone());
+    }
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(SyncChallenge {
+            request_id: pending.request_id,
+            expires_at: pending.expires_at,
+        }),
+    )
+        .into_response())
+}
+
+/// 手机轮询同步结论。`pending / approved / denied / expired` 四态闭集。
+async fn sync_status(
+    State(st): State<ServerState>,
+    query: Result<Q<SyncStatusQuery>, ApiError>,
+) -> Result<Response, ApiError> {
+    let Q(q) = query.map_err(|_| ApiError::BadRequest)?;
+    let status = {
+        let mut store = st.sync.lock().map_err(|_| ApiError::Internal)?;
+        store.status(&q.request_id)
+    }
+    .ok_or(ApiError::NotFound)?;
+    Ok(Json(status).into_response())
 }
 
 /// 完整路由: **整台路由器**外面套三层中间件 + 一层响应规范化(M4′ Task 3 从两层变四层)。

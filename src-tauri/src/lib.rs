@@ -349,6 +349,51 @@ fn decisions_notifier(app: tauri::AppHandle) -> server::Notify {
 /// 两个事件的名字与负载是 §0.3 的冻结契约:
 ///   · `pairing-request` → `PendingPairing`(桌面端据此弹确认框);
 ///   · `pairing-changed` → `PairingStatus`(批准/拒绝/过期/移除后刷新列表)。
+/// 手机「同步」请求(确认门)的发送端 —— 与上面两个通知端同一条类型擦除纪律。
+fn sync_notifier(app: tauri::AppHandle) -> server::SyncNotify {
+    std::sync::Arc::new(move |pending: server::sync::PendingSync| {
+        use tauri::Emitter as _;
+        let _ = app.emit("sync-request", pending);
+    })
+}
+
+/// 桌面端挂载同步弹窗时补读一次: 只回**还活着**的待确认请求。
+#[tauri::command]
+fn sync_status(
+    state: tauri::State<'_, server::ServerState>,
+) -> Result<Option<server::sync::PendingSync>, String> {
+    let mut store = state.sync.lock().map_err(|_| "同步状态暂不可用".to_string())?;
+    Ok(store.current())
+}
+
+fn sync_error_message(e: server::sync::SyncError) -> String {
+    match e {
+        server::sync::SyncError::NotFound => "这条同步请求已经不存在或已过期".to_string(),
+        server::sync::SyncError::BadRequest => "同步请求不合法".to_string(),
+        server::sync::SyncError::RandomUnavailable => "系统随机数不可用".to_string(),
+    }
+}
+
+/// 桌面端点「允许」—— 手机轮询到 approved 后才会真正推送/拉取。
+#[tauri::command]
+fn approve_sync(
+    state: tauri::State<'_, server::ServerState>,
+    request_id: String,
+) -> Result<(), String> {
+    let mut store = state.sync.lock().map_err(|_| "同步状态暂不可用".to_string())?;
+    store.approve(&request_id).map_err(sync_error_message)
+}
+
+/// 桌面端点「拒绝」—— 手机只看到 denied，一个写请求都不会发。
+#[tauri::command]
+fn deny_sync(
+    state: tauri::State<'_, server::ServerState>,
+    request_id: String,
+) -> Result<(), String> {
+    let mut store = state.sync.lock().map_err(|_| "同步状态暂不可用".to_string())?;
+    store.deny(&request_id).map_err(sync_error_message)
+}
+
 fn pairing_notifier(app: tauri::AppHandle) -> server::pairing::PairingNotify {
     std::sync::Arc::new(move |event: server::pairing::PairingEvent| {
         use tauri::Emitter as _;
@@ -445,6 +490,7 @@ pub fn run() {
                 .into_state_with_notifiers(
                     decisions_notifier(app_handle.clone()),
                     pairing_notifier(app_handle.clone()),
+                    sync_notifier(app_handle.clone()),
                 );
             let start_service_now = server::wants_start(&server_state);
             app_handle.manage(server_state.clone());
@@ -515,6 +561,10 @@ pub fn run() {
             approve_pairing,
             deny_pairing,
             forget_paired_device,
+            // 手机「同步」确认门(计划 A): 请求 → 桌面弹窗 → 允许/拒绝。
+            sync_status,
+            approve_sync,
+            deny_sync,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

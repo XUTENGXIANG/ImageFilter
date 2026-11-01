@@ -517,4 +517,17 @@ export default {
     unavailable: "未知配对状态：{reason}",
   },
 
+  // 手机「同步」确认门（方案 A）
+  sync: {
+    requestTitle: "手机请求同步",
+    requestBody: "这台手机想把星级/色标同步到电脑。允许后手机才会推送未同步的改动，并重新读取电脑上的星级。",
+    device: "设备：{name}",
+    items: "待写 {n} 项",
+    expiresIn: "请求将在 {seconds} 秒后自动过期",
+    expired: "请求已过期",
+    allow: "允许",
+    deny: "拒绝",
+    actionFailed: "操作失败：{reason}",
+  },
+
 };
